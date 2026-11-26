@@ -2,10 +2,10 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Anchor, Info } from 'lucide-react';
 import {
   BOARDING_TRANSITION_MS,
-  createInitialBoardingState,
+  createInitialProjectSessionState,
   findNearestBoardableShip,
-  transitionBoardingState,
-  type BoardingState,
+  transitionProjectSessionState,
+  type HarborProjectSessionState,
 } from './boardingState';
 import { AccessibleListView } from './components/AccessibleListView';
 import { BottomControlDock } from './components/BottomControlDock';
@@ -28,7 +28,9 @@ import {
   detectDeviceProfile,
   subscribeReducedMotion,
 } from './deviceProfile';
+import type { AppErrorCode } from './errorCatalog';
 import {
+  assertValidShipBerths,
   mapEmployeesToHarborPeople,
   mapProjectsToHarborShips,
   type HarborPerson,
@@ -56,6 +58,11 @@ import {
   type SgwPresenceEntry,
   type SgwUser,
 } from './sgwAdapter';
+import {
+  createInitialWebGLViewState,
+  transitionWebGLViewState,
+  type WebGLViewState,
+} from './webglContextState';
 
 type AuthGateStatus =
   | 'loading'
@@ -89,13 +96,18 @@ export function App() {
 
   const deviceProfile = useMemo(() => detectDeviceProfile(), []);
   const webglSupported = deviceProfile.webglSupported;
-  const [viewMode, setViewMode] = useState<'3d' | '2d'>(() => deviceProfile.initialViewMode);
+  const [webglState, setWebglState] = useState<WebGLViewState>(() =>
+    createInitialWebGLViewState(deviceProfile.webglSupported, deviceProfile.initialViewMode),
+  );
+  const viewMode = webglState.viewMode;
+  const webglContextLost = webglState.contextHealth === 'lost';
   const [lowSpecMode, setLowSpecMode] = useState<boolean>(() => deviceProfile.recommendLowSpec);
   const [reducedMotion, setReducedMotion] = useState<boolean>(() => deviceProfile.reducedMotion);
   const [darkTheme, setDarkTheme] = useState<boolean>(false);
   const [cameraPreset, setCameraPreset] = useState<CameraPreset>('harbor');
 
   const [authStatus, setAuthStatus] = useState<AuthGateStatus>('loading');
+  const [authErrorCode, setAuthErrorCode] = useState<AppErrorCode | null>(null);
   const [authMessage, setAuthMessage] = useState<string>('SGW 세션 상태를 확인하고 있습니다...');
   const [currentUser, setCurrentUser] = useState<SgwUser | null>(null);
 
@@ -103,10 +115,12 @@ export function App() {
   const [presenceEntries, setPresenceEntries] = useState<SgwPresenceEntry[]>([]);
   const [projects, setProjects] = useState<SedmsProject[]>([]);
   const [projectsState, setProjectsState] = useState<ProjectsLoadState>('loading');
+  const [projectsErrorCode, setProjectsErrorCode] = useState<AppErrorCode | null>(null);
   const [projectsMessage, setProjectsMessage] = useState<string>('');
 
   // Connection & sync status (never hide polling failures)
   const [syncDisconnected, setSyncDisconnected] = useState<boolean>(false);
+  const [syncErrorCode, setSyncErrorCode] = useState<AppErrorCode | null>(null);
   const [lastSyncedAtMs, setLastSyncedAtMs] = useState<number | null>(null);
   const [clockNowMs, setClockNowMs] = useState<number>(() => Date.now());
 
@@ -116,9 +130,9 @@ export function App() {
     z: -10.5,
     heading: 0,
   });
-  const [boardingState, setBoardingState] = useState<BoardingState>(createInitialBoardingState);
-  const [selectedPerson, setSelectedPerson] = useState<HarborPerson | null>(null);
-  const [radialTarget, setRadialTarget] = useState<RadialTarget | null>(null);
+  const [projectSession, setProjectSession] = useState<HarborProjectSessionState>(
+    createInitialProjectSessionState,
+  );
   const [renderMetrics, setRenderMetrics] = useState<RenderMetrics | null>(null);
   const [peopleDrawerOpen, setPeopleDrawerOpen] = useState<boolean>(false);
   const [minimapOpen, setMinimapOpen] = useState<boolean>(() => isDesktopViewport());
@@ -181,45 +195,66 @@ export function App() {
 
   const mappedShips = useMemo(() => mapProjectsToHarborShips(projects), [projects]);
 
-  const peopleBySubRef = useRef<Map<string, HarborPerson>>(new Map());
-  const shipsByIdRef = useRef<Map<string, HarborShip>>(new Map());
-  const mappedShipsRef = useRef<HarborShip[]>(mappedShips);
+  const peopleBySub = useMemo(
+    () => new Map(mappedPeople.map((p) => [p.sub, p])),
+    [mappedPeople],
+  );
+  const shipsById = useMemo(
+    () => new Map(mappedShips.map((s) => [s.id, s])),
+    [mappedShips],
+  );
+
+  const peopleBySubRef = useRef<Map<string, HarborPerson>>(peopleBySub);
+  const shipsByIdRef = useRef<Map<string, HarborShip>>(shipsById);
 
   useEffect(() => {
-    peopleBySubRef.current = new Map(mappedPeople.map((p) => [p.sub, p]));
-  }, [mappedPeople]);
+    peopleBySubRef.current = peopleBySub;
+  }, [peopleBySub]);
 
   useEffect(() => {
-    shipsByIdRef.current = new Map(mappedShips.map((s) => [s.id, s]));
-    mappedShipsRef.current = mappedShips;
-  }, [mappedShips]);
+    shipsByIdRef.current = shipsById;
+    if (mappedShips.length > 0) {
+      assertValidShipBerths(mappedShips, {
+        throwOnViolation: false,
+        warnInDev: import.meta.env.DEV,
+      });
+    }
+    setProjectSession((prev) =>
+      transitionProjectSessionState(prev, {
+        type: 'SYNC_SHIPS',
+        shipsById,
+      }),
+    );
+  }, [mappedShips, shipsById]);
 
-  // Boarding flow helpers
+  // Atomic project boarding / switching flow (clears previous project cache in 1 transition)
   const startBoardingShip = useCallback((shipId: string) => {
-    if (!shipsByIdRef.current.has(shipId)) return;
+    const ship = shipsByIdRef.current.get(shipId);
+    if (!ship) return;
     if (boardingTimerRef.current !== null) {
       window.clearTimeout(boardingTimerRef.current);
       boardingTimerRef.current = null;
     }
 
     const isReduced = reducedMotionRef.current;
-    setSelectedPerson(null);
-    setRadialTarget(null);
     setPeopleDrawerOpen(false);
-    setBoardingState((prev) =>
-      transitionBoardingState(prev, {
-        type: 'REQUEST_BOARD',
-        shipId,
+    setProjectSession((prev) =>
+      transitionProjectSessionState(prev, {
+        type: 'BOARD_OR_SWITCH_SHIP',
+        ship,
         reducedMotion: isReduced,
       }),
     );
 
-    sceneRef.current?.boardShip(shipId, isReduced ? 0 : BOARDING_TRANSITION_MS);
+    sceneRef.current?.boardShip(ship.id, isReduced ? 0 : BOARDING_TRANSITION_MS);
 
     if (!isReduced) {
       boardingTimerRef.current = window.setTimeout(() => {
-        setBoardingState((prev) =>
-          transitionBoardingState(prev, { type: 'COMPLETE_BOARDING' }),
+        setProjectSession((prev) =>
+          transitionProjectSessionState(prev, {
+            type: 'COMPLETE_BOARDING',
+            shipsById: shipsByIdRef.current,
+          }),
         );
         boardingTimerRef.current = null;
       }, BOARDING_TRANSITION_MS);
@@ -231,20 +266,40 @@ export function App() {
       window.clearTimeout(boardingTimerRef.current);
       boardingTimerRef.current = null;
     }
-    setBoardingState((prev) => transitionBoardingState(prev, { type: 'DISEMBARK' }));
+    setProjectSession((prev) =>
+      transitionProjectSessionState(prev, { type: 'DISEMBARK' }),
+    );
     sceneRef.current?.disembarkToHarbor(reducedMotionRef.current ? 0 : 450);
   }, []);
 
   // Update proximity prompt whenever avatar moves or ships change
   useEffect(() => {
     const nearest = findNearestBoardableShip(playerPose, mappedShips);
-    setBoardingState((prev) =>
-      transitionBoardingState(prev, {
+    setProjectSession((prev) =>
+      transitionProjectSessionState(prev, {
         type: 'PROXIMITY_CHANGED',
         nearbyShipId: nearest?.id ?? null,
       }),
     );
   }, [playerPose, mappedShips]);
+
+  const boardingState = projectSession.boarding;
+
+  const selectedPerson = useMemo<HarborPerson | null>(() => {
+    if (!projectSession.selectedPersonSub) return null;
+    return peopleBySub.get(projectSession.selectedPersonSub) ?? null;
+  }, [projectSession.selectedPersonSub, peopleBySub]);
+
+  const radialTarget = useMemo<RadialTarget | null>(() => {
+    const snap = projectSession.radialTarget;
+    if (!snap) return null;
+    if (snap.kind === 'ship') {
+      const ship = shipsById.get(snap.targetId);
+      return ship ? { kind: 'ship', ship, anchor: snap.anchor } : null;
+    }
+    const person = peopleBySub.get(snap.targetId);
+    return person ? { kind: 'person', person, anchor: snap.anchor } : null;
+  }, [projectSession.radialTarget, shipsById, peopleBySub]);
 
   // Keyboard shortcuts: E / Enter to board nearby ship; Escape to disembark or close overlays
   useEffect(() => {
@@ -257,12 +312,13 @@ export function App() {
           target.tagName === 'SELECT');
 
       if (e.key === 'Escape') {
-        if (radialTarget) {
-          setRadialTarget(null);
+        if (projectSession.radialTarget) {
+          setProjectSession((prev) =>
+            transitionProjectSessionState(prev, { type: 'CLOSE_RADIAL' }),
+          );
           return;
         }
         handleDisembark();
-        setSelectedPerson(null);
         setPeopleDrawerOpen(false);
         return;
       }
@@ -280,8 +336,8 @@ export function App() {
         (e.key === 'e' || e.key === 'E' || (e.key === 'Enter' && !isInteractiveFocus)) &&
         boardingState.phase === 'harbor' &&
         boardingState.nearbyShipId &&
-        !selectedPerson &&
-        !radialTarget
+        !projectSession.selectedPersonSub &&
+        !projectSession.radialTarget
       ) {
         e.preventDefault();
         startBoardingShip(boardingState.nearbyShipId);
@@ -289,35 +345,43 @@ export function App() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [boardingState, selectedPerson, radialTarget, startBoardingShip, handleDisembark]);
+  }, [boardingState, projectSession.selectedPersonSub, projectSession.radialTarget, startBoardingShip, handleDisembark]);
 
   const loadProjects = useCallback(
     async (forceRefresh = false) => {
       setProjectsState('loading');
+      setProjectsErrorCode(null);
       const res = await fetchSedmsProjects({ runtimeEnv, forceRefresh });
       if (res.status === 'ready') {
         setProjects(res.projects);
         setProjectsState('ready');
+        setProjectsErrorCode(null);
         setProjectsMessage('');
         setSyncDisconnected(false);
+        setSyncErrorCode(null);
         setLastSyncedAtMs(Date.now());
       } else if (res.status === 'pending') {
         setProjects([]);
         setProjectsState('pending');
+        setProjectsErrorCode(res.errorCode);
         setProjectsMessage(res.message);
         setSyncDisconnected(false);
+        setSyncErrorCode(null);
         setLastSyncedAtMs(Date.now());
       } else if (res.status === 'forbidden') {
         setProjects([]);
         setProjectsState('forbidden');
+        setProjectsErrorCode(res.errorCode);
         setProjectsMessage(res.message);
       } else if (res.status === 'unauthenticated') {
         window.location.replace(SGW_LOGIN_REDIRECT_URL);
       } else {
         setProjects([]);
         setProjectsState('error');
+        setProjectsErrorCode(res.errorCode);
         setProjectsMessage(res.message);
         setSyncDisconnected(true);
+        setSyncErrorCode(res.errorCode);
         setClockNowMs(Date.now());
       }
     },
@@ -339,21 +403,25 @@ export function App() {
     if (presRes.status === 'ok') {
       setPresenceEntries(presRes.entries);
       setSyncDisconnected(false);
+      setSyncErrorCode(null);
       setLastSyncedAtMs(Date.now());
     } else if (presRes.status === 'error') {
       setSyncDisconnected(true);
+      setSyncErrorCode(presRes.errorCode);
       setClockNowMs(Date.now());
     }
   }, [runtimeEnv]);
 
   const bootstrapSession = useCallback(async () => {
     setAuthStatus('loading');
+    setAuthErrorCode(null);
     setAuthMessage('SGW 세션 상태를 확인하고 있습니다...');
     const authRes = await fetchAuthMe({ runtimeEnv });
 
     if (authRes.status === 'authenticated') {
       setCurrentUser(authRes.user);
       setAuthStatus('authenticated');
+      setAuthErrorCode(null);
       await Promise.all([loadDirectoryAndPresence(), loadProjects(false)]);
       if (runtimeEnv === 'sgw') {
         void postPresenceHeartbeat({ runtimeEnv });
@@ -363,13 +431,15 @@ export function App() {
 
     if (authRes.status === 'unauthenticated') {
       setAuthStatus('unauthenticated');
-      setAuthMessage('SGW 로그인이 필요합니다. 로그인 화면으로 이동합니다...');
+      setAuthErrorCode(authRes.errorCode);
+      setAuthMessage(authRes.message);
       window.location.replace(authRes.redirectUrl);
       return;
     }
 
     setCurrentUser(null);
     setAuthStatus(authRes.status);
+    setAuthErrorCode(authRes.errorCode);
     setAuthMessage(authRes.message);
   }, [loadDirectoryAndPresence, loadProjects, runtimeEnv]);
 
@@ -391,16 +461,19 @@ export function App() {
           if (res.status === 'ok') {
             setPresenceEntries(res.entries);
             setSyncDisconnected(false);
+            setSyncErrorCode(null);
             setLastSyncedAtMs(Date.now());
           } else if (res.status === 'unauthenticated') {
             window.location.replace(SGW_LOGIN_REDIRECT_URL);
           } else {
             setSyncDisconnected(true);
+            setSyncErrorCode(res.errorCode);
             setClockNowMs(Date.now());
           }
         })
         .catch(() => {
           setSyncDisconnected(true);
+          setSyncErrorCode('network_offline');
           setClockNowMs(Date.now());
         });
     };
@@ -445,9 +518,15 @@ export function App() {
     [isPreviewMode, showPreviewBlockedToast],
   );
 
-  // Mount & manage 3D Harbor Scene strictly when in 3D mode & authenticated
+  // Keep 3D canvas mounted while in 3D mode OR while waiting for `webglcontextrestored`.
+  // Bumping `webglState.retryNonce` ("3D 를 다시 시도") cleanly disposes and recreates the renderer.
+  const shouldKeep3DMounted =
+    authStatus === 'authenticated' &&
+    webglSupported &&
+    (webglState.viewMode === '3d' || webglState.contextHealth === 'lost');
+
   useEffect(() => {
-    if (authStatus !== 'authenticated' || viewMode !== '3d' || !webglSupported) {
+    if (!shouldKeep3DMounted) {
       if (sceneRef.current) {
         sceneRef.current.dispose();
         sceneRef.current = null;
@@ -463,17 +542,23 @@ export function App() {
       container,
       {
         onShipClicked: (projectId, screenPos) => {
-          const ship = shipsByIdRef.current.get(projectId);
-          if (ship) {
-            setSelectedPerson(null);
-            setRadialTarget({ kind: 'ship', ship, anchor: screenPos });
+          if (shipsByIdRef.current.has(projectId)) {
+            setProjectSession((prev) =>
+              transitionProjectSessionState(prev, {
+                type: 'OPEN_RADIAL',
+                target: { kind: 'ship', targetId: projectId, anchor: screenPos },
+              }),
+            );
           }
         },
         onPersonClicked: (sub, screenPos) => {
-          const found = peopleBySubRef.current.get(sub);
-          if (found) {
-            setSelectedPerson(null);
-            setRadialTarget({ kind: 'person', person: found, anchor: screenPos });
+          if (peopleBySubRef.current.has(sub)) {
+            setProjectSession((prev) =>
+              transitionProjectSessionState(prev, {
+                type: 'OPEN_RADIAL',
+                target: { kind: 'person', targetId: sub, anchor: screenPos },
+              }),
+            );
           }
         },
         onPortalClicked: (portalId) => {
@@ -493,13 +578,26 @@ export function App() {
             setRenderMetrics(metrics);
           }
         },
+        onContextLost: () => {
+          setProjectSession((prev) =>
+            transitionProjectSessionState(prev, { type: 'CLOSE_RADIAL' }),
+          );
+          setWebglState((prev) =>
+            transitionWebGLViewState(prev, { type: 'CONTEXT_LOST' }),
+          );
+        },
+        onContextRestored: () => {
+          setWebglState((prev) =>
+            transitionWebGLViewState(prev, { type: 'CONTEXT_RESTORED' }),
+          );
+        },
       },
       { lowSpec: lowSpecMode, reducedMotion, darkTheme },
     );
 
     sceneRef.current = controller;
-    controller.setProjects(mappedShips);
-    controller.setPeople(mappedPeople);
+    controller.setProjects(Array.from(shipsByIdRef.current.values()));
+    controller.setPeople(Array.from(peopleBySubRef.current.values()));
 
     return () => {
       controller.dispose();
@@ -507,7 +605,7 @@ export function App() {
         sceneRef.current = null;
       }
     };
-  }, [authStatus, viewMode, webglSupported, handlePortalNavigate, startBoardingShip]);
+  }, [shouldKeep3DMounted, webglState.retryNonce, handlePortalNavigate]);
 
   // Sync dynamic ships & people into 3D scene
   useEffect(() => {
@@ -558,19 +656,43 @@ export function App() {
     sceneRef.current?.focusPerson(sub);
   }, []);
 
+  const handleRetry3D = useCallback(() => {
+    setProjectSession((prev) =>
+      transitionProjectSessionState(prev, { type: 'CLOSE_RADIAL' }),
+    );
+    setWebglState((prev) => transitionWebGLViewState(prev, { type: 'RETRY_3D' }));
+  }, []);
+
+  const handleToggleViewMode = useCallback((next: '3d' | '2d') => {
+    setProjectSession((prev) =>
+      transitionProjectSessionState(prev, { type: 'CLOSE_RADIAL' }),
+    );
+    setWebglState((prev) =>
+      transitionWebGLViewState(prev, { type: 'SET_VIEW_MODE', next }),
+    );
+  }, []);
+
   const handleLabelClick = useCallback(
     (label: ProjectedLabel) => {
       if (label.id.startsWith('ship:')) {
         const id = label.id.slice(5);
-        const ship = shipsByIdRef.current.get(id);
-        if (ship) {
-          setRadialTarget({ kind: 'ship', ship, anchor: { x: label.x, y: label.y } });
+        if (shipsByIdRef.current.has(id)) {
+          setProjectSession((prev) =>
+            transitionProjectSessionState(prev, {
+              type: 'OPEN_RADIAL',
+              target: { kind: 'ship', targetId: id, anchor: { x: label.x, y: label.y } },
+            }),
+          );
         }
       } else if (label.id.startsWith('person:')) {
         const sub = label.id.slice(7);
-        const person = peopleBySubRef.current.get(sub);
-        if (person) {
-          setRadialTarget({ kind: 'person', person, anchor: { x: label.x, y: label.y } });
+        if (peopleBySubRef.current.has(sub)) {
+          setProjectSession((prev) =>
+            transitionProjectSessionState(prev, {
+              type: 'OPEN_RADIAL',
+              target: { kind: 'person', targetId: sub, anchor: { x: label.x, y: label.y } },
+            }),
+          );
         }
       } else if (label.id.startsWith('portal:')) {
         const portalId = label.id.slice(7) as PortalBuildingSpec['id'];
@@ -605,20 +727,18 @@ export function App() {
     [mappedPeople],
   );
 
-  const activeBoardedShip = useMemo(() => {
-    if (boardingState.phase === 'harbor') return null;
-    return mappedShips.find((s) => s.id === boardingState.shipId) ?? null;
-  }, [boardingState, mappedShips]);
+  const activeBoardedShip = projectSession.panelShipSnapshot;
 
   const nearbyBoardableShip = useMemo(() => {
     if (boardingState.phase !== 'harbor' || !boardingState.nearbyShipId) return null;
-    return mappedShips.find((s) => s.id === boardingState.nearbyShipId) ?? null;
-  }, [boardingState, mappedShips]);
+    return shipsById.get(boardingState.nearbyShipId) ?? null;
+  }, [boardingState, shipsById]);
 
   if (authStatus !== 'authenticated' || !currentUser) {
     return (
       <AuthGateOverlay
         status={authStatus === 'authenticated' ? 'loading' : authStatus}
+        errorCode={authErrorCode}
         message={authMessage}
         onRetry={() => {
           void bootstrapSession();
@@ -634,12 +754,14 @@ export function App() {
         runtimeEnv={runtimeEnv}
         viewMode={viewMode}
         webglSupported={webglSupported}
+        webglContextLost={webglContextLost}
         lowSpecMode={lowSpecMode}
         darkTheme={darkTheme}
         cameraPreset={cameraPreset}
         onlineCount={onlineCount}
         projectCount={mappedShips.length}
         syncDisconnected={syncDisconnected}
+        syncErrorCode={syncErrorCode}
         lastSyncedAtMs={lastSyncedAtMs}
         nowMs={clockNowMs}
         renderMetrics={renderMetrics}
@@ -647,11 +769,8 @@ export function App() {
         onRetrySync={() => {
           void Promise.all([loadDirectoryAndPresence(), loadProjects(true)]);
         }}
-        onToggleViewMode={(next) => {
-          if (next === '3d' && !webglSupported) return;
-          setRadialTarget(null);
-          setViewMode(next);
-        }}
+        onRetry3D={handleRetry3D}
+        onToggleViewMode={handleToggleViewMode}
         onToggleLowSpec={() => setLowSpecMode((v) => !v)}
         onToggleTheme={() => setDarkTheme((v) => !v)}
         onCycleCamera={handleCycleCamera}
@@ -662,8 +781,11 @@ export function App() {
         onPreviewLinkBlocked={showPreviewBlockedToast}
       />
 
-      {viewMode === '3d' && webglSupported ? (
-        <div className="relative h-screen w-screen overflow-hidden">
+      {shouldKeep3DMounted && (
+        <div
+          className={viewMode === '3d' ? 'relative h-screen w-screen overflow-hidden' : 'hidden'}
+          aria-hidden={viewMode !== '3d'}
+        >
           <div
             ref={canvasContainerRef}
             className="h-full w-full"
@@ -671,7 +793,7 @@ export function App() {
           />
 
           {/* Projected interactive 3D labels (hidden while onboard dialog is open) */}
-          {boardingState.phase === 'harbor' && (
+          {viewMode === '3d' && boardingState.phase === 'harbor' && (
             <div className="pointer-events-none fixed inset-0 z-20 overflow-hidden">
               {labels.map((label) => {
                 if (!label.visible) return null;
@@ -722,7 +844,8 @@ export function App() {
           )}
 
           {/* Proximity Boarding Prompt: E: 승선 / Enter */}
-          {nearbyBoardableShip &&
+          {viewMode === '3d' &&
+            nearbyBoardableShip &&
             boardingState.phase === 'harbor' &&
             !selectedPerson &&
             !peopleDrawerOpen && (
@@ -742,58 +865,72 @@ export function App() {
               </div>
             )}
 
-          <HarborMiniMap
-            open={minimapOpen && boardingState.phase === 'harbor'}
-            ships={mappedShips}
-            people={mappedPeople}
-            playerPose={playerPose}
-            activeShipId={activeBoardedShip?.id ?? nearbyBoardableShip?.id ?? null}
-            onSelectShip={handleSelectShipFromUi}
-            onWalkToQuay={(x, z) => sceneRef.current?.walkToPoint(x, z)}
-            onClose={() => setMinimapOpen(false)}
-          />
+          {viewMode === '3d' && (
+            <>
+              <HarborMiniMap
+                open={minimapOpen && boardingState.phase === 'harbor'}
+                ships={mappedShips}
+                people={mappedPeople}
+                playerPose={playerPose}
+                activeShipId={projectSession.minimapSelectedShipId ?? nearbyBoardableShip?.id ?? null}
+                onSelectShip={handleSelectShipFromUi}
+                onWalkToQuay={(x, z) => sceneRef.current?.walkToPoint(x, z)}
+                onClose={() => setMinimapOpen(false)}
+              />
 
-          <PeopleFinderDrawer
-            open={peopleDrawerOpen}
-            runtimeEnv={runtimeEnv}
-            people={mappedPeople}
-            onClose={() => setPeopleDrawerOpen(false)}
-            onFocusPerson={handleFocusPerson3D}
-            onSelectPerson={(p) => setSelectedPerson(p)}
-            onPreviewLinkBlocked={showPreviewBlockedToast}
-          />
+              <PeopleFinderDrawer
+                open={peopleDrawerOpen}
+                runtimeEnv={runtimeEnv}
+                people={mappedPeople}
+                onClose={() => setPeopleDrawerOpen(false)}
+                onFocusPerson={handleFocusPerson3D}
+                onSelectPerson={(p) =>
+                  setProjectSession((prev) =>
+                    transitionProjectSessionState(prev, { type: 'SELECT_PERSON', sub: p.sub }),
+                  )
+                }
+                onPreviewLinkBlocked={showPreviewBlockedToast}
+              />
 
-          <BottomControlDock
-            ships={mappedShips}
-            projectsState={projectsState}
-            projectsMessage={projectsMessage}
-            onlineCount={onlineCount}
-            totalPeopleCount={mappedPeople.length}
-            peopleDrawerOpen={peopleDrawerOpen}
-            minimapOpen={minimapOpen}
-            boardedShipId={activeBoardedShip?.id ?? null}
-            onSelectShip={handleSelectShipFromUi}
-            onRefreshProjects={() => {
-              if (isPreviewMode) {
-                showPreviewBlockedToast('실시간 프로젝트 새로고침');
-              } else {
-                void loadProjects(true);
-              }
-            }}
-            onTogglePeopleDrawer={handleTogglePeopleDrawer}
-            onToggleMinimap={handleToggleMinimap}
-            onSwitchTo2D={() => setViewMode('2d')}
-          />
+              <BottomControlDock
+                ships={mappedShips}
+                projectsState={projectsState}
+                projectsMessage={projectsMessage}
+                projectsErrorCode={projectsErrorCode}
+                onlineCount={onlineCount}
+                totalPeopleCount={mappedPeople.length}
+                peopleDrawerOpen={peopleDrawerOpen}
+                minimapOpen={minimapOpen}
+                boardedShipId={activeBoardedShip?.id ?? null}
+                onSelectShip={handleSelectShipFromUi}
+                onRefreshProjects={() => {
+                  if (isPreviewMode) {
+                    showPreviewBlockedToast('실시간 프로젝트 새로고침');
+                  } else {
+                    void loadProjects(true);
+                  }
+                }}
+                onTogglePeopleDrawer={handleTogglePeopleDrawer}
+                onToggleMinimap={handleToggleMinimap}
+                onSwitchTo2D={() => handleToggleViewMode('2d')}
+              />
+            </>
+          )}
         </div>
-      ) : (
+      )}
+
+      {(viewMode === '2d' || !webglSupported) && (
         <AccessibleListView
           user={currentUser}
           runtimeEnv={runtimeEnv}
           ships={mappedShips}
           projectsState={projectsState}
           projectsMessage={projectsMessage}
+          projectsErrorCode={projectsErrorCode}
           people={mappedPeople}
           webglSupported={webglSupported}
+          webglContextLost={webglContextLost}
+          onRetry3D={handleRetry3D}
           onRefreshProjects={() => {
             if (isPreviewMode) {
               showPreviewBlockedToast('실시간 프로젝트 새로고침');
@@ -802,7 +939,11 @@ export function App() {
             }
           }}
           onSelectShip={handleSelectShipFromUi}
-          onSelectPerson={(person) => setSelectedPerson(person)}
+          onSelectPerson={(person) =>
+            setProjectSession((prev) =>
+              transitionProjectSessionState(prev, { type: 'SELECT_PERSON', sub: person.sub }),
+            )
+          }
           onPreviewLinkBlocked={showPreviewBlockedToast}
         />
       )}
@@ -812,10 +953,15 @@ export function App() {
         runtimeEnv={runtimeEnv}
         onBoardShip={startBoardingShip}
         onPreviewLinkBlocked={showPreviewBlockedToast}
-        onClose={() => setRadialTarget(null)}
+        onClose={() =>
+          setProjectSession((prev) =>
+            transitionProjectSessionState(prev, { type: 'CLOSE_RADIAL' }),
+          )
+        }
       />
 
       <OnboardPanel
+        key={activeBoardedShip ? `${activeBoardedShip.id}:${projectSession.projectSessionEpoch}` : 'harbor'}
         ship={activeBoardedShip}
         phase={boardingState.phase}
         runtimeEnv={runtimeEnv}
@@ -826,10 +972,14 @@ export function App() {
       <PersonActionModal
         person={selectedPerson}
         runtimeEnv={runtimeEnv}
-        canFocus3D={viewMode === '3d' && webglSupported}
+        canFocus3D={viewMode === '3d' && webglSupported && !webglContextLost}
         onFocus3D={handleFocusPerson3D}
         onPreviewLinkBlocked={showPreviewBlockedToast}
-        onClose={() => setSelectedPerson(null)}
+        onClose={() =>
+          setProjectSession((prev) =>
+            transitionProjectSessionState(prev, { type: 'SELECT_PERSON', sub: null }),
+          )
+        }
       />
 
       {toastMessage && (

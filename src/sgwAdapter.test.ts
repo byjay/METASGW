@@ -1,5 +1,6 @@
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { getErrorDescriptor } from './errorCatalog.ts';
 import {
   fetchAuthMe,
   fetchEmployees,
@@ -178,5 +179,40 @@ describe('sgwAdapter strict sgw vs preview runtime separation', () => {
       },
     });
     assert.equal(logoutOk, true);
+  });
+
+  it('in sgw mode: returns unified errorCatalog codes and messages for 401/403/404/429/5xx/network across all endpoints', async () => {
+    const auth429 = await fetchAuthMe({
+      runtimeEnv: 'sgw',
+      fetchImpl: async () => jsonResponse({ error: 'too_many' }, 429),
+    });
+    assert.equal(auth429.status, 'error');
+    if (auth429.status === 'error') {
+      assert.equal(auth429.errorCode, 'rate_limited');
+      assert.equal(auth429.message, getErrorDescriptor('rate_limited').message);
+    }
+
+    const proj503 = await fetchSedmsProjects({
+      runtimeEnv: 'sgw',
+      forceRefresh: true,
+      fetchImpl: async () => jsonResponse({ error: 'unavailable' }, 503),
+    });
+    assert.equal(proj503.status, 'error');
+    if (proj503.status === 'error') {
+      assert.equal(proj503.errorCode, 'server_error');
+      assert.equal(proj503.message, getErrorDescriptor('server_error').message);
+    }
+
+    const presOffline = await fetchPresence({
+      runtimeEnv: 'sgw',
+      fetchImpl: async () => {
+        throw new Error('offline');
+      },
+    });
+    assert.equal(presOffline.status, 'error');
+    if (presOffline.status === 'error') {
+      assert.equal(presOffline.errorCode, 'network_offline');
+      assert.equal(presOffline.message, getErrorDescriptor('network_offline').message);
+    }
   });
 });

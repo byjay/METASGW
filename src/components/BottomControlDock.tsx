@@ -10,12 +10,14 @@ import {
   Ship,
   Users,
 } from 'lucide-react';
+import { getErrorDescriptor, type AppErrorCode } from '../errorCatalog';
 import type { HarborShip } from '../mapping';
 
 export interface BottomControlDockProps {
   ships: HarborShip[];
   projectsState: 'loading' | 'ready' | 'pending' | 'forbidden' | 'error';
   projectsMessage: string;
+  projectsErrorCode?: AppErrorCode | null;
   onlineCount: number;
   totalPeopleCount: number;
   peopleDrawerOpen: boolean;
@@ -46,7 +48,8 @@ function renderDockStatusIcon(tone: HarborShip['statusTone']): React.ReactNode {
 export const BottomControlDock: React.FC<BottomControlDockProps> = ({
   ships,
   projectsState,
-  projectsMessage,
+  projectsMessage: _projectsMessage,
+  projectsErrorCode = null,
   onlineCount,
   totalPeopleCount,
   peopleDrawerOpen,
@@ -58,6 +61,15 @@ export const BottomControlDock: React.FC<BottomControlDockProps> = ({
   onToggleMinimap,
   onSwitchTo2D,
 }) => {
+  const dockErrorDesc =
+    projectsState === 'pending'
+      ? getErrorDescriptor(projectsErrorCode ?? 'not_found')
+      : projectsState === 'forbidden'
+        ? getErrorDescriptor(projectsErrorCode ?? 'forbidden')
+        : projectsState === 'error'
+          ? getErrorDescriptor(projectsErrorCode ?? 'server_error')
+          : null;
+
   return (
     <div className="pointer-events-none fixed bottom-2 sm:bottom-3 inset-x-0 z-30 flex justify-center px-2 sm:px-3">
       <div
@@ -67,13 +79,13 @@ export const BottomControlDock: React.FC<BottomControlDockProps> = ({
         {/* Docked SEDMS Project Ships (horizontally scrollable on narrow mobile) */}
         <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 sm:pb-0 sm:max-w-[52vw]">
           <Ship className="h-4 w-4 shrink-0 text-sky-400" aria-hidden="true" />
-          {projectsState === 'pending' && (
+          {projectsState === 'pending' && dockErrorDesc && (
             <span className="inline-flex items-center gap-2 rounded-lg border border-amber-400/40 bg-amber-950/70 px-2.5 py-1 text-xs font-medium text-amber-100 whitespace-nowrap">
-              {projectsMessage || '프로젝트 연결 준비 중'}
+              {dockErrorDesc.title}
               <button
                 type="button"
                 onClick={onRefreshProjects}
-                aria-label="프로젝트 다시 확인"
+                aria-label={dockErrorDesc.nextActionLabel}
                 className="rounded p-0.5 hover:bg-amber-500/20 focus-visible:outline-2 focus-visible:outline-sky-400"
               >
                 <RefreshCw className="h-3 w-3" aria-hidden="true" />
@@ -81,9 +93,24 @@ export const BottomControlDock: React.FC<BottomControlDockProps> = ({
             </span>
           )}
 
-          {projectsState === 'forbidden' && (
+          {projectsState === 'forbidden' && dockErrorDesc && (
             <span className="rounded-lg border border-rose-500/40 bg-rose-950/50 px-2.5 py-1 text-xs font-medium text-rose-100 whitespace-nowrap">
-              프로젝트 권한 없음
+              {dockErrorDesc.title} · {dockErrorDesc.nextActionLabel}
+            </span>
+          )}
+
+          {projectsState === 'error' && dockErrorDesc && (
+            <span className="inline-flex items-center gap-2 rounded-lg border border-rose-500/40 bg-rose-950/60 px-2.5 py-1 text-xs font-medium text-rose-100 whitespace-nowrap">
+              {dockErrorDesc.title}
+              <button
+                type="button"
+                onClick={onRefreshProjects}
+                aria-label={dockErrorDesc.nextActionLabel}
+                className="inline-flex items-center gap-1 rounded bg-rose-800 px-1.5 py-0.5 text-[10px] font-semibold text-white hover:bg-rose-700 focus-visible:outline-2 focus-visible:outline-sky-400"
+              >
+                <RefreshCw className="h-3 w-3" aria-hidden="true" />
+                <span>{dockErrorDesc.nextActionLabel}</span>
+              </button>
             </span>
           )}
 

@@ -9,7 +9,7 @@ import {
   type PortalBuildingSpec,
   type Vec2,
 } from '../core/navMeshEngine';
-import type { HarborPerson, HarborShip } from '../mapping';
+import { assertValidShipBerths, type HarborPerson, type HarborShip } from '../mapping';
 import { buildHarborAvatar, type BuiltHumanoidRig } from './humanoidAvatar';
 import { createMaritimeOcean, type OceanWaterSystem } from './oceanShader';
 import { buildShipyardWorld, type ShipyardWorldHandles } from './shipyardWorld';
@@ -49,6 +49,8 @@ export interface HarborSceneCallbacks {
   onLabelsUpdated: (labels: ProjectedLabel[]) => void;
   onPlayerPoseUpdated?: (pose: { x: number; z: number; heading: number }) => void;
   onRenderMetricsUpdated?: (metrics: RenderMetrics) => void;
+  onContextLost?: () => void;
+  onContextRestored?: () => void;
 }
 
 interface PersonNpcRuntime {
@@ -149,6 +151,7 @@ export class HarborSceneController {
   private lastMetricsEmitMs = 0;
   private frameCountWindow = 0;
   private measuredFps = 60;
+  private contextLost = false;
   private disposed = false;
 
   constructor(
@@ -258,6 +261,7 @@ export class HarborSceneController {
     this.renderer.domElement.addEventListener('pointerdown', this.handlePointerDown);
     this.renderer.domElement.addEventListener('pointerup', this.handlePointerUp);
     this.renderer.domElement.addEventListener('webglcontextlost', this.handleContextLost);
+    this.renderer.domElement.addEventListener('webglcontextrestored', this.handleContextRestored);
 
     this.resizeObserver = new ResizeObserver(() => this.handleResize());
     this.resizeObserver.observe(container);
@@ -406,6 +410,10 @@ export class HarborSceneController {
   }
 
   public setProjects(ships: HarborShip[]): void {
+    assertValidShipBerths(ships, {
+      throwOnViolation: false,
+      warnInDev: import.meta.env.DEV,
+    });
     this.world.syncProjectShips(ships, this.lowSpecMode);
     this.emitLabels();
     this.renderFrame();
@@ -696,6 +704,20 @@ export class HarborSceneController {
 
   private handleContextLost = (e: Event): void => {
     e.preventDefault();
+    if (this.contextLost) return;
+    this.contextLost = true;
+    cancelAnimationFrame(this.frameId);
+    this.callbacks.onContextLost?.();
+  };
+
+  private handleContextRestored = (): void => {
+    if (this.disposed) return;
+    this.contextLost = false;
+    this.applyAtmosphere(this.darkTheme);
+    this.handleResize();
+    this.lastFrameMs = performance.now();
+    this.tick();
+    this.callbacks.onContextRestored?.();
   };
 
   private handleResize(): void {
@@ -832,11 +854,12 @@ export class HarborSceneController {
   }
 
   private renderFrame(): void {
+    if (this.contextLost || this.disposed) return;
     this.renderer.render(this.scene, this.camera);
   }
 
   private tick = (): void => {
-    if (this.disposed) return;
+    if (this.disposed || this.contextLost) return;
     this.frameId = requestAnimationFrame(this.tick);
 
     const now = performance.now();
@@ -909,6 +932,7 @@ export class HarborSceneController {
     this.renderer.domElement.removeEventListener('pointerdown', this.handlePointerDown);
     this.renderer.domElement.removeEventListener('pointerup', this.handlePointerUp);
     this.renderer.domElement.removeEventListener('webglcontextlost', this.handleContextLost);
+    this.renderer.domElement.removeEventListener('webglcontextrestored', this.handleContextRestored);
 
     this.controls.dispose();
     this.world.dispose();

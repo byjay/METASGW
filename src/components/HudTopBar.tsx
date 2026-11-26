@@ -20,27 +20,32 @@ import {
   ZoomOut,
 } from 'lucide-react';
 import { SGW_PORTAL_LINKS, isSafeNavigationUrl } from '../deepLink';
+import { getErrorDescriptor, type AppErrorCode } from '../errorCatalog';
 import { formatDisconnectedBanner } from '../mapping';
 import { PREVIEW_DEMO_BANNER_TEXT, type RuntimeEnv } from '../runtimeEnv';
 import type { SgwUser } from '../sgwAdapter';
 import type { CameraPreset, RenderMetrics } from '../scene/HarborScene';
+import { WEBGL_RETRY_BUTTON_LABEL } from '../webglContextState';
 
 export interface HudTopBarProps {
   user: SgwUser;
   runtimeEnv: RuntimeEnv;
   viewMode: '3d' | '2d';
   webglSupported: boolean;
+  webglContextLost?: boolean;
   lowSpecMode: boolean;
   darkTheme: boolean;
   cameraPreset: CameraPreset;
   onlineCount: number;
   projectCount: number;
   syncDisconnected?: boolean;
+  syncErrorCode?: AppErrorCode | null;
   lastSyncedAtMs?: number | null;
   nowMs?: number;
   renderMetrics?: RenderMetrics | null;
   showDebugMetrics?: boolean;
   onRetrySync?: () => void;
+  onRetry3D?: () => void;
   onToggleViewMode: (next: '3d' | '2d') => void;
   onToggleLowSpec: () => void;
   onToggleTheme: () => void;
@@ -61,17 +66,20 @@ export const HudTopBar: React.FC<HudTopBarProps> = ({
   runtimeEnv,
   viewMode,
   webglSupported,
+  webglContextLost = false,
   lowSpecMode,
   darkTheme,
   cameraPreset,
   onlineCount,
   projectCount,
   syncDisconnected = false,
+  syncErrorCode = null,
   lastSyncedAtMs = null,
   nowMs,
   renderMetrics = null,
   showDebugMetrics = false,
   onRetrySync,
+  onRetry3D,
   onToggleViewMode,
   onToggleLowSpec,
   onToggleTheme,
@@ -84,6 +92,9 @@ export const HudTopBar: React.FC<HudTopBarProps> = ({
   const safeHref = (url: string) => (isSafeNavigationUrl(url) ? url : '/');
   const disconnectedText = syncDisconnected
     ? formatDisconnectedBanner(lastSyncedAtMs, nowMs ?? Date.now())
+    : null;
+  const syncErrorDesc = syncDisconnected
+    ? getErrorDescriptor(syncErrorCode ?? 'network_offline')
     : null;
 
   const handleLinkClick = (label: string) => (e: React.MouseEvent<HTMLAnchorElement>) => {
@@ -128,10 +139,11 @@ export const HudTopBar: React.FC<HudTopBarProps> = ({
             </span>
           )}
 
-          {disconnectedText && (
+          {disconnectedText && syncErrorDesc && (
             <span
               data-testid="connection-lost-badge"
               role="alert"
+              title={syncErrorDesc.message}
               className="hidden sm:inline-flex items-center gap-1.5 rounded-md border border-rose-400/70 bg-rose-950/90 px-2 py-0.5 text-[11px] font-bold text-rose-100 whitespace-nowrap"
             >
               <WifiOff className="h-3 w-3 text-rose-300 shrink-0" aria-hidden="true" />
@@ -140,10 +152,10 @@ export const HudTopBar: React.FC<HudTopBarProps> = ({
                 <button
                   type="button"
                   onClick={onRetrySync}
-                  aria-label="서버 연결 다시 시도"
+                  aria-label={syncErrorDesc.nextActionLabel}
                   className="ml-1 rounded bg-rose-800 px-1.5 py-0.5 text-[10px] font-semibold text-white hover:bg-rose-700 focus-visible:outline-2 focus-visible:outline-sky-400"
                 >
-                  재시도
+                  {syncErrorDesc.nextActionLabel}
                 </button>
               )}
             </span>
@@ -237,18 +249,30 @@ export const HudTopBar: React.FC<HudTopBarProps> = ({
               type="button"
               disabled={!webglSupported}
               data-testid="mode-toggle-3d"
-              aria-label="3D 맵 모드로 전환"
+              aria-label={webglContextLost ? WEBGL_RETRY_BUTTON_LABEL : '3D 맵 모드로 전환'}
               aria-pressed={viewMode === '3d'}
-              onClick={() => onToggleViewMode('3d')}
+              onClick={() => {
+                if (webglContextLost && onRetry3D) {
+                  onRetry3D();
+                } else {
+                  onToggleViewMode('3d');
+                }
+              }}
               className={`inline-flex min-h-[32px] items-center gap-1 rounded-md px-2 py-1 text-[11px] sm:text-xs font-semibold transition whitespace-nowrap focus-visible:outline-2 focus-visible:outline-sky-400 ${
                 viewMode === '3d'
                   ? 'bg-sky-700 text-white'
                   : 'text-slate-200 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed'
               }`}
-              title={webglSupported ? '3D 맵' : 'WebGL 미지원 환경에서는 빠른 레이더 모드만 사용할 수 있습니다'}
+              title={
+                !webglSupported
+                  ? 'WebGL 미지원 환경에서는 빠른 레이더 모드만 사용할 수 있습니다'
+                  : webglContextLost
+                    ? WEBGL_RETRY_BUTTON_LABEL
+                    : '3D 맵'
+              }
             >
               <Eye className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-              <span>3D 맵</span>
+              <span>{webglContextLost ? WEBGL_RETRY_BUTTON_LABEL : '3D 맵'}</span>
             </button>
             <button
               type="button"
@@ -349,7 +373,7 @@ export const HudTopBar: React.FC<HudTopBarProps> = ({
               {PREVIEW_DEMO_BANNER_TEXT}
             </span>
           )}
-          {disconnectedText && (
+          {disconnectedText && syncErrorDesc && (
             <span className="inline-flex items-center gap-1 font-bold text-rose-200" role="alert">
               <WifiOff className="h-3 w-3 text-rose-300 shrink-0" aria-hidden="true" />
               {disconnectedText}
@@ -357,11 +381,11 @@ export const HudTopBar: React.FC<HudTopBarProps> = ({
                 <button
                   type="button"
                   onClick={onRetrySync}
-                  aria-label="모바일 서버 연결 다시 시도"
+                  aria-label={syncErrorDesc.nextActionLabel}
                   className="ml-1 inline-flex items-center gap-0.5 rounded bg-rose-800 px-1.5 py-0.5 text-[10px] text-white"
                 >
                   <RefreshCw className="h-2.5 w-2.5" aria-hidden="true" />
-                  재시도
+                  {syncErrorDesc.nextActionLabel}
                 </button>
               )}
             </span>

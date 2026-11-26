@@ -14,6 +14,11 @@
 
 import { SGW_LOGIN_REDIRECT_URL } from './deepLink';
 import {
+  getErrorDescriptor,
+  mapHttpStatusToErrorCode,
+  type AppErrorCode,
+} from './errorCatalog';
+import {
   getPreviewDemoEmployees,
   getPreviewDemoPresence,
   getPreviewDemoProjects,
@@ -40,10 +45,10 @@ export interface SgwUser {
 
 export type AuthMeResult =
   | { status: 'authenticated'; user: SgwUser; runtimeEnv: RuntimeEnv }
-  | { status: 'unauthenticated'; redirectUrl: string; runtimeEnv: 'sgw' }
-  | { status: 'forbidden'; message: string; runtimeEnv: 'sgw' }
-  | { status: 'not_found'; message: string; runtimeEnv: 'sgw' }
-  | { status: 'error'; message: string; runtimeEnv: 'sgw' };
+  | { status: 'unauthenticated'; redirectUrl: string; errorCode: 'unauthorized'; message: string; runtimeEnv: 'sgw' }
+  | { status: 'forbidden'; errorCode: 'forbidden'; message: string; runtimeEnv: 'sgw' }
+  | { status: 'not_found'; errorCode: 'not_found'; message: string; runtimeEnv: 'sgw' }
+  | { status: 'error'; errorCode: AppErrorCode; message: string; runtimeEnv: 'sgw' };
 
 export interface SgwEmployee {
   sub: string;
@@ -71,10 +76,10 @@ export interface SedmsProject {
 
 export type SedmsProjectsResult =
   | { status: 'ready'; projects: SedmsProject[]; cached: boolean }
-  | { status: 'pending'; message: string; projects: [] }
-  | { status: 'unauthenticated'; redirectUrl: string; projects: [] }
-  | { status: 'forbidden'; message: string; projects: [] }
-  | { status: 'error'; message: string; projects: [] };
+  | { status: 'pending'; errorCode: AppErrorCode; message: string; projects: [] }
+  | { status: 'unauthenticated'; redirectUrl: string; errorCode: 'unauthorized'; message: string; projects: [] }
+  | { status: 'forbidden'; errorCode: 'forbidden'; message: string; projects: [] }
+  | { status: 'error'; errorCode: AppErrorCode; message: string; projects: [] };
 
 const PROJECTS_CACHE_TTL_MS = 60_000;
 
@@ -146,20 +151,47 @@ export async function fetchAuthMe(opts?: AdapterOptions): Promise<AuthMeResult> 
     });
 
     if (res.status === 401) {
-      return { status: 'unauthenticated', redirectUrl: SGW_LOGIN_REDIRECT_URL, runtimeEnv: 'sgw' };
+      return {
+        status: 'unauthenticated',
+        redirectUrl: SGW_LOGIN_REDIRECT_URL,
+        errorCode: 'unauthorized',
+        message: getErrorDescriptor('unauthorized').message,
+        runtimeEnv: 'sgw',
+      };
     }
     if (res.status === 403) {
-      return { status: 'forbidden', message: '권한 없음', runtimeEnv: 'sgw' };
+      return {
+        status: 'forbidden',
+        errorCode: 'forbidden',
+        message: getErrorDescriptor('forbidden').message,
+        runtimeEnv: 'sgw',
+      };
     }
     if (res.status === 404) {
-      return { status: 'not_found', message: '없거나 권한 없음', runtimeEnv: 'sgw' };
+      return {
+        status: 'not_found',
+        errorCode: 'not_found',
+        message: getErrorDescriptor('not_found').message,
+        runtimeEnv: 'sgw',
+      };
     }
     if (!res.ok) {
-      return { status: 'error', message: `인증 상태 확인 실패 (${res.status})`, runtimeEnv: 'sgw' };
+      const code = mapHttpStatusToErrorCode(res.status);
+      return {
+        status: 'error',
+        errorCode: code,
+        message: getErrorDescriptor(code).message,
+        runtimeEnv: 'sgw',
+      };
     }
 
     if (!isJsonResponse(res)) {
-      return { status: 'error', message: 'SGW 인증 응답 형식이 올바르지 않습니다.', runtimeEnv: 'sgw' };
+      return {
+        status: 'error',
+        errorCode: 'server_error',
+        message: getErrorDescriptor('server_error').message,
+        runtimeEnv: 'sgw',
+      };
     }
 
     const payload = (await res.json()) as Record<string, unknown>;
@@ -170,12 +202,22 @@ export async function fetchAuthMe(opts?: AdapterOptions): Promise<AuthMeResult> 
 
     const user = normalizeUserRecord(candidate);
     if (!user) {
-      return { status: 'error', message: 'SGW 세션에 사용자 식별자(sub)가 없습니다.', runtimeEnv: 'sgw' };
+      return {
+        status: 'error',
+        errorCode: 'server_error',
+        message: getErrorDescriptor('server_error').message,
+        runtimeEnv: 'sgw',
+      };
     }
 
     return { status: 'authenticated', user, runtimeEnv: 'sgw' };
   } catch {
-    return { status: 'error', message: 'SGW 세션 서버에 연결할 수 없습니다.', runtimeEnv: 'sgw' };
+    return {
+      status: 'error',
+      errorCode: 'network_offline',
+      message: getErrorDescriptor('network_offline').message,
+      runtimeEnv: 'sgw',
+    };
   }
 }
 
@@ -207,7 +249,11 @@ export async function postAuthLogout(opts?: AdapterOptions): Promise<boolean> {
  */
 export async function fetchEmployees(
   opts?: AdapterOptions,
-): Promise<{ status: 'ok'; employees: SgwEmployee[] } | { status: 'unauthenticated' } | { status: 'error'; employees: [] }> {
+): Promise<
+  | { status: 'ok'; employees: SgwEmployee[] }
+  | { status: 'unauthenticated'; errorCode: 'unauthorized' }
+  | { status: 'error'; errorCode: AppErrorCode; message: string; employees: [] }
+> {
   if (resolveEnv(opts) === 'preview') {
     return { status: 'ok', employees: getPreviewDemoEmployees() };
   }
@@ -221,10 +267,19 @@ export async function fetchEmployees(
     });
 
     if (res.status === 401) {
-      return { status: 'unauthenticated' };
+      return { status: 'unauthenticated', errorCode: 'unauthorized' };
     }
-    if (!res.ok || !isJsonResponse(res)) {
-      return { status: 'error', employees: [] };
+    if (!res.ok) {
+      const code = mapHttpStatusToErrorCode(res.status);
+      return { status: 'error', errorCode: code, message: getErrorDescriptor(code).message, employees: [] };
+    }
+    if (!isJsonResponse(res)) {
+      return {
+        status: 'error',
+        errorCode: 'server_error',
+        message: getErrorDescriptor('server_error').message,
+        employees: [],
+      };
     }
 
     const data = (await res.json()) as unknown;
@@ -248,7 +303,12 @@ export async function fetchEmployees(
 
     return { status: 'ok', employees };
   } catch {
-    return { status: 'error', employees: [] };
+    return {
+      status: 'error',
+      errorCode: 'network_offline',
+      message: getErrorDescriptor('network_offline').message,
+      employees: [],
+    };
   }
 }
 
@@ -268,7 +328,11 @@ function parseTimestampMs(raw: unknown): number {
  */
 export async function fetchPresence(
   opts?: AdapterOptions,
-): Promise<{ status: 'ok'; entries: SgwPresenceEntry[] } | { status: 'unauthenticated' } | { status: 'error'; entries: [] }> {
+): Promise<
+  | { status: 'ok'; entries: SgwPresenceEntry[] }
+  | { status: 'unauthenticated'; errorCode: 'unauthorized' }
+  | { status: 'error'; errorCode: AppErrorCode; message: string; entries: [] }
+> {
   if (resolveEnv(opts) === 'preview') {
     return { status: 'ok', entries: getPreviewDemoPresence(opts?.nowMs) };
   }
@@ -282,10 +346,19 @@ export async function fetchPresence(
     });
 
     if (res.status === 401) {
-      return { status: 'unauthenticated' };
+      return { status: 'unauthenticated', errorCode: 'unauthorized' };
     }
-    if (!res.ok || !isJsonResponse(res)) {
-      return { status: 'error', entries: [] };
+    if (!res.ok) {
+      const code = mapHttpStatusToErrorCode(res.status);
+      return { status: 'error', errorCode: code, message: getErrorDescriptor(code).message, entries: [] };
+    }
+    if (!isJsonResponse(res)) {
+      return {
+        status: 'error',
+        errorCode: 'server_error',
+        message: getErrorDescriptor('server_error').message,
+        entries: [],
+      };
     }
 
     const data = (await res.json()) as unknown;
@@ -318,7 +391,12 @@ export async function fetchPresence(
 
     return { status: 'ok', entries };
   } catch {
-    return { status: 'error', entries: [] };
+    return {
+      status: 'error',
+      errorCode: 'network_offline',
+      message: getErrorDescriptor('network_offline').message,
+      entries: [],
+    };
   }
 }
 
@@ -389,16 +467,47 @@ export async function fetchSedmsProjects(
     });
 
     if (res.status === 401) {
-      return { status: 'unauthenticated', redirectUrl: SGW_LOGIN_REDIRECT_URL, projects: [] };
+      return {
+        status: 'unauthenticated',
+        redirectUrl: SGW_LOGIN_REDIRECT_URL,
+        errorCode: 'unauthorized',
+        message: getErrorDescriptor('unauthorized').message,
+        projects: [],
+      };
     }
     if (res.status === 403) {
-      return { status: 'forbidden', message: '권한 없음', projects: [] };
+      return {
+        status: 'forbidden',
+        errorCode: 'forbidden',
+        message: getErrorDescriptor('forbidden').message,
+        projects: [],
+      };
     }
     if (res.status === 404 || res.status === 501) {
-      return { status: 'pending', message: '프로젝트 연결 준비 중', projects: [] };
+      const code = res.status === 404 ? 'not_found' : 'server_error';
+      return {
+        status: 'pending',
+        errorCode: code,
+        message: getErrorDescriptor(code).message,
+        projects: [],
+      };
     }
-    if (!res.ok || !isJsonResponse(res)) {
-      return { status: 'pending', message: '프로젝트 연결 준비 중', projects: [] };
+    if (!res.ok) {
+      const code = mapHttpStatusToErrorCode(res.status);
+      return {
+        status: 'error',
+        errorCode: code,
+        message: getErrorDescriptor(code).message,
+        projects: [],
+      };
+    }
+    if (!isJsonResponse(res)) {
+      return {
+        status: 'error',
+        errorCode: 'server_error',
+        message: getErrorDescriptor('server_error').message,
+        projects: [],
+      };
     }
 
     const data = (await res.json()) as unknown;
@@ -423,6 +532,11 @@ export async function fetchSedmsProjects(
     projectsCache = { fetchedAt: now, projects };
     return { status: 'ready', projects, cached: false };
   } catch {
-    return { status: 'pending', message: '프로젝트 연결 준비 중', projects: [] };
+    return {
+      status: 'error',
+      errorCode: 'network_offline',
+      message: getErrorDescriptor('network_offline').message,
+      projects: [],
+    };
   }
 }

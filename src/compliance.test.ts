@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { describe, it } from 'node:test';
@@ -134,32 +135,74 @@ describe('SGW Integration Guide (§1, §6, §7, §8) static compliance audit', (
         if (st.isDirectory()) {
           walkAll(full);
         } else if (/\.(ts|tsx|css|html)$/.test(entry)) {
-          const rel = relative(ROOT, full).replace(/\\/g, '/');
-          // Exclude this compliance test file itself so its regex literals do not self-trigger
-          if (rel !== 'src/compliance.test.ts') {
-            allAuditFiles.push(full);
-          }
+          allAuditFiles.push(full);
         }
       }
     };
     walkAll(SRC_DIR);
     allAuditFiles.push(resolve(ROOT, 'index.html'));
 
-    // Hull number pattern: 1-2 uppercase letters + optional separator + 3-4 digits (e.g., H1042, F310, HN-2045)
+    // Hull number pattern: 1-2 uppercase letters + optional separator + 3-4 digits (fictional examples: X0000, Y000, ZZ-0000)
     // Allowed technical standard tokens only (sample vessels use VESSEL-LNG-01 / DOCK-01 2-digit format)
-    const ALLOWED_TECH_TOKENS = new Set(['ES2020', 'ES2021', 'ES2022', 'ES2023', 'ES2024', 'ES2025']);
+    const ALLOWED_TECH_TOKENS = new Set([
+      'ES2020',
+      'ES2021',
+      'ES2022',
+      'ES2023',
+      'ES2024',
+      'ES2025',
+      'X0000',
+      'Y000',
+      'ZZ-0000',
+    ]);
     const hullPattern = /(?<![A-Za-z0-9#_-])([A-Z]{1,2}[-_]?\d{3,4})(?![A-Za-z0-9])/g;
     const emailPattern = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
     const phonePattern =
       /(?:\+82[-\s]?|0)(?:10|11|16|17|18|19|2|3[1-3]|4[1-4]|5[1-5]|6[1-4])[-\s]\d{3,4}[-\s]\d{4}\b/g;
-    const realNameOrShipyardPattern =
-      /김철수|홍길동|박영희|이영수|최민수|정수진|김민준|이서연|박지훈|현대중공업|삼성중공업|한화오션|대우조선|HD현대|HJ중공업|STX조선|Maersk|MSC\b|CMA\s*CGM/;
+
+    // Precomputed SHA-256 digests (UTF-8 lowercase) of disallowed real names, customer names, and shipyard names
+    // so zero plaintext real-world identifiers ever exist in the repository.
+    const FORBIDDEN_IDENTIFIER_SHA256 = new Set<string>([
+      'f09c2129c2be1f9fd4f975732c9f7f91ecb21faf718cd2030917ef9e0e1b55b0',
+      '9c6b9b1b1627f3120e0730c6d2cfa71040fd03747bde2755e8b5e4dbf2bee262',
+      '052c38aa31e316ed6ce3badb7a713c2e36781f1ff0b2202f2fd31e52b7cc7bb4',
+      '9cf3b53033829bccbcd69b7a35fd84877d5073fc183f15ee1a50c9d5756b0e72',
+      '5b49ac3122f2441e24dab545578f4712ad23bc2d316f917d1319926949edf989',
+      'bf7deb89d4f5731ba2ddef75c71c1722dea689a45560c34d313ff2b837e18a89',
+      '0b46d03b0b3355e67179efa6f64f4e6461af77dc577142b8e0749b67188a3a9f',
+      '30e5f32f691a774b90b53bf514ee431486208ff70fbcf513932ec0a09fb2fadd',
+      '52ec3d9fde73a46dd9b6961c94c7b6c3faa8e22ec71d3e585f0f68860b873ea0',
+      '7148b856cedf157d1c76a1e592bc062ad02dc0f28977313c6a72a35cffc4129f',
+      'a926c4a9c145e86b21c011cedb2c62351b7259105dc7b2245a658ccad5e9f3d4',
+      'ebcdfdc3946014331454cc57e16e63d0b8f8875df7718e394f3429d28c423e65',
+      'a5d4db0fc8cbaaa30191addd87d5b64c9be7484a5c695ba12423d34d51783a3c',
+      '4d60f56aea32a4e9faf08edd598a6dc2dc29396d764c2d00fb24f0451d8c01ad',
+      'f5f31f55a28e75dec14e8f197574eaf65c9da4d3663919eb5e8e1477bf3cc5fb',
+      '407b36c4a5ee2fee459686f4d2b4fc3354449bab478121f4b87b276391f51de7',
+      '4ac6b1d4ae2027e9b9bdce0d15dfabf3ccc8ea20eda2b3f6a8f6be68f772b028',
+      'b1dd60e60f5f05b3b25fbe1b7ac6e0afbdceaa4d726e58f29966d02fb277c0d4',
+      'e1979d404f38e20b9bc8eb68d2e4e1e718e61fe5abc15ef44bdc09b7ef835c7f',
+    ]);
+
+    // Optional local-only blocklist (.gitignore'd) so developers can append extra org terms locally
+    const localBlocklistPath = resolve(ROOT, '.compliance.local.txt');
+    if (existsSync(localBlocklistPath)) {
+      const localLines = readFileSync(localBlocklistPath, 'utf8')
+        .split(/\r?\n/)
+        .map((line) => line.trim().toLowerCase())
+        .filter((line) => line.length > 0 && !line.startsWith('#'));
+      for (const term of localLines) {
+        FORBIDDEN_IDENTIFIER_SHA256.add(createHash('sha256').update(term, 'utf8').digest('hex'));
+      }
+    }
+
+    const tokenPattern = /[가-힣A-Za-z0-9]{2,16}(?:\s+[A-Za-z]{2,8})?/g;
 
     for (const file of allAuditFiles) {
       const rel = relative(ROOT, file).replace(/\\/g, '/');
       const content = readFileSync(file, 'utf8');
 
-      // 1) Hull numbers
+      // 1) Hull numbers (excluding compliance test's own fictional comment tokens)
       const hullMatches = [...content.matchAll(hullPattern)]
         .map((m) => m[1])
         .filter((token) => !ALLOWED_TECH_TOKENS.has(token));
@@ -185,13 +228,23 @@ describe('SGW Integration Guide (§1, §6, §7, §8) static compliance audit', (
         `Disallowed phone number(s) found in ${rel}: ${phoneMatches.join(', ')}`,
       );
 
-      // 4) Real personal names / real shipyard or customer identifiers
-      const piiMatch = content.match(realNameOrShipyardPattern);
-      assert.equal(
-        piiMatch,
-        null,
-        `Disallowed real personal name or shipyard/customer identifier "${piiMatch?.[0] ?? ''}" found in ${rel}`,
-      );
+      // 4) SHA-256 digest match against disallowed personal names / real shipyard & customer names
+      const candidateTokens = new Set<string>();
+      for (const match of content.matchAll(tokenPattern)) {
+        const raw = match[0].trim().replace(/\s+/g, ' ').toLowerCase();
+        candidateTokens.add(raw);
+        for (const sub of raw.split(' ')) {
+          if (sub.length >= 2) candidateTokens.add(sub);
+        }
+      }
+      for (const tok of candidateTokens) {
+        const digest = createHash('sha256').update(tok, 'utf8').digest('hex');
+        assert.equal(
+          FORBIDDEN_IDENTIFIER_SHA256.has(digest),
+          false,
+          `Disallowed identifier digest (${digest.slice(0, 12)}...) matched in ${rel}`,
+        );
+      }
     }
   });
 

@@ -1,5 +1,6 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import {
+  AlertTriangle,
   Anchor,
   Briefcase,
   Building2,
@@ -27,9 +28,11 @@ import {
   isSafeNavigationUrl,
   SGW_PORTAL_LINKS,
 } from '../deepLink';
+import { getErrorDescriptor, type AppErrorCode } from '../errorCatalog';
 import type { HarborPerson, HarborShip } from '../mapping';
 import type { RuntimeEnv } from '../runtimeEnv';
 import type { SgwUser } from '../sgwAdapter';
+import { WEBGL_RETRY_BUTTON_LABEL } from '../webglContextState';
 
 export interface AccessibleListViewProps {
   user: SgwUser;
@@ -37,8 +40,11 @@ export interface AccessibleListViewProps {
   ships: HarborShip[];
   projectsState: 'loading' | 'ready' | 'pending' | 'forbidden' | 'error';
   projectsMessage: string;
+  projectsErrorCode?: AppErrorCode | null;
   people: HarborPerson[];
   webglSupported: boolean;
+  webglContextLost?: boolean;
+  onRetry3D?: () => void;
   onRefreshProjects: () => void;
   onSelectShip: (ship: HarborShip) => void;
   onSelectPerson: (person: HarborPerson) => void;
@@ -79,9 +85,12 @@ export const AccessibleListView: React.FC<AccessibleListViewProps> = ({
   runtimeEnv,
   ships,
   projectsState,
-  projectsMessage,
+  projectsMessage: _projectsMessage,
+  projectsErrorCode = null,
   people,
   webglSupported,
+  webglContextLost = false,
+  onRetry3D,
   onRefreshProjects,
   onSelectShip,
   onSelectPerson,
@@ -92,6 +101,15 @@ export const AccessibleListView: React.FC<AccessibleListViewProps> = ({
   const [openInNewTab, setOpenInNewTab] = useState(false);
 
   const isPreview = runtimeEnv === 'preview';
+
+  const projectsErrorDescriptor =
+    projectsState === 'pending'
+      ? getErrorDescriptor(projectsErrorCode ?? 'not_found')
+      : projectsState === 'forbidden'
+        ? getErrorDescriptor(projectsErrorCode ?? 'forbidden')
+        : projectsState === 'error'
+          ? getErrorDescriptor(projectsErrorCode ?? 'server_error')
+          : null;
 
   const filteredPeople = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -157,6 +175,34 @@ export const AccessibleListView: React.FC<AccessibleListViewProps> = ({
       </a>
 
       <div className="mx-auto max-w-6xl space-y-5">
+        {webglContextLost && webglSupported && (
+          <div
+            role="alert"
+            data-testid="webgl-context-lost-banner"
+            className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-400/60 bg-amber-950/75 px-4 py-3 text-sm text-amber-100"
+          >
+            <div className="flex items-start gap-2.5 min-w-0">
+              <AlertTriangle className="h-5 w-5 text-amber-300 shrink-0 mt-0.5" aria-hidden="true" />
+              <div className="min-w-0">
+                <p className="font-bold text-white">3D 그래픽 연결이 일시 중단되어 2D 목록 모드로 전환되었습니다.</p>
+                <p className="mt-0.5 text-xs text-amber-100">
+                  그래픽 장치가 복구되면 자동으로 3D 항구로 돌아가며, 아래 버튼으로 즉시 다시 시도할 수 있습니다.
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              data-testid="retry-3d-button"
+              onClick={onRetry3D}
+              aria-label={WEBGL_RETRY_BUTTON_LABEL}
+              className="inline-flex min-h-[44px] shrink-0 items-center gap-1.5 rounded-lg bg-sky-700 px-4 py-2 text-xs font-bold text-white hover:bg-sky-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-300"
+            >
+              <RefreshCw className="h-4 w-4" aria-hidden="true" />
+              <span>{WEBGL_RETRY_BUTTON_LABEL}</span>
+            </button>
+          </div>
+        )}
+
         {!webglSupported && (
           <div
             role="status"
@@ -290,31 +336,70 @@ export const AccessibleListView: React.FC<AccessibleListViewProps> = ({
               <p className="py-8 text-center text-sm text-slate-300">프로젝트 목록을 불러오는 중입니다...</p>
             )}
 
-            {projectsState === 'pending' && (
-              <div className="rounded-xl border border-slate-700 bg-slate-950/70 p-5 text-center space-y-3">
+            {projectsState === 'pending' && projectsErrorDescriptor && (
+              <div
+                data-testid="projects-error-panel"
+                className="rounded-xl border border-slate-700 bg-slate-950/70 p-5 text-center space-y-3"
+              >
                 <p className="text-base font-semibold text-white">
-                  {projectsMessage || '프로젝트 연결 준비 중'}
+                  {projectsErrorDescriptor.title}
                 </p>
-                <p className="text-xs text-slate-300">
-                  SGW 게이트웨이의 SEDMS 프로젝트 목록 API가 아직 활성화되지 않았습니다.
+                <p className="text-xs text-slate-300">{projectsErrorDescriptor.message}</p>
+                <div className="flex flex-wrap items-center justify-center gap-2">
+                  <a
+                    href={safeHref(SGW_PORTAL_LINKS.sedmsProjects)}
+                    target={!isPreview && openInNewTab ? '_blank' : undefined}
+                    rel={!isPreview && openInNewTab ? 'noopener noreferrer' : undefined}
+                    onClick={handleLinkClick(projectsErrorDescriptor.nextActionLabel)}
+                    className="inline-flex min-h-[44px] items-center gap-1.5 rounded-lg bg-sky-700 px-4 py-2 text-xs font-semibold text-white hover:bg-sky-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400"
+                  >
+                    <FolderKanban className="h-4 w-4" aria-hidden="true" />
+                    {projectsErrorDescriptor.nextActionLabel}
+                    <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                  </a>
+                </div>
+              </div>
+            )}
+
+            {projectsState === 'forbidden' && projectsErrorDescriptor && (
+              <div
+                role="alert"
+                data-testid="projects-error-panel"
+                className="rounded-xl border border-rose-500/40 bg-rose-950/40 p-5 text-center space-y-3 text-sm text-rose-100"
+              >
+                <p className="text-base font-semibold text-white">
+                  {projectsErrorDescriptor.title}
                 </p>
+                <p className="text-xs text-rose-100">{projectsErrorDescriptor.message}</p>
                 <a
-                  href={safeHref(SGW_PORTAL_LINKS.sedmsProjects)}
-                  target={!isPreview && openInNewTab ? '_blank' : undefined}
-                  rel={!isPreview && openInNewTab ? 'noopener noreferrer' : undefined}
-                  onClick={handleLinkClick('SEDMS 프로젝트 목록')}
-                  className="inline-flex min-h-[44px] items-center gap-1.5 rounded-lg bg-sky-700 px-4 py-2 text-xs font-semibold text-white hover:bg-sky-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400"
+                  href={safeHref(SGW_PORTAL_LINKS.talkHome)}
+                  onClick={handleLinkClick(projectsErrorDescriptor.nextActionLabel)}
+                  className="inline-flex min-h-[44px] items-center gap-1.5 rounded-lg border border-rose-400/50 bg-rose-900/70 px-4 py-2 text-xs font-semibold text-white hover:bg-rose-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400"
                 >
-                  <FolderKanban className="h-4 w-4" aria-hidden="true" />
-                  SEDMS 프로젝트 목록 열기
-                  <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                  <span>{projectsErrorDescriptor.nextActionLabel}</span>
                 </a>
               </div>
             )}
 
-            {projectsState === 'forbidden' && (
-              <div className="rounded-xl border border-rose-500/40 bg-rose-950/40 p-5 text-center text-sm text-rose-100">
-                권한 없음 — SEDMS 프로젝트 조회 권한이 필요합니다.
+            {projectsState === 'error' && projectsErrorDescriptor && (
+              <div
+                role="alert"
+                data-testid="projects-error-panel"
+                className="rounded-xl border border-rose-500/40 bg-rose-950/40 p-5 text-center space-y-3 text-sm text-rose-100"
+              >
+                <p className="text-base font-semibold text-white">
+                  {projectsErrorDescriptor.title}
+                </p>
+                <p className="text-xs text-rose-100">{projectsErrorDescriptor.message}</p>
+                <button
+                  type="button"
+                  onClick={onRefreshProjects}
+                  aria-label={projectsErrorDescriptor.nextActionLabel}
+                  className="inline-flex min-h-[44px] items-center gap-1.5 rounded-lg bg-sky-700 px-4 py-2 text-xs font-semibold text-white hover:bg-sky-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400"
+                >
+                  <RefreshCw className="h-4 w-4" aria-hidden="true" />
+                  <span>{projectsErrorDescriptor.nextActionLabel}</span>
+                </button>
               </div>
             )}
 

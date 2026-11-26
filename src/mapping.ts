@@ -334,3 +334,154 @@ export function mapProjectsToHarborShips(
     };
   });
 }
+
+/**
+ * Physical harbor basin water zone & vessel footprint constants (must match shipyardWorld.ts geometry).
+ * - North quay concrete wall ends at z = -2.5 (fenders extend to z = -2.0).
+ * - West / East pier inner walls sit at x = -75.0 and x = +75.0 for z in [-2.5, 37.5].
+ * - Docked vessels lie parallel to the quay (length ~44m along X, beam ~17m along Z).
+ */
+export const HARBOR_WATER_ZONE = {
+  northQuayWallZ: -2.5,
+  westPierInnerX: -75.0,
+  eastPierInnerX: 75.0,
+  pierMaxZ: 37.5,
+  minWaterZ: -2.0,
+  maxWaterZ: 140.0,
+  minOpenWaterX: -140.0,
+  maxOpenWaterX: 140.0,
+} as const;
+
+export const SHIP_BERTH_FOOTPRINT = {
+  halfLengthX: 21.5,
+  halfBeamZ: 8.2,
+  minGapMeters: 1.0,
+} as const;
+
+export interface BerthValidationViolation {
+  kind: 'outside_water_zone' | 'quay_overlap' | 'pier_overlap' | 'ship_overlap' | 'invalid_boarding_point';
+  shipId: string;
+  otherShipId?: string;
+  detail: string;
+}
+
+export interface BerthValidationResult {
+  ok: boolean;
+  violations: BerthValidationViolation[];
+}
+
+/**
+ * Validates that every docked ship sits strictly inside the harbor water zone,
+ * clears the north quay and west/east piers, does not overlap any other ship,
+ * and exposes a safe quay-side boarding point.
+ */
+export function validateShipBerths(ships: readonly HarborShip[]): BerthValidationResult {
+  const violations: BerthValidationViolation[] = [];
+  const halfX = SHIP_BERTH_FOOTPRINT.halfLengthX;
+  const halfZ = SHIP_BERTH_FOOTPRINT.halfBeamZ;
+  const gap = SHIP_BERTH_FOOTPRINT.minGapMeters;
+
+  for (const ship of ships) {
+    const minX = ship.berthX - halfX;
+    const maxX = ship.berthX + halfX;
+    const minZ = ship.berthZ - halfZ;
+    const maxZ = ship.berthZ + halfZ;
+
+    // 1. North quay collision / water-zone check
+    if (minZ < HARBOR_WATER_ZONE.minWaterZ + gap) {
+      violations.push({
+        kind: 'quay_overlap',
+        shipId: ship.id,
+        detail: `Ship ${ship.id} north hull edge (${minZ.toFixed(1)}m) intrudes into quay wall (z <= ${HARBOR_WATER_ZONE.northQuayWallZ}m)`,
+      });
+    }
+
+    if (
+      maxZ > HARBOR_WATER_ZONE.maxWaterZ ||
+      minX < HARBOR_WATER_ZONE.minOpenWaterX ||
+      maxX > HARBOR_WATER_ZONE.maxOpenWaterX
+    ) {
+      violations.push({
+        kind: 'outside_water_zone',
+        shipId: ship.id,
+        detail: `Ship ${ship.id} footprint [${minX.toFixed(1)}..${maxX.toFixed(1)}, ${minZ.toFixed(1)}..${maxZ.toFixed(1)}] exceeds harbor water zone`,
+      });
+    }
+
+    // 2. West / East pier collision check when ship Z overlaps pier range [-2.5, 37.5]
+    if (minZ <= HARBOR_WATER_ZONE.pierMaxZ) {
+      if (minX < HARBOR_WATER_ZONE.westPierInnerX + gap) {
+        violations.push({
+          kind: 'pier_overlap',
+          shipId: ship.id,
+          detail: `Ship ${ship.id} west edge (${minX.toFixed(1)}m) overlaps west pier (x <= ${HARBOR_WATER_ZONE.westPierInnerX}m)`,
+        });
+      }
+      if (maxX > HARBOR_WATER_ZONE.eastPierInnerX - gap) {
+        violations.push({
+          kind: 'pier_overlap',
+          shipId: ship.id,
+          detail: `Ship ${ship.id} east edge (${maxX.toFixed(1)}m) overlaps east pier (x >= ${HARBOR_WATER_ZONE.eastPierInnerX}m)`,
+        });
+      }
+    }
+
+    // 3. Boarding point must remain on the walkable north quay
+    if (ship.boardingPoint.z >= HARBOR_WATER_ZONE.northQuayWallZ) {
+      violations.push({
+        kind: 'invalid_boarding_point',
+        shipId: ship.id,
+        detail: `Ship ${ship.id} boardingPoint.z (${ship.boardingPoint.z}) is not on the north quay`,
+      });
+    }
+  }
+
+  // 4. Pairwise ship-to-ship AABB non-overlap check
+  for (let i = 0; i < ships.length; i += 1) {
+    for (let j = i + 1; j < ships.length; j += 1) {
+      const a = ships[i];
+      const b = ships[j];
+      const dx = Math.abs(a.berthX - b.berthX);
+      const dz = Math.abs(a.berthZ - b.berthZ);
+      const minCenterX = halfX * 2 + gap;
+      const minCenterZ = halfZ * 2 + gap;
+      if (dx < minCenterX && dz < minCenterZ) {
+        violations.push({
+          kind: 'ship_overlap',
+          shipId: a.id,
+          otherShipId: b.id,
+          detail: `Ships ${a.id} and ${b.id} overlap (dx=${dx.toFixed(1)}m < ${minCenterX}m, dz=${dz.toFixed(1)}m < ${minCenterZ}m)`,
+        });
+      }
+    }
+  }
+
+  return {
+    ok: violations.length === 0,
+    violations,
+  };
+}
+
+/**
+ * Boot-time berth placement assertion.
+ * - When `throwOnViolation` is true (default for tests), throws an Error detailing all violations.
+ * - When `warnInDev` is true and `throwOnViolation` is false (runtime boot), logs a console.warn in DEV mode.
+ */
+export function assertValidShipBerths(
+  ships: readonly HarborShip[],
+  options?: { throwOnViolation?: boolean; warnInDev?: boolean; logger?: (msg: string, detail: unknown) => void },
+): BerthValidationResult {
+  const result = validateShipBerths(ships);
+  if (!result.ok) {
+    const summary = result.violations.map((v) => v.detail).join('; ');
+    if (options?.warnInDev) {
+      const log = options.logger ?? console.warn;
+      log('[METASGW] 선박 배치 검증 실패 (수역/부두/선박 겹침):', result.violations);
+    }
+    if (options?.throwOnViolation ?? true) {
+      throw new Error(`Invalid ship berth placement: ${summary}`);
+    }
+  }
+  return result;
+}
+

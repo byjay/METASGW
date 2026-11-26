@@ -15,22 +15,45 @@ import {
   buildTalkDmUrl,
   isSafeNavigationUrl,
   SGW_LOGIN_REDIRECT_URL,
+  SGW_PORTAL_LINKS,
 } from '../deepLink';
+import { getErrorDescriptor, type AppErrorCode } from '../errorCatalog';
 import type { HarborPerson, HarborShip } from '../mapping';
 import type { RuntimeEnv } from '../runtimeEnv';
 
 export interface AuthGateOverlayProps {
   status: 'loading' | 'unauthenticated' | 'forbidden' | 'not_found' | 'error';
-  message: string;
+  errorCode?: AppErrorCode | null;
+  message?: string;
   onRetry: () => void;
+}
+
+function resolveAuthGateErrorCode(
+  status: AuthGateOverlayProps['status'],
+  explicit?: AppErrorCode | null,
+): AppErrorCode | null {
+  if (explicit) return explicit;
+  if (status === 'unauthenticated') return 'unauthorized';
+  if (status === 'forbidden') return 'forbidden';
+  if (status === 'not_found') return 'not_found';
+  if (status === 'error') return 'network_offline';
+  return null;
 }
 
 export const AuthGateOverlay: React.FC<AuthGateOverlayProps> = ({
   status,
+  errorCode = null,
   message,
   onRetry,
 }) => {
   const loginHref = isSafeNavigationUrl(SGW_LOGIN_REDIRECT_URL) ? SGW_LOGIN_REDIRECT_URL : '/';
+  const accessRequestHref = isSafeNavigationUrl(SGW_PORTAL_LINKS.talkHome)
+    ? SGW_PORTAL_LINKS.talkHome
+    : '/';
+  const resolvedCode = resolveAuthGateErrorCode(status, errorCode);
+  const descriptor = resolvedCode ? getErrorDescriptor(resolvedCode) : null;
+  const displayTitle = descriptor ? descriptor.title : 'SGW 세션 확인 중';
+  const displayMessage = descriptor ? descriptor.message : (message || 'SGW 세션 상태를 확인하고 있습니다...');
 
   return (
     <div
@@ -38,11 +61,13 @@ export const AuthGateOverlay: React.FC<AuthGateOverlayProps> = ({
       role="dialog"
       aria-modal="true"
       aria-labelledby="auth-gate-title"
+      data-testid="auth-gate-overlay"
+      data-error-code={resolvedCode ?? 'loading'}
     >
       <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl space-y-5">
         <div className="flex items-center gap-3">
           <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-sky-700 text-white">
-            {status === 'forbidden' || status === 'not_found' || status === 'error' ? (
+            {descriptor && descriptor.actionKind !== 'login' ? (
               <AlertTriangle className="h-5 w-5" aria-hidden="true" />
             ) : (
               <Compass className="h-5 w-5" aria-hidden="true" />
@@ -50,31 +75,27 @@ export const AuthGateOverlay: React.FC<AuthGateOverlayProps> = ({
           </div>
           <div>
             <h1 id="auth-gate-title" className="text-lg font-bold text-white">
-              {status === 'loading' && 'SGW 세션 확인 중'}
-              {status === 'unauthenticated' && 'SGW 로그인 이동 중'}
-              {status === 'forbidden' && '권한 없음'}
-              {status === 'not_found' && '없거나 권한 없음'}
-              {status === 'error' && '연결 오류'}
+              {displayTitle}
             </h1>
             <p className="text-xs text-slate-300">메타SGW · SGW · SEDMS 항구 상황판</p>
           </div>
         </div>
 
-        <p className="text-sm leading-relaxed text-slate-200">{message}</p>
+        <p className="text-sm leading-relaxed text-slate-200">{displayMessage}</p>
 
-        {status === 'unauthenticated' && (
+        {descriptor?.actionKind === 'login' && (
           <div className="flex flex-col gap-2">
             <a
               href={loginHref}
               className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-sky-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-sky-600 focus-visible:outline-2 focus-visible:outline-sky-400"
             >
               <LogIn className="h-4 w-4" aria-hidden="true" />
-              SGW 로그인 화면으로 이동
+              {descriptor.nextActionLabel}
             </a>
           </div>
         )}
 
-        {(status === 'forbidden' || status === 'not_found' || status === 'error') && (
+        {descriptor?.actionKind === 'request_access' && (
           <div className="flex gap-2">
             <button
               type="button"
@@ -85,8 +106,27 @@ export const AuthGateOverlay: React.FC<AuthGateOverlayProps> = ({
               다시 확인
             </button>
             <a
-              href={loginHref}
+              href={accessRequestHref}
               className="flex-1 inline-flex items-center justify-center rounded-xl bg-sky-700 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-600 focus-visible:outline-2 focus-visible:outline-sky-400"
+            >
+              {descriptor.nextActionLabel}
+            </a>
+          </div>
+        )}
+
+        {descriptor?.actionKind === 'retry' && (
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={onRetry}
+              aria-label={descriptor.nextActionLabel}
+              className="flex-1 rounded-xl bg-sky-700 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-600 focus-visible:outline-2 focus-visible:outline-sky-400"
+            >
+              {descriptor.nextActionLabel}
+            </button>
+            <a
+              href={loginHref}
+              className="flex-1 inline-flex items-center justify-center rounded-xl border border-slate-700 bg-slate-800 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-sky-400"
             >
               SGW 홈으로
             </a>

@@ -1,15 +1,19 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  assertValidShipBerths,
   DECK_LIGHTS_WINDOW_MS,
   deriveShipAppearance,
   formatDisconnectedBanner,
+  HARBOR_WATER_ZONE,
   isUpdatedWithinDays,
   mapEmployeesToHarborPeople,
   mapProjectsToHarborShips,
   PRESENCE_TTL_MS,
   resolveProjectStatusTone,
+  validateShipBerths,
 } from './mapping.ts';
+import { getPreviewDemoProjects } from './previewFixtures.ts';
 
 describe('mapping API responses to Harbor ships and people', () => {
   it('returns zero ships when SEDMS projects list is empty (no fake ships)', () => {
@@ -132,5 +136,72 @@ describe('mapping API responses to Harbor ships and people', () => {
     for (const p of people) {
       assert.ok(p.position.z <= -4.5 && p.position.z >= -13.5, 'People stay on safe quay boardwalk');
     }
+  });
+
+  it('asserts all mapped ships stay inside water zone and never overlap quay, piers, or other ships (1..6 ships & preview fixtures)', () => {
+    const now = Date.parse('2026-11-26T12:00:00.000Z');
+    const previewShips = mapProjectsToHarborShips(getPreviewDemoProjects(now), now);
+    const previewCheck = assertValidShipBerths(previewShips, {
+      throwOnViolation: true,
+      warnInDev: false,
+    });
+    assert.equal(previewCheck.ok, true);
+    assert.equal(previewCheck.violations.length, 0);
+
+    for (const count of [1, 2, 3, 4, 5, 6]) {
+      const sample = Array.from({ length: count }, (_, idx) => ({
+        id: `proj0${idx + 1}`,
+        code: `VESSEL-LNG-0${idx + 1}`,
+        name: `proj0${idx + 1}`,
+        role: 'member',
+        status: 'active',
+        updated_at: '2026-11-26',
+      }));
+      const ships = mapProjectsToHarborShips(sample, now);
+      const result = assertValidShipBerths(ships, {
+        throwOnViolation: true,
+        warnInDev: false,
+      });
+      assert.equal(result.ok, true, `Berth validation must pass for ${count} ships`);
+    }
+  });
+
+  it('rejects ships colliding with the quay, overlapping piers/water bounds, or overlapping another ship and emits dev warning', () => {
+    const now = Date.parse('2026-11-26T12:00:00.000Z');
+    const baseShips = mapProjectsToHarborShips(getPreviewDemoProjects(now), now);
+
+    // 1. Ship intruding north into concrete quay
+    const quayIntruder = [{ ...baseShips[0], berthZ: HARBOR_WATER_ZONE.minWaterZ }];
+    const quayCheck = validateShipBerths(quayIntruder);
+    assert.equal(quayCheck.ok, false);
+    assert.ok(quayCheck.violations.some((v) => v.kind === 'quay_overlap'));
+
+    // 2. Ship intruding west into pier
+    const pierIntruder = [{ ...baseShips[0], berthX: HARBOR_WATER_ZONE.westPierInnerX }];
+    const pierCheck = validateShipBerths(pierIntruder);
+    assert.equal(pierCheck.ok, false);
+    assert.ok(pierCheck.violations.some((v) => v.kind === 'pier_overlap'));
+
+    // 3. Ship outside south water zone
+    const outOfWater = [{ ...baseShips[0], berthZ: HARBOR_WATER_ZONE.maxWaterZ + 10 }];
+    const waterCheck = validateShipBerths(outOfWater);
+    assert.equal(waterCheck.ok, false);
+    assert.ok(waterCheck.violations.some((v) => v.kind === 'outside_water_zone'));
+
+    // 4. Two ships overlapping each other -> throws and logs dev warning
+    const collidingPair = [
+      baseShips[0],
+      { ...baseShips[1], berthX: baseShips[0].berthX + 5, berthZ: baseShips[0].berthZ + 2 },
+    ];
+    const warnings: string[] = [];
+    assert.throws(() => {
+      assertValidShipBerths(collidingPair, {
+        throwOnViolation: true,
+        warnInDev: true,
+        logger: (msg) => warnings.push(msg),
+      });
+    }, /overlap/);
+    assert.equal(warnings.length, 1);
+    assert.ok(warnings[0].includes('선박 배치 검증 실패'));
   });
 });

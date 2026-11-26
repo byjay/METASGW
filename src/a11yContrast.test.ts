@@ -8,7 +8,7 @@ import { contrastRatio, meetsWcagAA, UI_CONTRAST_PAIRS } from './a11yContrast';
 import { AccessibleListView } from './components/AccessibleListView';
 import { BottomControlDock } from './components/BottomControlDock';
 import { HarborMiniMap } from './components/HarborMiniMap';
-import { PersonActionModal, ShipBriefingModal } from './components/HarborOverlays';
+import { AuthGateOverlay, PersonActionModal, ShipBriefingModal } from './components/HarborOverlays';
 import { HudTopBar } from './components/HudTopBar';
 import { OnboardPanel } from './components/OnboardPanel';
 import { PeopleFinderDrawer } from './components/PeopleFinderDrawer';
@@ -270,6 +270,36 @@ describe('Accessibility: WCAG 2.1 AA contrast, aria-labels, keyboard 2D navigati
     );
     assertEveryButtonHasAriaLabel(personModalHtml, 'PersonActionModal');
     assert.ok(personModalHtml.includes('role="dialog"') && personModalHtml.includes('aria-modal="true"'));
+
+    const lostListHtml = renderToStaticMarkup(
+      React.createElement(AccessibleListView, {
+        user,
+        runtimeEnv: 'sgw',
+        ships: [],
+        projectsState: 'error',
+        projectsMessage: '',
+        projectsErrorCode: 'rate_limited',
+        people,
+        webglSupported: true,
+        webglContextLost: true,
+        onRetry3D: noop,
+        onRefreshProjects: noop,
+        onSelectShip: noop,
+        onSelectPerson: noop,
+        onPreviewLinkBlocked: noop,
+      }),
+    );
+    assertEveryButtonHasAriaLabel(lostListHtml, 'AccessibleListView(webglContextLost+error)');
+
+    const authOverlayHtml = renderToStaticMarkup(
+      React.createElement(AuthGateOverlay, {
+        status: 'error',
+        errorCode: 'server_error',
+        message: '',
+        onRetry: noop,
+      }),
+    );
+    assertEveryButtonHasAriaLabel(authOverlayHtml, 'AuthGateOverlay(error)');
   });
 
   it('defines prefers-reduced-motion media query in global CSS', () => {

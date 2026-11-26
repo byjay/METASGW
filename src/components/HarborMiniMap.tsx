@@ -80,15 +80,19 @@ export const HarborMiniMap: React.FC<HarborMiniMapProps> = ({
   onClose,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const [focusedIndex, setFocusedIndex] = useState<number>(0);
+  const [focusedIndex, setFocusedIndex] = useState<number>(() => {
+    if (!activeShipId) return -1;
+    return ships.findIndex((s) => s.id === activeShipId);
+  });
 
   useEffect(() => {
-    if (ships.length === 0) {
+    if (ships.length === 0 || activeShipId === null) {
       setFocusedIndex(-1);
-    } else if (focusedIndex < 0 || focusedIndex >= ships.length) {
-      setFocusedIndex(0);
+      return;
     }
-  }, [ships.length, focusedIndex]);
+    const nextIdx = ships.findIndex((s) => s.id === activeShipId);
+    setFocusedIndex(nextIdx);
+  }, [activeShipId, ships]);
 
   useEffect(() => {
     if (!open) return;
@@ -303,7 +307,9 @@ export const HarborMiniMap: React.FC<HarborMiniMapProps> = ({
             </button>
           </>
         ) : (
-          <span className="text-slate-400">정박 선박 없음</span>
+          <span className="text-slate-400">
+            {ships.length > 0 ? '선택된 선박 없음' : '정박 선박 없음'}
+          </span>
         )}
       </div>
     </section>
