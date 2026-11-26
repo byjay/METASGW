@@ -3,9 +3,9 @@
 
 @layer base {
   :root {
-    --font-display: 'Plus Jakarta Sans', 'Noto Sans KR', system-ui, -apple-system, sans-serif;
-    --font-body: 'Noto Sans KR', 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
-    --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+    --font-display: 'Pretendard Variable', 'Pretendard', 'Apple SD Gothic Neo', 'Malgun Gothic', system-ui, -apple-system, sans-serif;
+    --font-body: 'Pretendard Variable', 'Pretendard', 'Apple SD Gothic Neo', 'Malgun Gothic', system-ui, -apple-system, sans-serif;
+    --font-mono: ui-monospace, 'SFMono-Regular', 'Consolas', 'Liberation Mono', monospace;
   }
 
   html,
@@ -15,7 +15,6 @@
     height: 100%;
     margin: 0;
     padding: 0;
-    overflow: hidden;
     font-family: var(--font-body);
   }
 }

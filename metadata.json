@@ -1,6 +1,6 @@
 {
   "name": "메타SGW",
-  "description": "SGW_V0 × SGTALK × Fleet-Office 기반 5역할 통합 3D 가상 프로젝트 메타스페이스",
+  "description": "SGW 세션과 SEDMS 프로젝트를 연결하는 3D 항구 입구 및 2D 접근성 상황판",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": []
 }

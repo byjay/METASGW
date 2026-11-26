@@ -3,7 +3,6 @@ import * as THREE from 'three';
 export interface HarborTexturePack {
   concreteAlbedo: THREE.CanvasTexture;
   concreteBump: THREE.CanvasTexture;
-  oceanBump: THREE.CanvasTexture;
   asphaltRoad: THREE.CanvasTexture;
   hazardTrim: THREE.CanvasTexture;
   containerRib: THREE.CanvasTexture;
@@ -11,7 +10,7 @@ export interface HarborTexturePack {
   contactShadow: THREE.CanvasTexture;
   craneBannerOrange: THREE.CanvasTexture;
   craneBannerBlue: THREE.CanvasTexture;
-  hullDraftMarks: THREE.CanvasTexture;
+  hullSteelPlates: THREE.CanvasTexture;
   cloudPuff: THREE.CanvasTexture;
   createSignboard: (title: string, subtitle: string, accentHex: string) => THREE.CanvasTexture;
   dispose: () => void;
@@ -29,19 +28,17 @@ export function createHarborTextures(maxAnisotropy: number): HarborTexturePack {
   const anisotropy = Math.max(1, Math.min(maxAnisotropy, 8));
   const dynamicTextures: THREE.CanvasTexture[] = [];
 
-  // Deterministic PRNG
-  let seed = 1042;
+  let seed = 4201;
   const rand = () => {
     seed = (seed * 1664525 + 1013904223) % 4294967296;
     return seed / 4294967296;
   };
 
-  // 1. Weathered Heavy Shipyard Concrete Albedo (with crane rails, joints & tire/salt stains)
+  // 1. Weathered Heavy Shipyard Concrete Albedo
   const [cCanvas, cCtx] = makeCanvas(512, 512);
   cCtx.fillStyle = '#7e8a97';
   cCtx.fillRect(0, 0, 512, 512);
 
-  // Concrete slab expansion joints
   cCtx.strokeStyle = 'rgba(22, 31, 46, 0.42)';
   cCtx.lineWidth = 3;
   for (let i = 0; i <= 512; i += 128) {
@@ -55,8 +52,7 @@ export function createHarborTextures(maxAnisotropy: number): HarborTexturePack {
     cCtx.stroke();
   }
 
-  // Subtle industrial weathering blotches & salt grit
-  for (let i = 0; i < 60; i++) {
+  for (let i = 0; i < 60; i += 1) {
     const rx = rand() * 512;
     const ry = rand() * 512;
     const rad = 18 + rand() * 42;
@@ -67,16 +63,15 @@ export function createHarborTextures(maxAnisotropy: number): HarborTexturePack {
     cCtx.fillStyle = g;
     cCtx.fillRect(rx - rad, ry - rad, rad * 2, rad * 2);
   }
-  for (let i = 0; i < 5400; i++) {
+  for (let i = 0; i < 4200; i += 1) {
     const shade = Math.floor(92 + rand() * 74);
     cCtx.fillStyle = `rgba(${shade}, ${shade + 4}, ${shade + 9}, 0.28)`;
     cCtx.fillRect(rand() * 512, rand() * 512, 2, 2);
   }
 
-  // Painted yellow shipyard safety lane line
-  cCtx.fillStyle = 'rgba(234, 179, 8, 0.55)';
+  cCtx.fillStyle = 'rgba(234, 179, 8, 0.52)';
   cCtx.fillRect(0, 446, 512, 8);
-  cCtx.fillStyle = 'rgba(226, 232, 240, 0.45)';
+  cCtx.fillStyle = 'rgba(226, 232, 240, 0.42)';
   for (let x = 0; x < 512; x += 64) {
     cCtx.fillRect(x + 8, 250, 32, 5);
   }
@@ -104,7 +99,7 @@ export function createHarborTextures(maxAnisotropy: number): HarborTexturePack {
     bCtx.lineTo(256, i);
     bCtx.stroke();
   }
-  for (let i = 0; i < 2400; i++) {
+  for (let i = 0; i < 2000; i += 1) {
     const v = Math.floor(88 + rand() * 80);
     bCtx.fillStyle = `rgb(${v},${v},${v})`;
     bCtx.fillRect(rand() * 256, rand() * 256, 2, 2);
@@ -114,33 +109,11 @@ export function createHarborTextures(maxAnisotropy: number): HarborTexturePack {
   concreteBump.wrapT = THREE.RepeatWrapping;
   concreteBump.repeat.set(9, 2.2);
 
-  // 2b. Procedural Ocean Swell Bump Texture (kept for backward compatibility with HarborScene)
-  const [wCanvas, wCtx] = makeCanvas(128, 128);
-  const wImg = wCtx.createImageData(128, 128);
-  for (let y = 0; y < 128; y++) {
-    for (let x = 0; x < 128; x++) {
-      const nx = (x / 128) * Math.PI * 2;
-      const ny = (y / 128) * Math.PI * 2;
-      const val = Math.sin(nx * 3 + ny * 2) * 0.45 + Math.cos(nx * 5 - ny * 4) * 0.35;
-      const lum = Math.max(0, Math.min(255, Math.round(128 + val * 92)));
-      const idx = (y * 128 + x) * 4;
-      wImg.data[idx] = lum;
-      wImg.data[idx + 1] = lum;
-      wImg.data[idx + 2] = lum;
-      wImg.data[idx + 3] = 255;
-    }
-  }
-  wCtx.putImageData(wImg, 0, 0);
-  const oceanBump = new THREE.CanvasTexture(wCanvas);
-  oceanBump.wrapS = THREE.RepeatWrapping;
-  oceanBump.wrapT = THREE.RepeatWrapping;
-  oceanBump.repeat.set(22, 22);
-
   // 3. Dark Shipyard Asphalt / Staging Apron
   const [aCanvas, aCtx] = makeCanvas(256, 256);
   aCtx.fillStyle = '#334155';
   aCtx.fillRect(0, 0, 256, 256);
-  for (let i = 0; i < 3200; i++) {
+  for (let i = 0; i < 2800; i += 1) {
     const v = Math.floor(35 + rand() * 44);
     aCtx.fillStyle = `rgba(${v},${v + 5},${v + 12},0.4)`;
     aCtx.fillRect(rand() * 256, rand() * 256, 2, 2);
@@ -170,10 +143,10 @@ export function createHarborTextures(maxAnisotropy: number): HarborTexturePack {
   hazardTrim.colorSpace = THREE.SRGBColorSpace;
   hazardTrim.wrapS = THREE.RepeatWrapping;
   hazardTrim.wrapT = THREE.RepeatWrapping;
-  hazardTrim.repeat.set(20, 1);
+  hazardTrim.repeat.set(18, 1);
   hazardTrim.anisotropy = anisotropy;
 
-  // 5. Corrugated Container Steel Rib Bump/Albedo
+  // 5. Corrugated Container Steel Rib Bump
   const [rCanvas, rCtx] = makeCanvas(128, 128);
   rCtx.fillStyle = '#909090';
   rCtx.fillRect(0, 0, 128, 128);
@@ -188,7 +161,7 @@ export function createHarborTextures(maxAnisotropy: number): HarborTexturePack {
   containerRib.wrapT = THREE.RepeatWrapping;
   containerRib.repeat.set(2, 1);
 
-  // 6. Architectural Mullioned Glass Curtain Wall Texture (Lit Interior Engineering Offices)
+  // 6. Architectural Mullioned Glass Curtain Wall Texture
   const [gCanvas, gCtx] = makeCanvas(512, 256);
   const skyGrad = gCtx.createLinearGradient(0, 0, 0, 256);
   skyGrad.addColorStop(0, '#0f2942');
@@ -197,9 +170,8 @@ export function createHarborTextures(maxAnisotropy: number): HarborTexturePack {
   gCtx.fillStyle = skyGrad;
   gCtx.fillRect(0, 0, 512, 256);
 
-  // Warm interior studio glow panels & CAD monitors inside windows
-  for (let col = 0; col < 8; col++) {
-    for (let row = 0; row < 2; row++) {
+  for (let col = 0; col < 8; col += 1) {
+    for (let row = 0; row < 2; row += 1) {
       const wx = col * 64 + 6;
       const wy = row * 128 + 10;
       const lit = (col + row * 3) % 3 !== 0;
@@ -211,17 +183,8 @@ export function createHarborTextures(maxAnisotropy: number): HarborTexturePack {
         gCtx.fillStyle = wg;
         gCtx.fillRect(wx, wy, 52, 108);
       }
-      // Subtle diagonal glass reflection sheen
-      gCtx.fillStyle = 'rgba(186, 230, 253, 0.10)';
-      gCtx.beginPath();
-      gCtx.moveTo(wx, wy);
-      gCtx.lineTo(wx + 24, wy);
-      gCtx.lineTo(wx, wy + 52);
-      gCtx.closePath();
-      gCtx.fill();
     }
   }
-  // Crisp dark anodized aluminum mullions
   gCtx.fillStyle = '#0f172a';
   for (let x = 0; x <= 512; x += 64) {
     gCtx.fillRect(x - 3, 0, 6, 256);
@@ -234,12 +197,11 @@ export function createHarborTextures(maxAnisotropy: number): HarborTexturePack {
   curtainWall.colorSpace = THREE.SRGBColorSpace;
   curtainWall.anisotropy = anisotropy;
 
-  // 7. Goliath Crane Girder Typography Banners
+  // 7. Generic Goliath Crane Girder Banners (Zero company/hull hardcoding)
   const makeCraneBanner = (bg: string, text: string, sub: string) => {
     const [cv, ctx] = makeCanvas(1024, 160);
     ctx.fillStyle = bg;
     ctx.fillRect(0, 0, 1024, 160);
-    // Steel panel seams & rivets
     ctx.strokeStyle = 'rgba(0,0,0,0.22)';
     ctx.lineWidth = 4;
     for (let x = 0; x <= 1024; x += 128) {
@@ -253,12 +215,12 @@ export function createHarborTextures(maxAnisotropy: number): HarborTexturePack {
     ctx.fillStyle = 'rgba(0,0,0,0.22)';
     ctx.fillRect(0, 140, 1024, 20);
     ctx.fillStyle = '#f8fafc';
-    ctx.font = '900 58px "Plus Jakarta Sans", sans-serif';
+    ctx.font = '800 54px system-ui, sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(text, 512, 68);
     ctx.fillStyle = '#fde68a';
-    ctx.font = '700 24px "JetBrains Mono", monospace';
+    ctx.font = '700 24px ui-monospace, monospace';
     ctx.fillText(sub, 512, 120);
 
     const tex = new THREE.CanvasTexture(cv);
@@ -267,20 +229,18 @@ export function createHarborTextures(maxAnisotropy: number): HarborTexturePack {
     return tex;
   };
 
-  const craneBannerOrange = makeCraneBanner('#c2410c', 'SEASTAR HEAVY · 900T', 'META-SGW GOLIATH DOCK NO.1');
-  const craneBannerBlue = makeCraneBanner('#0369a1', 'H1042 LNG · 174K', 'SMART SHIPYARD DIGITAL TWIN');
+  const craneBannerOrange = makeCraneBanner('#c2410c', 'SGW HARBOR · DOCK A', 'GANTRY CRANE 01');
+  const craneBannerBlue = makeCraneBanner('#0369a1', 'SGW HARBOR · DOCK B', 'GANTRY CRANE 02');
 
-  // 8. LNG Carrier Hull Nameplate & Plimsoll Draft Marks
+  // 8. Generic Welded Hull Steel Plates & Draft Marks (Zero hardcoded hull numbers)
   const [hmCanvas, hmCtx] = makeCanvas(1024, 256);
   hmCtx.fillStyle = '#0f233c';
   hmCtx.fillRect(0, 0, 1024, 178);
   hmCtx.fillStyle = '#991b1b';
   hmCtx.fillRect(0, 178, 1024, 78);
-  // White boot-top waterline stripe
   hmCtx.fillStyle = '#e2e8f0';
   hmCtx.fillRect(0, 172, 1024, 7);
-  // Welded steel hull plate seams
-  hmCtx.strokeStyle = 'rgba(255,255,255,0.06)';
+  hmCtx.strokeStyle = 'rgba(255,255,255,0.08)';
   hmCtx.lineWidth = 2;
   for (let x = 0; x < 1024; x += 64) {
     hmCtx.beginPath();
@@ -288,29 +248,21 @@ export function createHarborTextures(maxAnisotropy: number): HarborTexturePack {
     hmCtx.lineTo(x, 256);
     hmCtx.stroke();
   }
-  hmCtx.fillStyle = '#f8fafc';
-  hmCtx.font = '800 52px "Plus Jakarta Sans", sans-serif';
-  hmCtx.textAlign = 'center';
-  hmCtx.fillText('SEASTAR H1042  ·  LNG CARRIER', 512, 108);
-  hmCtx.font = '700 20px "JetBrains Mono", monospace';
-  hmCtx.fillStyle = '#cbd5e1';
-  hmCtx.fillText('IMO 9981042   ·   174,000 m³   ·   NO SMOKING · SAFETY FIRST', 512, 148);
-  // Draft marks near bow/stern
-  hmCtx.fillStyle = '#f8fafc';
-  hmCtx.font = '700 16px monospace';
-  for (let i = 0; i < 6; i++) {
-    hmCtx.fillText(`${12 - i * 2}M`, 92, 118 + i * 20);
-    hmCtx.fillText(`${12 - i * 2}M`, 932, 118 + i * 20);
+  hmCtx.fillStyle = '#e2e8f0';
+  hmCtx.font = '700 16px ui-monospace, monospace';
+  for (let i = 0; i < 6; i += 1) {
+    hmCtx.fillText(`${12 - i * 2}M`, 76, 118 + i * 20);
+    hmCtx.fillText(`${12 - i * 2}M`, 920, 118 + i * 20);
   }
-  const hullDraftMarks = new THREE.CanvasTexture(hmCanvas);
-  hullDraftMarks.colorSpace = THREE.SRGBColorSpace;
-  hullDraftMarks.anisotropy = anisotropy;
+  const hullSteelPlates = new THREE.CanvasTexture(hmCanvas);
+  hullSteelPlates.colorSpace = THREE.SRGBColorSpace;
+  hullSteelPlates.anisotropy = anisotropy;
 
   // 9. Soft Contact Shadow Disc
   const [sCanvas, sCtx] = makeCanvas(128, 128);
   const grad = sCtx.createRadialGradient(64, 64, 6, 64, 64, 60);
-  grad.addColorStop(0, 'rgba(4, 15, 30, 0.58)');
-  grad.addColorStop(0.65, 'rgba(4, 15, 30, 0.22)');
+  grad.addColorStop(0, 'rgba(4, 15, 30, 0.56)');
+  grad.addColorStop(0.65, 'rgba(4, 15, 30, 0.2)');
   grad.addColorStop(1, 'rgba(4, 15, 30, 0)');
   sCtx.fillStyle = grad;
   sCtx.fillRect(0, 0, 128, 128);
@@ -335,7 +287,7 @@ export function createHarborTextures(maxAnisotropy: number): HarborTexturePack {
   const cloudPuff = new THREE.CanvasTexture(clCanvas);
   cloudPuff.colorSpace = THREE.SRGBColorSpace;
 
-  // 11. Illuminated Industrial Architectural Rooftop Signboard Factory
+  // 11. Illuminated Architectural Rooftop Signboard Factory (System font only)
   const createSignboard = (title: string, subtitle: string, accentHex: string): THREE.CanvasTexture => {
     const [cv, ctx] = makeCanvas(512, 128);
     ctx.fillStyle = '#0b1322';
@@ -348,13 +300,13 @@ export function createHarborTextures(maxAnisotropy: number): HarborTexturePack {
     ctx.strokeRect(2, 2, 508, 124);
 
     ctx.fillStyle = '#f8fafc';
-    ctx.font = '800 44px "Plus Jakarta Sans", "Noto Sans KR", sans-serif';
+    ctx.font = '800 44px system-ui, sans-serif';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
     ctx.fillText(title, 34, 52);
 
-    ctx.fillStyle = '#94a3b8';
-    ctx.font = '600 22px "Noto Sans KR", sans-serif';
+    ctx.fillStyle = '#cbd5e1';
+    ctx.font = '600 22px system-ui, sans-serif';
     ctx.fillText(subtitle, 34, 96);
 
     const tex = new THREE.CanvasTexture(cv);
@@ -367,7 +319,6 @@ export function createHarborTextures(maxAnisotropy: number): HarborTexturePack {
   return {
     concreteAlbedo,
     concreteBump,
-    oceanBump,
     asphaltRoad,
     hazardTrim,
     containerRib,
@@ -375,13 +326,12 @@ export function createHarborTextures(maxAnisotropy: number): HarborTexturePack {
     contactShadow,
     craneBannerOrange,
     craneBannerBlue,
-    hullDraftMarks,
+    hullSteelPlates,
     cloudPuff,
     createSignboard,
     dispose: () => {
       concreteAlbedo.dispose();
       concreteBump.dispose();
-      oceanBump.dispose();
       asphaltRoad.dispose();
       hazardTrim.dispose();
       containerRib.dispose();
@@ -389,7 +339,7 @@ export function createHarborTextures(maxAnisotropy: number): HarborTexturePack {
       contactShadow.dispose();
       craneBannerOrange.dispose();
       craneBannerBlue.dispose();
-      hullDraftMarks.dispose();
+      hullSteelPlates.dispose();
       cloudPuff.dispose();
       dynamicTextures.forEach((t) => t.dispose());
     },
