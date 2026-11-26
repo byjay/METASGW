@@ -102,18 +102,14 @@ export function buildTalkRoomUrl(roomId: string): string {
 }
 
 /**
- * Performs safe navigation on explicit user interaction.
- * Same-window navigation is the default per SGW contract; `newTab` uses noopener,noreferrer.
+ * Performs safe same-window navigation on explicit user interaction.
+ * New-tab opening is handled declaratively via `<a target="_blank" rel="noopener noreferrer">`.
  */
-export function navigateSafely(url: string, options?: { newTab?: boolean }): boolean {
+export function navigateSafely(url: string): boolean {
   if (!isSafeNavigationUrl(url)) {
     return false;
   }
   if (typeof window === 'undefined') {
-    return true;
-  }
-  if (options?.newTab && !url.startsWith('bmail:')) {
-    window.open(url, '_blank', 'noopener,noreferrer');
     return true;
   }
   window.location.assign(url);

@@ -50,7 +50,7 @@ export const PeopleFinderDrawer: React.FC<PeopleFinderDrawerProps> = ({
   return (
     <aside
       aria-label="직원 찾기"
-      className="fixed right-3 top-16 bottom-20 z-30 flex w-80 max-w-[calc(100vw-1.5rem)] flex-col rounded-2xl border border-slate-700/80 bg-slate-950/95 text-slate-100 shadow-2xl backdrop-blur-md"
+      className="fixed inset-x-3 top-24 bottom-28 z-30 flex flex-col rounded-2xl border border-slate-700/80 bg-slate-950/96 text-slate-100 shadow-2xl backdrop-blur-md sm:inset-x-auto sm:right-3 sm:top-16 sm:bottom-20 sm:w-80"
     >
       <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
         <div className="flex items-center gap-2">
@@ -108,24 +108,26 @@ export const PeopleFinderDrawer: React.FC<PeopleFinderDrawerProps> = ({
                 <button
                   type="button"
                   onClick={() => onSelectPerson(person)}
-                  className="min-w-0 flex-1 text-left"
+                  aria-label={`${person.name} (${person.dept}, ${person.online ? '접속 중' : '오프라인'}) 상세 보기`}
+                  className="min-w-0 flex-1 rounded text-left focus-visible:outline-2 focus-visible:outline-sky-400"
                 >
                   <div className="flex items-center gap-1.5">
                     <span
                       className={`h-2 w-2 shrink-0 rounded-full ${
-                        person.online ? 'bg-emerald-400' : 'bg-slate-600'
+                        person.online ? 'bg-emerald-400' : 'bg-slate-500'
                       }`}
+                      aria-hidden="true"
                     />
                     <span className="truncate text-xs font-semibold text-white">
                       {person.name}
                     </span>
                     {person.isPartner && (
-                      <span className="rounded bg-amber-500/20 px-1 py-0.5 text-[10px] font-semibold text-amber-200">
+                      <span className="rounded bg-amber-950/80 px-1 py-0.5 text-[10px] font-semibold text-amber-200 border border-amber-400/40">
                         협력사
                       </span>
                     )}
                   </div>
-                  <p className="truncate text-[11px] text-slate-400">
+                  <p className="truncate text-[11px] text-slate-300">
                     {person.dept} · {person.title}
                   </p>
                 </button>
@@ -137,7 +139,7 @@ export const PeopleFinderDrawer: React.FC<PeopleFinderDrawerProps> = ({
                       onClick={() => onFocusPerson(person.sub)}
                       title="항구에서 찾아가기"
                       aria-label={`${person.name} 위치로 이동`}
-                      className="rounded-lg border border-slate-700 bg-slate-900 p-1.5 text-slate-200 hover:bg-slate-800"
+                      className="rounded-lg border border-slate-700 bg-slate-900 p-1.5 text-slate-200 hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-sky-400"
                     >
                       <MapPin className="h-3.5 w-3.5 text-emerald-400" aria-hidden="true" />
                     </button>
@@ -152,7 +154,7 @@ export const PeopleFinderDrawer: React.FC<PeopleFinderDrawerProps> = ({
                     }}
                     title="SGTALK 1:1 대화"
                     aria-label={`${person.name}와 SGTALK 대화하기`}
-                    className="rounded-lg border border-sky-500/40 bg-sky-600/20 p-1.5 text-sky-200 hover:bg-sky-600 hover:text-white"
+                    className="rounded-lg border border-sky-400/50 bg-sky-950/70 p-1.5 text-sky-200 hover:bg-sky-700 hover:text-white focus-visible:outline-2 focus-visible:outline-sky-400"
                   >
                     <MessageSquare className="h-3.5 w-3.5" aria-hidden="true" />
                   </a>

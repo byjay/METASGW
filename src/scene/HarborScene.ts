@@ -28,11 +28,27 @@ export interface ProjectedLabel {
   visible: boolean;
 }
 
+export interface RenderMetrics {
+  drawCalls: number;
+  triangles: number;
+  geometries: number;
+  textures: number;
+  fps: number;
+  lowSpec: boolean;
+}
+
+export interface ScreenAnchorPoint {
+  x: number;
+  y: number;
+}
+
 export interface HarborSceneCallbacks {
-  onShipClicked: (projectId: string) => void;
-  onPersonClicked: (sub: string) => void;
+  onShipClicked: (projectId: string, screenPos: ScreenAnchorPoint) => void;
+  onPersonClicked: (sub: string, screenPos: ScreenAnchorPoint) => void;
   onPortalClicked: (portalId: PortalBuildingSpec['id']) => void;
   onLabelsUpdated: (labels: ProjectedLabel[]) => void;
+  onPlayerPoseUpdated?: (pose: { x: number; z: number; heading: number }) => void;
+  onRenderMetricsUpdated?: (metrics: RenderMetrics) => void;
 }
 
 interface PersonNpcRuntime {
@@ -84,6 +100,7 @@ export class HarborSceneController {
   private callbacks: HarborSceneCallbacks;
   private isSoftwareGl: boolean;
   private lowSpecMode: boolean;
+  private reducedMotion = false;
   private darkTheme = false;
   private cameraPreset: CameraPreset = 'harbor';
 
@@ -115,23 +132,35 @@ export class HarborSceneController {
   private raycaster = new THREE.Raycaster();
   private pointerDownPos = { x: 0, y: 0 };
   private cameraZoomScale = 1.0;
+  private cameraTween: {
+    startMs: number;
+    durationMs: number;
+    fromPos: THREE.Vector3;
+    toPos: THREE.Vector3;
+    fromTarget: THREE.Vector3;
+    toTarget: THREE.Vector3;
+  } | null = null;
 
   private resizeObserver: ResizeObserver;
   private frameId = 0;
   private lastFrameMs = performance.now();
   private elapsedTotal = 0;
   private lastLabelEmitMs = 0;
+  private lastMetricsEmitMs = 0;
+  private frameCountWindow = 0;
+  private measuredFps = 60;
   private disposed = false;
 
   constructor(
     container: HTMLElement,
     callbacks: HarborSceneCallbacks,
-    initialOptions?: { lowSpec?: boolean; darkTheme?: boolean },
+    initialOptions?: { lowSpec?: boolean; reducedMotion?: boolean; darkTheme?: boolean },
   ) {
     this.container = container;
     this.callbacks = callbacks;
     this.isSoftwareGl = detectSoftwareWebGL();
     this.lowSpecMode = initialOptions?.lowSpec ?? false;
+    this.reducedMotion = initialOptions?.reducedMotion ?? false;
     this.darkTheme = initialOptions?.darkTheme ?? false;
 
     this.renderer = new THREE.WebGLRenderer({
@@ -159,7 +188,7 @@ export class HarborSceneController {
 
     this.camera = new THREE.PerspectiveCamera(46, w / h, 0.4, 700);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
-    this.controls.enableDamping = !this.isSoftwareGl && !this.lowSpecMode;
+    this.controls.enableDamping = !this.isSoftwareGl && !this.lowSpecMode && !this.reducedMotion;
     this.controls.dampingFactor = 0.08;
     this.controls.enablePan = true;
     this.controls.maxPolarAngle = Math.PI * 0.46;
@@ -170,11 +199,11 @@ export class HarborSceneController {
     this.textures = createHarborTextures(this.renderer.capabilities.getMaxAnisotropy());
     this.setupLighting();
 
-    this.ocean = createMaritimeOcean(this.isSoftwareGl || this.lowSpecMode);
+    this.ocean = createMaritimeOcean(this.lowSpecMode || this.reducedMotion);
     this.scene.add(this.ocean.mesh);
 
     this.world = buildShipyardWorld(this.scene, this.textures);
-    this.world.setLowSpecMode(this.lowSpecMode);
+    this.world.setLowSpecMode(this.lowSpecMode || this.reducedMotion);
 
     this.scene.add(this.peopleRoot);
 
@@ -197,9 +226,12 @@ export class HarborSceneController {
         opacity: 0.85,
         side: THREE.DoubleSide,
         depthWrite: false,
+        polygonOffset: true,
+        polygonOffsetFactor: -3,
+        polygonOffsetUnits: -3,
       }),
     );
-    this.playerHalo.position.set(this.playerPos.x, this.playerPos.y + 0.04, this.playerPos.z);
+    this.playerHalo.position.set(this.playerPos.x, this.playerPos.y + 0.06, this.playerPos.z);
     this.scene.add(this.playerHalo);
 
     const wpGeo = new THREE.RingGeometry(0.5, 0.8, 24);
@@ -308,7 +340,7 @@ export class HarborSceneController {
       fogDensity,
     });
 
-    if (!this.isSoftwareGl && !this.lowSpecMode) {
+    if (!this.lowSpecMode) {
       const pmrem = new THREE.PMREMGenerator(this.renderer);
       const envScene = new THREE.Scene();
       const envSky = new Sky();
@@ -322,7 +354,7 @@ export class HarborSceneController {
       if (this.envRT) this.envRT.dispose();
       this.envRT = pmrem.fromScene(envScene, 0.04);
       this.scene.environment = this.envRT.texture;
-      this.scene.environmentIntensity = dark ? 0.3 : 0.45;
+      this.scene.environmentIntensity = dark ? 0.35 : 0.55;
       pmrem.dispose();
     } else {
       this.scene.environment = null;
@@ -334,18 +366,43 @@ export class HarborSceneController {
     this.renderFrame();
   }
 
+  private shouldSuppressMotion(): boolean {
+    return this.lowSpecMode || this.reducedMotion;
+  }
+
+  public setReducedMotion(enabled: boolean): void {
+    this.reducedMotion = enabled;
+    const suppress = this.shouldSuppressMotion();
+    this.controls.enableDamping = !this.isSoftwareGl && !suppress;
+    this.ocean.setLowSpec(suppress);
+    this.world.setLowSpecMode(suppress);
+    this.renderFrame();
+  }
+
   public setLowSpecMode(enabled: boolean): void {
     this.lowSpecMode = enabled;
+    const suppress = this.shouldSuppressMotion();
     this.renderer.setPixelRatio(
       this.isSoftwareGl || enabled ? 1 : Math.min(window.devicePixelRatio, 1.5),
     );
     this.renderer.shadowMap.enabled = !this.isSoftwareGl && !enabled;
     this.sunKeyLight.castShadow = !this.isSoftwareGl && !enabled;
-    this.controls.enableDamping = !this.isSoftwareGl && !enabled;
-    this.ocean.setLowSpec(this.isSoftwareGl || enabled);
-    this.world.setLowSpecMode(enabled);
+    this.controls.enableDamping = !this.isSoftwareGl && !suppress;
+    this.ocean.setLowSpec(suppress);
+    this.world.setLowSpecMode(suppress);
     this.applyAtmosphere(this.darkTheme);
     this.renderFrame();
+  }
+
+  public getRenderMetrics(): RenderMetrics {
+    return {
+      drawCalls: this.renderer.info.render.calls,
+      triangles: this.renderer.info.render.triangles,
+      geometries: this.renderer.info.memory.geometries,
+      textures: this.renderer.info.memory.textures,
+      fps: this.measuredFps,
+      lowSpec: this.lowSpecMode,
+    };
   }
 
   public setProjects(ships: HarborShip[]): void {
@@ -435,11 +492,94 @@ export class HarborSceneController {
   public focusShip(projectId: string): void {
     const found = this.world.dockedShips.find((d) => d.ship.id === projectId);
     if (!found) return;
+    this.cameraTween = null;
     this.controls.target.set(found.ship.berthX, 4.5, found.ship.berthZ);
     this.camera.position.set(found.ship.berthX + 18, 22, found.ship.berthZ + 32);
     this.controls.update();
     this.emitLabels();
     this.renderFrame();
+  }
+
+  /**
+   * Smoothly transitions the camera onto the vessel deck over `durationMs` (600ms default,
+   * or 0ms instant snap when reduced-motion is enabled).
+   */
+  public boardShip(projectId: string, durationMs = 600): void {
+    const found = this.world.dockedShips.find((d) => d.ship.id === projectId);
+    if (!found) return;
+
+    const toTarget = new THREE.Vector3(found.ship.berthX, 6.2, found.ship.berthZ);
+    const toPos = new THREE.Vector3(found.ship.berthX + 12, 16.5, found.ship.berthZ + 22);
+
+    // Move avatar to the ship's quay boarding point so disembark resumes nearby
+    this.walkPath = [];
+    this.waypointMarker.visible = false;
+    this.playerPos.x = found.ship.boardingPoint.x;
+    this.playerPos.z = found.ship.boardingPoint.z;
+    this.playerPos.heading = 0;
+    this.playerRig.group.position.set(this.playerPos.x, this.playerPos.y, this.playerPos.z);
+    this.playerHalo.position.set(this.playerPos.x, this.playerPos.y + 0.04, this.playerPos.z);
+    this.callbacks.onPlayerPoseUpdated?.({
+      x: this.playerPos.x,
+      z: this.playerPos.z,
+      heading: this.playerPos.heading,
+    });
+
+    if (durationMs <= 0 || this.reducedMotion) {
+      this.cameraTween = null;
+      this.controls.target.copy(toTarget);
+      this.camera.position.copy(toPos);
+      this.controls.update();
+      this.emitLabels();
+      this.renderFrame();
+      return;
+    }
+
+    this.cameraTween = {
+      startMs: performance.now(),
+      durationMs,
+      fromPos: this.camera.position.clone(),
+      toPos,
+      fromTarget: this.controls.target.clone(),
+      toTarget,
+    };
+  }
+
+  public disembarkToHarbor(durationMs = 450): void {
+    const toTarget = new THREE.Vector3(0, 2.0, 14);
+    const toPos = new THREE.Vector3(16, 52, 102);
+
+    if (durationMs <= 0 || this.reducedMotion) {
+      this.cameraTween = null;
+      this.controls.target.copy(toTarget);
+      this.camera.position.copy(toPos);
+      this.controls.update();
+      this.emitLabels();
+      this.renderFrame();
+      return;
+    }
+
+    this.cameraTween = {
+      startMs: performance.now(),
+      durationMs,
+      fromPos: this.camera.position.clone(),
+      toPos,
+      fromTarget: this.controls.target.clone(),
+      toTarget,
+    };
+  }
+
+  public walkToPoint(x: number, z: number): void {
+    const path = findQuayPath(
+      { x: this.playerPos.x, z: this.playerPos.z },
+      { x, z },
+    );
+    if (path.length > 0) {
+      this.walkPath = path;
+      const dest = path[path.length - 1];
+      this.waypointMarker.position.set(dest.x, 1.66, dest.z);
+      this.waypointMarker.visible = true;
+    }
   }
 
   public focusPerson(sub: string): void {
@@ -509,22 +649,22 @@ export class HarborSceneController {
     _scratchMouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
     this.raycaster.setFromCamera(_scratchMouse, this.camera);
 
-    // 1. People avatars
+    // 1. People avatars -> open Radial Menu at click screen point
     const personHits = this.raycaster.intersectObjects(this.personHitProxies, false);
     if (personHits.length > 0) {
       const sub = (personHits[0].object.userData as { personSub?: string }).personSub;
       if (sub) {
-        this.callbacks.onPersonClicked(sub);
+        this.callbacks.onPersonClicked(sub, { x: e.clientX, y: e.clientY });
         return;
       }
     }
 
-    // 2. Docked SEDMS project ships
+    // 2. Docked SEDMS project ships -> open Radial Menu at click screen point
     const shipHits = this.raycaster.intersectObjects(this.world.clickableShipProxies, false);
     if (shipHits.length > 0) {
       const projectId = (shipHits[0].object.userData as { projectId?: string }).projectId;
       if (projectId) {
-        this.callbacks.onShipClicked(projectId);
+        this.callbacks.onShipClicked(projectId, { x: e.clientX, y: e.clientY });
         return;
       }
     }
@@ -624,7 +764,7 @@ export class HarborSceneController {
       dt,
       this.elapsedTotal,
       this.playerPos.speed > 0.2 ? 'run' : 'idle',
-      this.lowSpecMode,
+      this.shouldSuppressMotion(),
     );
   }
 
@@ -707,21 +847,55 @@ export class HarborSceneController {
     this.lastFrameMs = now;
     this.elapsedTotal += dt;
 
+    if (this.cameraTween) {
+      const elapsed = now - this.cameraTween.startMs;
+      const rawT = Math.min(1, Math.max(0, elapsed / this.cameraTween.durationMs));
+      const eased = 1 - Math.pow(1 - rawT, 3);
+      this.camera.position.lerpVectors(this.cameraTween.fromPos, this.cameraTween.toPos, eased);
+      this.controls.target.lerpVectors(
+        this.cameraTween.fromTarget,
+        this.cameraTween.toTarget,
+        eased,
+      );
+      if (rawT >= 1) {
+        this.cameraTween = null;
+      }
+    }
+
     this.controls.update();
     this.updatePlayerMovement(dt);
 
+    const suppressMotion = this.shouldSuppressMotion();
     for (const rt of this.personRuntimes) {
-      rt.rig.updateAnimation(dt, this.elapsedTotal + rt.phase, 'idle', this.lowSpecMode);
+      rt.rig.updateAnimation(dt, this.elapsedTotal + rt.phase, 'idle', suppressMotion);
     }
 
-    this.ocean.update(this.elapsedTotal);
-    this.world.update(dt, this.elapsedTotal, this.lowSpecMode);
+    if (!suppressMotion) {
+      this.ocean.update(this.elapsedTotal);
+    }
+    this.world.update(dt, this.elapsedTotal, suppressMotion);
 
     this.renderFrame();
+    this.frameCountWindow += 1;
+
+    if (now - this.lastMetricsEmitMs >= 500) {
+      const elapsedSec = Math.max(0.001, (now - this.lastMetricsEmitMs) / 1000);
+      if (this.lastMetricsEmitMs > 0) {
+        this.measuredFps = Math.min(120, Math.round(this.frameCountWindow / elapsedSec));
+      }
+      this.frameCountWindow = 0;
+      this.lastMetricsEmitMs = now;
+      this.callbacks.onRenderMetricsUpdated?.(this.getRenderMetrics());
+    }
 
     if (now - this.lastLabelEmitMs >= 120) {
       this.lastLabelEmitMs = now;
       this.emitLabels();
+      this.callbacks.onPlayerPoseUpdated?.({
+        x: this.playerPos.x,
+        z: this.playerPos.z,
+        heading: this.playerPos.heading,
+      });
     }
   };
 

@@ -1,20 +1,33 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Info } from 'lucide-react';
+import { Anchor, Info } from 'lucide-react';
+import {
+  BOARDING_TRANSITION_MS,
+  createInitialBoardingState,
+  findNearestBoardableShip,
+  transitionBoardingState,
+  type BoardingState,
+} from './boardingState';
 import { AccessibleListView } from './components/AccessibleListView';
 import { BottomControlDock } from './components/BottomControlDock';
+import { HarborMiniMap } from './components/HarborMiniMap';
 import {
   AuthGateOverlay,
   PersonActionModal,
-  ShipBriefingModal,
 } from './components/HarborOverlays';
 import { HudTopBar } from './components/HudTopBar';
+import { OnboardPanel } from './components/OnboardPanel';
 import { PeopleFinderDrawer } from './components/PeopleFinderDrawer';
+import { RadialActionMenu, type RadialTarget } from './components/RadialActionMenu';
 import type { PortalBuildingSpec } from './core/navMeshEngine';
 import {
   navigateSafely,
   SGW_LOGIN_REDIRECT_URL,
   SGW_PORTAL_LINKS,
 } from './deepLink';
+import {
+  detectDeviceProfile,
+  subscribeReducedMotion,
+} from './deviceProfile';
 import {
   mapEmployeesToHarborPeople,
   mapProjectsToHarborShips,
@@ -27,9 +40,9 @@ import {
 } from './runtimeEnv';
 import {
   HarborSceneController,
-  isWebGLAvailable,
   type CameraPreset,
   type ProjectedLabel,
+  type RenderMetrics,
 } from './scene/HarborScene';
 import {
   fetchAuthMe,
@@ -65,18 +78,20 @@ const PORTAL_LABEL: Record<PortalBuildingSpec['id'], string> = {
   admin: 'SGW 관리자',
 };
 
-function prefersReducedMotion(): boolean {
-  if (typeof window === 'undefined' || !window.matchMedia) return false;
-  return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+function isDesktopViewport(): boolean {
+  if (typeof window === 'undefined') return true;
+  return window.innerWidth >= 768;
 }
 
 export function App() {
   const runtimeEnv = useMemo(() => detectRuntimeEnv(), []);
   const isPreviewMode = runtimeEnv === 'preview';
 
-  const webglSupported = useMemo(() => isWebGLAvailable(), []);
-  const [viewMode, setViewMode] = useState<'3d' | '2d'>(() => (webglSupported ? '3d' : '2d'));
-  const [lowSpecMode, setLowSpecMode] = useState<boolean>(() => prefersReducedMotion());
+  const deviceProfile = useMemo(() => detectDeviceProfile(), []);
+  const webglSupported = deviceProfile.webglSupported;
+  const [viewMode, setViewMode] = useState<'3d' | '2d'>(() => deviceProfile.initialViewMode);
+  const [lowSpecMode, setLowSpecMode] = useState<boolean>(() => deviceProfile.recommendLowSpec);
+  const [reducedMotion, setReducedMotion] = useState<boolean>(() => deviceProfile.reducedMotion);
   const [darkTheme, setDarkTheme] = useState<boolean>(false);
   const [cameraPreset, setCameraPreset] = useState<CameraPreset>('harbor');
 
@@ -90,15 +105,34 @@ export function App() {
   const [projectsState, setProjectsState] = useState<ProjectsLoadState>('loading');
   const [projectsMessage, setProjectsMessage] = useState<string>('');
 
+  // Connection & sync status (never hide polling failures)
+  const [syncDisconnected, setSyncDisconnected] = useState<boolean>(false);
+  const [lastSyncedAtMs, setLastSyncedAtMs] = useState<number | null>(null);
+  const [clockNowMs, setClockNowMs] = useState<number>(() => Date.now());
+
   const [labels, setLabels] = useState<ProjectedLabel[]>([]);
-  const [selectedShip, setSelectedShip] = useState<HarborShip | null>(null);
+  const [playerPose, setPlayerPose] = useState<{ x: number; z: number; heading: number }>({
+    x: 0,
+    z: -10.5,
+    heading: 0,
+  });
+  const [boardingState, setBoardingState] = useState<BoardingState>(createInitialBoardingState);
   const [selectedPerson, setSelectedPerson] = useState<HarborPerson | null>(null);
+  const [radialTarget, setRadialTarget] = useState<RadialTarget | null>(null);
+  const [renderMetrics, setRenderMetrics] = useState<RenderMetrics | null>(null);
   const [peopleDrawerOpen, setPeopleDrawerOpen] = useState<boolean>(false);
+  const [minimapOpen, setMinimapOpen] = useState<boolean>(() => isDesktopViewport());
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   const canvasContainerRef = useRef<HTMLDivElement | null>(null);
   const sceneRef = useRef<HarborSceneController | null>(null);
   const toastTimerRef = useRef<number | null>(null);
+  const boardingTimerRef = useRef<number | null>(null);
+  const reducedMotionRef = useRef<boolean>(reducedMotion);
+
+  useEffect(() => {
+    reducedMotionRef.current = reducedMotion;
+  }, [reducedMotion]);
 
   const showPreviewBlockedToast = useCallback((featureLabel: string) => {
     setToastMessage(`${PREVIEW_SGW_ONLY_TOAST} — ${featureLabel}`);
@@ -113,11 +147,26 @@ export function App() {
 
   useEffect(() => {
     return () => {
-      if (toastTimerRef.current !== null) {
-        window.clearTimeout(toastTimerRef.current);
-      }
+      if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current);
+      if (boardingTimerRef.current !== null) window.clearTimeout(boardingTimerRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    return subscribeReducedMotion((nextReduced) => {
+      setReducedMotion(nextReduced);
+      if (nextReduced) {
+        setLowSpecMode(true);
+      }
+    });
+  }, []);
+
+  // Refresh relative "n분 전" clock while disconnected
+  useEffect(() => {
+    if (!syncDisconnected) return;
+    const id = window.setInterval(() => setClockNowMs(Date.now()), 30_000);
+    return () => window.clearInterval(id);
+  }, [syncDisconnected]);
 
   const mappedPeople = useMemo(
     () =>
@@ -134,6 +183,7 @@ export function App() {
 
   const peopleBySubRef = useRef<Map<string, HarborPerson>>(new Map());
   const shipsByIdRef = useRef<Map<string, HarborShip>>(new Map());
+  const mappedShipsRef = useRef<HarborShip[]>(mappedShips);
 
   useEffect(() => {
     peopleBySubRef.current = new Map(mappedPeople.map((p) => [p.sub, p]));
@@ -141,7 +191,105 @@ export function App() {
 
   useEffect(() => {
     shipsByIdRef.current = new Map(mappedShips.map((s) => [s.id, s]));
+    mappedShipsRef.current = mappedShips;
   }, [mappedShips]);
+
+  // Boarding flow helpers
+  const startBoardingShip = useCallback((shipId: string) => {
+    if (!shipsByIdRef.current.has(shipId)) return;
+    if (boardingTimerRef.current !== null) {
+      window.clearTimeout(boardingTimerRef.current);
+      boardingTimerRef.current = null;
+    }
+
+    const isReduced = reducedMotionRef.current;
+    setSelectedPerson(null);
+    setRadialTarget(null);
+    setPeopleDrawerOpen(false);
+    setBoardingState((prev) =>
+      transitionBoardingState(prev, {
+        type: 'REQUEST_BOARD',
+        shipId,
+        reducedMotion: isReduced,
+      }),
+    );
+
+    sceneRef.current?.boardShip(shipId, isReduced ? 0 : BOARDING_TRANSITION_MS);
+
+    if (!isReduced) {
+      boardingTimerRef.current = window.setTimeout(() => {
+        setBoardingState((prev) =>
+          transitionBoardingState(prev, { type: 'COMPLETE_BOARDING' }),
+        );
+        boardingTimerRef.current = null;
+      }, BOARDING_TRANSITION_MS);
+    }
+  }, []);
+
+  const handleDisembark = useCallback(() => {
+    if (boardingTimerRef.current !== null) {
+      window.clearTimeout(boardingTimerRef.current);
+      boardingTimerRef.current = null;
+    }
+    setBoardingState((prev) => transitionBoardingState(prev, { type: 'DISEMBARK' }));
+    sceneRef.current?.disembarkToHarbor(reducedMotionRef.current ? 0 : 450);
+  }, []);
+
+  // Update proximity prompt whenever avatar moves or ships change
+  useEffect(() => {
+    const nearest = findNearestBoardableShip(playerPose, mappedShips);
+    setBoardingState((prev) =>
+      transitionBoardingState(prev, {
+        type: 'PROXIMITY_CHANGED',
+        nearbyShipId: nearest?.id ?? null,
+      }),
+    );
+  }, [playerPose, mappedShips]);
+
+  // Keyboard shortcuts: E / Enter to board nearby ship; Escape to disembark or close overlays
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const inInput =
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT');
+
+      if (e.key === 'Escape') {
+        if (radialTarget) {
+          setRadialTarget(null);
+          return;
+        }
+        handleDisembark();
+        setSelectedPerson(null);
+        setPeopleDrawerOpen(false);
+        return;
+      }
+
+      if (inInput) return;
+
+      // Ignore Enter when focused on a button/link/minimap so native activation runs cleanly
+      const isInteractiveFocus =
+        target &&
+        (target.tagName === 'BUTTON' ||
+          target.tagName === 'A' ||
+          target.getAttribute('role') === 'application');
+
+      if (
+        (e.key === 'e' || e.key === 'E' || (e.key === 'Enter' && !isInteractiveFocus)) &&
+        boardingState.phase === 'harbor' &&
+        boardingState.nearbyShipId &&
+        !selectedPerson &&
+        !radialTarget
+      ) {
+        e.preventDefault();
+        startBoardingShip(boardingState.nearbyShipId);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [boardingState, selectedPerson, radialTarget, startBoardingShip, handleDisembark]);
 
   const loadProjects = useCallback(
     async (forceRefresh = false) => {
@@ -151,10 +299,14 @@ export function App() {
         setProjects(res.projects);
         setProjectsState('ready');
         setProjectsMessage('');
+        setSyncDisconnected(false);
+        setLastSyncedAtMs(Date.now());
       } else if (res.status === 'pending') {
         setProjects([]);
         setProjectsState('pending');
         setProjectsMessage(res.message);
+        setSyncDisconnected(false);
+        setLastSyncedAtMs(Date.now());
       } else if (res.status === 'forbidden') {
         setProjects([]);
         setProjectsState('forbidden');
@@ -165,6 +317,8 @@ export function App() {
         setProjects([]);
         setProjectsState('error');
         setProjectsMessage(res.message);
+        setSyncDisconnected(true);
+        setClockNowMs(Date.now());
       }
     },
     [runtimeEnv],
@@ -184,6 +338,11 @@ export function App() {
     }
     if (presRes.status === 'ok') {
       setPresenceEntries(presRes.entries);
+      setSyncDisconnected(false);
+      setLastSyncedAtMs(Date.now());
+    } else if (presRes.status === 'error') {
+      setSyncDisconnected(true);
+      setClockNowMs(Date.now());
     }
   }, [runtimeEnv]);
 
@@ -218,7 +377,7 @@ export function App() {
     void bootstrapSession();
   }, [bootstrapSession]);
 
-  // 12-second presence polling + heartbeat (SGW runtime only; paused when tab is hidden)
+  // 12-second presence polling + heartbeat (SGW runtime only; never hide failures)
   useEffect(() => {
     if (authStatus !== 'authenticated' || runtimeEnv !== 'sgw') return;
 
@@ -227,13 +386,23 @@ export function App() {
     const runTick = () => {
       if (document.hidden) return;
       void postPresenceHeartbeat({ runtimeEnv: 'sgw' });
-      void fetchPresence({ runtimeEnv: 'sgw' }).then((res) => {
-        if (res.status === 'ok') {
-          setPresenceEntries(res.entries);
-        } else if (res.status === 'unauthenticated') {
-          window.location.replace(SGW_LOGIN_REDIRECT_URL);
-        }
-      });
+      void fetchPresence({ runtimeEnv: 'sgw' })
+        .then((res) => {
+          if (res.status === 'ok') {
+            setPresenceEntries(res.entries);
+            setSyncDisconnected(false);
+            setLastSyncedAtMs(Date.now());
+          } else if (res.status === 'unauthenticated') {
+            window.location.replace(SGW_LOGIN_REDIRECT_URL);
+          } else {
+            setSyncDisconnected(true);
+            setClockNowMs(Date.now());
+          }
+        })
+        .catch(() => {
+          setSyncDisconnected(true);
+          setClockNowMs(Date.now());
+        });
     };
 
     const startPolling = () => {
@@ -293,13 +462,19 @@ export function App() {
     const controller = new HarborSceneController(
       container,
       {
-        onShipClicked: (projectId) => {
-          const found = shipsByIdRef.current.get(projectId);
-          if (found) setSelectedShip(found);
+        onShipClicked: (projectId, screenPos) => {
+          const ship = shipsByIdRef.current.get(projectId);
+          if (ship) {
+            setSelectedPerson(null);
+            setRadialTarget({ kind: 'ship', ship, anchor: screenPos });
+          }
         },
-        onPersonClicked: (sub) => {
+        onPersonClicked: (sub, screenPos) => {
           const found = peopleBySubRef.current.get(sub);
-          if (found) setSelectedPerson(found);
+          if (found) {
+            setSelectedPerson(null);
+            setRadialTarget({ kind: 'person', person: found, anchor: screenPos });
+          }
         },
         onPortalClicked: (portalId) => {
           handlePortalNavigate(portalId);
@@ -307,8 +482,19 @@ export function App() {
         onLabelsUpdated: (nextLabels) => {
           setLabels(nextLabels);
         },
+        onPlayerPoseUpdated: (pose) => {
+          setPlayerPose((prev) => {
+            if (Math.hypot(prev.x - pose.x, prev.z - pose.z) < 0.08) return prev;
+            return pose;
+          });
+        },
+        onRenderMetricsUpdated: (metrics) => {
+          if (import.meta.env.DEV) {
+            setRenderMetrics(metrics);
+          }
+        },
       },
-      { lowSpec: lowSpecMode, darkTheme },
+      { lowSpec: lowSpecMode, reducedMotion, darkTheme },
     );
 
     sceneRef.current = controller;
@@ -321,7 +507,7 @@ export function App() {
         sceneRef.current = null;
       }
     };
-  }, [authStatus, viewMode, webglSupported, handlePortalNavigate]);
+  }, [authStatus, viewMode, webglSupported, handlePortalNavigate, startBoardingShip]);
 
   // Sync dynamic ships & people into 3D scene
   useEffect(() => {
@@ -335,6 +521,10 @@ export function App() {
   useEffect(() => {
     sceneRef.current?.setLowSpecMode(lowSpecMode);
   }, [lowSpecMode]);
+
+  useEffect(() => {
+    sceneRef.current?.setReducedMotion(reducedMotion);
+  }, [reducedMotion]);
 
   useEffect(() => {
     sceneRef.current?.setThemeMode(darkTheme);
@@ -357,10 +547,12 @@ export function App() {
     window.location.replace('/');
   }, [isPreviewMode, runtimeEnv, showPreviewBlockedToast]);
 
-  const handleSelectShipFromDock = useCallback((ship: HarborShip) => {
-    sceneRef.current?.focusShip(ship.id);
-    setSelectedShip(ship);
-  }, []);
+  const handleSelectShipFromUi = useCallback(
+    (ship: HarborShip) => {
+      startBoardingShip(ship.id);
+    },
+    [startBoardingShip],
+  );
 
   const handleFocusPerson3D = useCallback((sub: string) => {
     sceneRef.current?.focusPerson(sub);
@@ -371,23 +563,57 @@ export function App() {
       if (label.id.startsWith('ship:')) {
         const id = label.id.slice(5);
         const ship = shipsByIdRef.current.get(id);
-        if (ship) handleSelectShipFromDock(ship);
+        if (ship) {
+          setRadialTarget({ kind: 'ship', ship, anchor: { x: label.x, y: label.y } });
+        }
       } else if (label.id.startsWith('person:')) {
         const sub = label.id.slice(7);
         const person = peopleBySubRef.current.get(sub);
-        if (person) setSelectedPerson(person);
+        if (person) {
+          setRadialTarget({ kind: 'person', person, anchor: { x: label.x, y: label.y } });
+        }
       } else if (label.id.startsWith('portal:')) {
         const portalId = label.id.slice(7) as PortalBuildingSpec['id'];
         handlePortalNavigate(portalId);
       }
     },
-    [handlePortalNavigate, handleSelectShipFromDock],
+    [handlePortalNavigate],
   );
+
+  const handleTogglePeopleDrawer = useCallback(() => {
+    setPeopleDrawerOpen((prev) => {
+      const next = !prev;
+      if (next && !isDesktopViewport()) {
+        setMinimapOpen(false);
+      }
+      return next;
+    });
+  }, []);
+
+  const handleToggleMinimap = useCallback(() => {
+    setMinimapOpen((prev) => {
+      const next = !prev;
+      if (next && !isDesktopViewport()) {
+        setPeopleDrawerOpen(false);
+      }
+      return next;
+    });
+  }, []);
 
   const onlineCount = useMemo(
     () => mappedPeople.filter((p) => p.online).length,
     [mappedPeople],
   );
+
+  const activeBoardedShip = useMemo(() => {
+    if (boardingState.phase === 'harbor') return null;
+    return mappedShips.find((s) => s.id === boardingState.shipId) ?? null;
+  }, [boardingState, mappedShips]);
+
+  const nearbyBoardableShip = useMemo(() => {
+    if (boardingState.phase !== 'harbor' || !boardingState.nearbyShipId) return null;
+    return mappedShips.find((s) => s.id === boardingState.nearbyShipId) ?? null;
+  }, [boardingState, mappedShips]);
 
   if (authStatus !== 'authenticated' || !currentUser) {
     return (
@@ -413,8 +639,17 @@ export function App() {
         cameraPreset={cameraPreset}
         onlineCount={onlineCount}
         projectCount={mappedShips.length}
+        syncDisconnected={syncDisconnected}
+        lastSyncedAtMs={lastSyncedAtMs}
+        nowMs={clockNowMs}
+        renderMetrics={renderMetrics}
+        showDebugMetrics={import.meta.env.DEV}
+        onRetrySync={() => {
+          void Promise.all([loadDirectoryAndPresence(), loadProjects(true)]);
+        }}
         onToggleViewMode={(next) => {
           if (next === '3d' && !webglSupported) return;
+          setRadialTarget(null);
           setViewMode(next);
         }}
         onToggleLowSpec={() => setLowSpecMode((v) => !v)}
@@ -435,53 +670,88 @@ export function App() {
             aria-label="메타SGW 3D 항구 캔버스"
           />
 
-          {/* Projected interactive 3D labels */}
-          <div className="pointer-events-none fixed inset-0 z-20 overflow-hidden">
-            {labels.map((label) => {
-              if (!label.visible) return null;
-              if (label.y < 60 || label.y > window.innerHeight - 76) return null;
-              return (
-                <button
-                  key={label.id}
-                  type="button"
-                  onClick={() => handleLabelClick(label)}
-                  style={{
-                    transform: `translate3d(${Math.round(label.x)}px, ${Math.round(label.y)}px, 0) translate(-50%, -100%)`,
-                  }}
-                  className={`pointer-events-auto absolute left-0 top-0 rounded-lg border px-2.5 py-1 text-left shadow-lg backdrop-blur-xs transition hover:scale-105 focus-visible:outline-2 focus-visible:outline-sky-400 ${
-                    label.kind === 'ship'
-                      ? 'border-sky-400/60 bg-slate-950/90 text-white'
-                      : label.kind === 'portal'
-                        ? 'border-slate-500/70 bg-slate-950/88 text-slate-100'
-                        : label.kind === 'person-partner'
-                          ? 'border-amber-400/60 bg-slate-950/88 text-amber-100'
-                          : label.kind === 'person-online'
-                            ? 'border-emerald-400/60 bg-slate-950/88 text-emerald-100'
-                            : 'border-slate-600/60 bg-slate-950/75 text-slate-300'
-                  }`}
-                >
-                  <div className="flex items-center gap-1.5 text-xs font-bold leading-tight whitespace-nowrap">
-                    {label.kind === 'person-online' && (
-                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" aria-hidden="true" />
-                    )}
-                    {label.kind === 'ship' && label.accentHex && (
-                      <span
-                        className="h-2 w-2 rounded-full"
-                        style={{ backgroundColor: label.accentHex }}
-                        aria-hidden="true"
-                      />
-                    )}
-                    <span>{label.text}</span>
-                  </div>
-                  {label.subText && (
-                    <div className="text-[10px] text-slate-300 whitespace-nowrap">
-                      {label.subText}
+          {/* Projected interactive 3D labels (hidden while onboard dialog is open) */}
+          {boardingState.phase === 'harbor' && (
+            <div className="pointer-events-none fixed inset-0 z-20 overflow-hidden">
+              {labels.map((label) => {
+                if (!label.visible) return null;
+                if (label.y < 84 || label.y > window.innerHeight - 96) return null;
+                return (
+                  <button
+                    key={label.id}
+                    type="button"
+                    onClick={() => handleLabelClick(label)}
+                    aria-label={label.subText ? `${label.text} (${label.subText})` : label.text}
+                    style={{
+                      transform: `translate3d(${Math.round(label.x)}px, ${Math.round(label.y)}px, 0) translate(-50%, -100%)`,
+                    }}
+                    className={`pointer-events-auto absolute left-0 top-0 rounded-lg border px-2 py-1 text-left shadow-lg transition hover:scale-105 focus-visible:outline-2 focus-visible:outline-sky-400 ${
+                      label.kind === 'ship'
+                        ? 'border-sky-400/70 bg-slate-950/94 text-white'
+                        : label.kind === 'portal'
+                          ? 'border-slate-500/70 bg-slate-950/92 text-slate-100'
+                          : label.kind === 'person-partner'
+                            ? 'border-amber-400/70 bg-slate-950/92 text-amber-100'
+                            : label.kind === 'person-online'
+                              ? 'border-emerald-400/70 bg-slate-950/92 text-emerald-100'
+                              : 'border-slate-600/70 bg-slate-950/88 text-slate-200'
+                    }`}
+                  >
+                    <div className="flex items-center gap-1.5 text-xs font-bold leading-tight whitespace-nowrap">
+                      {label.kind === 'person-online' && (
+                        <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" aria-hidden="true" />
+                      )}
+                      {label.kind === 'ship' && label.accentHex && (
+                        <span
+                          className="h-2 w-2 rounded-full"
+                          style={{ backgroundColor: label.accentHex }}
+                          aria-hidden="true"
+                        />
+                      )}
+                      <span>{label.text}</span>
                     </div>
-                  )}
+                    {label.subText && (
+                      <div className="text-[10px] text-slate-300 whitespace-nowrap">
+                        {label.subText}
+                      </div>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Proximity Boarding Prompt: E: 승선 / Enter */}
+          {nearbyBoardableShip &&
+            boardingState.phase === 'harbor' &&
+            !selectedPerson &&
+            !peopleDrawerOpen && (
+              <div className="pointer-events-none fixed inset-x-0 bottom-28 sm:bottom-20 z-30 flex justify-center px-3">
+                <button
+                  type="button"
+                  data-testid="boarding-proximity-prompt"
+                  onClick={() => startBoardingShip(nearbyBoardableShip.id)}
+                  aria-label={`${nearbyBoardableShip.name} (${nearbyBoardableShip.code}) 승선하기 (단축키 E 또는 Enter)`}
+                  className="pointer-events-auto inline-flex items-center gap-2 rounded-xl border border-sky-400/70 bg-sky-700 px-4 py-2 text-xs sm:text-sm font-bold text-white shadow-2xl hover:bg-sky-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-300"
+                >
+                  <Anchor className="h-4 w-4 shrink-0" aria-hidden="true" />
+                  <span>
+                    E: 승선 / Enter — {nearbyBoardableShip.name} ({nearbyBoardableShip.code})
+                  </span>
                 </button>
-              );
-            })}
-          </div>
+              </div>
+            )}
+
+          <HarborMiniMap
+            open={minimapOpen && boardingState.phase === 'harbor'}
+            ships={mappedShips}
+            people={mappedPeople}
+            playerPose={playerPose}
+            activeShipId={activeBoardedShip?.id ?? nearbyBoardableShip?.id ?? null}
+            onSelectShip={handleSelectShipFromUi}
+            onWalkToQuay={(x, z) => sceneRef.current?.walkToPoint(x, z)}
+            onClose={() => setMinimapOpen(false)}
+          />
 
           <PeopleFinderDrawer
             open={peopleDrawerOpen}
@@ -500,7 +770,9 @@ export function App() {
             onlineCount={onlineCount}
             totalPeopleCount={mappedPeople.length}
             peopleDrawerOpen={peopleDrawerOpen}
-            onSelectShip={handleSelectShipFromDock}
+            minimapOpen={minimapOpen}
+            boardedShipId={activeBoardedShip?.id ?? null}
+            onSelectShip={handleSelectShipFromUi}
             onRefreshProjects={() => {
               if (isPreviewMode) {
                 showPreviewBlockedToast('실시간 프로젝트 새로고침');
@@ -508,7 +780,8 @@ export function App() {
                 void loadProjects(true);
               }
             }}
-            onTogglePeopleDrawer={() => setPeopleDrawerOpen((v) => !v)}
+            onTogglePeopleDrawer={handleTogglePeopleDrawer}
+            onToggleMinimap={handleToggleMinimap}
             onSwitchTo2D={() => setViewMode('2d')}
           />
         </div>
@@ -528,18 +801,28 @@ export function App() {
               void loadProjects(true);
             }
           }}
-          onSelectShip={(ship) => setSelectedShip(ship)}
+          onSelectShip={handleSelectShipFromUi}
           onSelectPerson={(person) => setSelectedPerson(person)}
           onPreviewLinkBlocked={showPreviewBlockedToast}
         />
       )}
 
-      <ShipBriefingModal
-        ship={selectedShip}
+      <RadialActionMenu
+        target={radialTarget}
+        runtimeEnv={runtimeEnv}
+        onBoardShip={startBoardingShip}
+        onPreviewLinkBlocked={showPreviewBlockedToast}
+        onClose={() => setRadialTarget(null)}
+      />
+
+      <OnboardPanel
+        ship={activeBoardedShip}
+        phase={boardingState.phase}
         runtimeEnv={runtimeEnv}
         onPreviewLinkBlocked={showPreviewBlockedToast}
-        onClose={() => setSelectedShip(null)}
+        onDisembark={handleDisembark}
       />
+
       <PersonActionModal
         person={selectedPerson}
         runtimeEnv={runtimeEnv}
@@ -554,10 +837,10 @@ export function App() {
           role="status"
           aria-live="polite"
           data-testid="preview-sgw-only-toast"
-          className="fixed left-1/2 top-16 z-50 flex -translate-x-1/2 items-center gap-2 rounded-xl border border-amber-400/60 bg-slate-950/95 px-4 py-2.5 text-xs font-semibold text-amber-100 shadow-2xl backdrop-blur-md"
+          className="fixed left-1/2 top-24 sm:top-16 z-50 flex max-w-[calc(100vw-1.5rem)] -translate-x-1/2 items-center gap-2 rounded-xl border border-amber-400/60 bg-slate-950/96 px-4 py-2.5 text-xs font-semibold text-amber-100 shadow-2xl"
         >
           <Info className="h-4 w-4 shrink-0 text-amber-400" aria-hidden="true" />
-          <span>{toastMessage}</span>
+          <span className="truncate">{toastMessage}</span>
         </div>
       )}
     </div>

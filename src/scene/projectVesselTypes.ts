@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeSolidSubtreeToVertexColors } from './meshBatching';
 import type { HarborTexturePack } from './textures';
 
 export const VESSEL_SILHOUETTE_IDS = [
@@ -80,16 +81,12 @@ export function buildProjectVessel3D(
   const silverMetal = new THREE.MeshStandardMaterial({ color: 0xcbd5e1, roughness: 0.34, metalness: 0.34 });
 
   if (vesselType === 'lng_carrier') {
-    const hullSideMat = new THREE.MeshStandardMaterial({
-      map: textures.hullSteelPlates,
-      roughness: 0.44,
-      metalness: 0.24,
-    });
-    const hull = new THREE.Mesh(new THREE.BoxGeometry(11.2, 4.8, 36.0), [
-      hullSideMat, hullSideMat, deckSlate, hullRed, hullNavy, hullNavy,
-    ]);
+    const hull = new THREE.Mesh(new THREE.BoxGeometry(11.2, 4.8, 36.0), hullNavy);
     hull.position.set(0, 2.2, 0);
     g.add(hull);
+    const hullDeck = new THREE.Mesh(new THREE.BoxGeometry(11.1, 0.2, 35.8), deckSlate);
+    hullDeck.position.set(0, 4.62, 0);
+    g.add(hullDeck);
 
     const boot = new THREE.Mesh(new THREE.BoxGeometry(11.36, 1.25, 36.2), hullRed);
     boot.position.set(0, 0.55, 0);
@@ -147,23 +144,27 @@ export function buildProjectVessel3D(
     g.add(funnel);
   } else if (vesselType === 'container_ship') {
     // 2. 24K Mega Container Ship — 36 Corrugated Multi-Color ISO Containers + Twin Deck Cranes
-    const hull = new THREE.Mesh(new THREE.BoxGeometry(10.6, 4.2, 35.0), [
-      hullNavy, hullNavy, deckSlate, hullRed, hullNavy, hullNavy,
-    ]);
+    const hull = new THREE.Mesh(new THREE.BoxGeometry(10.6, 4.2, 35.0), hullNavy);
     hull.position.set(0, 1.9, 0);
     g.add(hull);
+    const hullDeck = new THREE.Mesh(new THREE.BoxGeometry(10.5, 0.2, 34.8), deckSlate);
+    hullDeck.position.set(0, 4.02, 0);
+    g.add(hullDeck);
     const bow = makeHullBow(10.6, 4.1, 9.6, hullNavy);
     bow.position.set(0, 3.95, -17.5);
     g.add(bow);
 
     const cGeo = new THREE.BoxGeometry(2.15, 2.05, 5.8);
-    const cMat = new THREE.MeshStandardMaterial({
-      color: 0xffffff,
-      bumpMap: textures.containerRib,
-      bumpScale: 0.08,
-      roughness: 0.56,
-      metalness: 0.22,
-    });
+    const cMat = lowSpec
+      ? new THREE.MeshLambertMaterial({ color: 0xffffff })
+      : new THREE.MeshStandardMaterial({
+          color: 0xffffff,
+          bumpMap: textures.containerRibBump,
+          bumpScale: 0.09,
+          roughnessMap: textures.containerRibRoughness,
+          roughness: 0.72,
+          metalness: 0.24,
+        });
     const palette = [0x0284c7, 0xdc2626, 0xd97706, 0x059669, 0x1d4ed8, 0xea580c];
     const bays = [-12.5, -5.8, 0.9];
     const boxes = new THREE.InstancedMesh(cGeo, cMat, bays.length * 4 * 3);
@@ -184,6 +185,7 @@ export function buildProjectVessel3D(
     }
     boxes.instanceMatrix.needsUpdate = true;
     if (boxes.instanceColor) boxes.instanceColor.needsUpdate = true;
+    boxes.computeBoundingSphere();
     g.add(boxes);
 
     for (const cz of [-9.1, -2.4]) {
@@ -268,11 +270,12 @@ export function buildProjectVessel3D(
   } else if (vesselType === 'vlcc_tanker') {
     // 4. 300,000 DWT VLCC Crude Oil Tanker — Wide Deep-Red Deck, Manifold Pipes, Hose Cranes & Catwalk
     const tankerDeck = new THREE.MeshStandardMaterial({ color: 0x7f1d1d, roughness: 0.62, metalness: 0.14 });
-    const hull = new THREE.Mesh(new THREE.BoxGeometry(14.0, 4.4, 40.0), [
-      hullNavy, hullNavy, tankerDeck, hullRed, hullNavy, hullNavy,
-    ]);
+    const hull = new THREE.Mesh(new THREE.BoxGeometry(14.0, 4.4, 40.0), hullNavy);
     hull.position.set(0, 2.0, 0);
     g.add(hull);
+    const hullDeck = new THREE.Mesh(new THREE.BoxGeometry(13.9, 0.22, 39.8), tankerDeck);
+    hullDeck.position.set(0, 4.22, 0);
+    g.add(hullDeck);
     const boot = new THREE.Mesh(new THREE.BoxGeometry(14.2, 1.4, 40.2), hullRed);
     boot.position.set(0, 0.6, 0);
     g.add(boot);
@@ -321,11 +324,12 @@ export function buildProjectVessel3D(
   } else if (vesselType === 'wtiv_jackup') {
     // 5. Offshore Wind Turbine Installation Vessel (WTIV Jack-Up) — 4 Towering Lattice Legs + Wind Blades + Helideck
     const tealHull = new THREE.MeshStandardMaterial({ color: 0x0f766e, roughness: 0.46, metalness: 0.22 });
-    const hull = new THREE.Mesh(new THREE.BoxGeometry(14.8, 3.8, 38.0), [
-      tealHull, tealHull, deckSlate, hullRed, tealHull, tealHull,
-    ]);
+    const hull = new THREE.Mesh(new THREE.BoxGeometry(14.8, 3.8, 38.0), tealHull);
     hull.position.set(0, 1.8, 0);
     g.add(hull);
+    const hullDeck = new THREE.Mesh(new THREE.BoxGeometry(14.7, 0.2, 37.8), deckSlate);
+    hullDeck.position.set(0, 3.72, 0);
+    g.add(hullDeck);
     const bow = makeHullBow(14.8, 3.7, 7.0, tealHull);
     bow.position.set(0, 3.65, -19.0);
     g.add(bow);
@@ -384,11 +388,12 @@ export function buildProjectVessel3D(
   } else if (vesselType === 'fpso_offshore') {
     // 6. Offshore Production Plant FPSO — Bow Turret, Multi-Deck Process Plant Modules & Angled Flare Tower!
     const fpsoHull = new THREE.MeshStandardMaterial({ color: 0x1e3a5f, roughness: 0.48, metalness: 0.22 });
-    const hull = new THREE.Mesh(new THREE.BoxGeometry(14.5, 4.8, 42.0), [
-      fpsoHull, fpsoHull, deckSlate, hullRed, fpsoHull, fpsoHull,
-    ]);
+    const hull = new THREE.Mesh(new THREE.BoxGeometry(14.5, 4.8, 42.0), fpsoHull);
     hull.position.set(0, 2.2, 0);
     g.add(hull);
+    const hullDeck = new THREE.Mesh(new THREE.BoxGeometry(14.4, 0.2, 41.8), deckSlate);
+    hullDeck.position.set(0, 4.62, 0);
+    g.add(hullDeck);
     const bow = makeHullBow(14.5, 4.7, 8.0, fpsoHull);
     bow.position.set(0, 4.55, -21.0);
     g.add(bow);
@@ -440,11 +445,12 @@ export function buildProjectVessel3D(
     g.add(heli);
   } else if (vesselType === 'cruise_liner') {
     // 7. Mega Cruise Liner — Sleek White Multi-Tiered Terraced Decks, Panoramic Blue Glass, Pools & Twin Funnels
-    const hull = new THREE.Mesh(new THREE.BoxGeometry(11.8, 4.0, 38.0), [
-      whiteSteel, whiteSteel, deckSlate, hullNavy, whiteSteel, whiteSteel,
-    ]);
+    const hull = new THREE.Mesh(new THREE.BoxGeometry(11.8, 4.0, 38.0), whiteSteel);
     hull.position.set(0, 1.9, 0);
     g.add(hull);
+    const hullDeck = new THREE.Mesh(new THREE.BoxGeometry(11.7, 0.2, 37.8), deckSlate);
+    hullDeck.position.set(0, 3.92, 0);
+    g.add(hullDeck);
     const stripe = new THREE.Mesh(new THREE.BoxGeometry(12.0, 0.9, 38.4), accentBlue);
     stripe.position.set(0, 1.4, 0);
     g.add(stripe);
@@ -519,11 +525,12 @@ export function buildProjectVessel3D(
   } else if (vesselType === 'icebreaker_research') {
     // 9. Polar Icebreaker & Oceanographic Research Vessel — High-Vis Polar Red/Orange Hull, A-Frame Gantry & Helideck
     const polarRed = new THREE.MeshStandardMaterial({ color: 0xdc2626, roughness: 0.44, metalness: 0.16 });
-    const hull = new THREE.Mesh(new THREE.BoxGeometry(11.6, 4.4, 34.0), [
-      polarRed, polarRed, deckSlate, hullNavy, polarRed, polarRed,
-    ]);
+    const hull = new THREE.Mesh(new THREE.BoxGeometry(11.6, 4.4, 34.0), polarRed);
     hull.position.set(0, 2.0, 0);
     g.add(hull);
+    const hullDeck = new THREE.Mesh(new THREE.BoxGeometry(11.5, 0.2, 33.8), deckSlate);
+    hullDeck.position.set(0, 4.22, 0);
+    g.add(hullDeck);
     const bow = makeHullBow(11.6, 4.3, 10.2, polarRed);
     bow.position.set(0, 4.15, -17.0);
     g.add(bow);
@@ -565,11 +572,12 @@ export function buildProjectVessel3D(
     const darkDeck = new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.62, metalness: 0.16 });
     const radarPanel = new THREE.MeshStandardMaterial({ color: 0x94a3b8, roughness: 0.34, metalness: 0.34 });
 
-    const hull = new THREE.Mesh(new THREE.BoxGeometry(8.8, 3.8, 36.0), [
-      navalGrey, navalGrey, darkDeck, hullRed, navalGrey, navalGrey,
-    ]);
+    const hull = new THREE.Mesh(new THREE.BoxGeometry(8.8, 3.8, 36.0), navalGrey);
     hull.position.set(0, 1.8, 0);
     g.add(hull);
+    const hullDeck = new THREE.Mesh(new THREE.BoxGeometry(8.7, 0.2, 35.8), darkDeck);
+    hullDeck.position.set(0, 3.72, 0);
+    g.add(hullDeck);
     const bow = makeHullBow(8.8, 3.7, 11.5, navalGrey);
     bow.position.set(0, 3.65, -18.0);
     g.add(bow);
@@ -618,6 +626,14 @@ export function buildProjectVessel3D(
     flightRing.position.set(0, 3.76, 13.8);
     g.add(flightRing);
   }
+
+  mergeSolidSubtreeToVertexColors(g, {
+    lowSpec,
+    roughness: 0.46,
+    metalness: 0.22,
+    castShadow: !lowSpec,
+    receiveShadow: !lowSpec,
+  });
 
   g.traverse((obj) => {
     const mesh = obj as THREE.Mesh;

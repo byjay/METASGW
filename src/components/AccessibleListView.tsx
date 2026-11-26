@@ -1,19 +1,29 @@
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import {
+  Anchor,
+  Briefcase,
   Building2,
+  CheckCircle2,
+  Clock,
   ExternalLink,
   FolderKanban,
+  Lightbulb,
   Mail,
   MessageSquare,
+  PauseCircle,
+  PlayCircle,
   RefreshCw,
   Search,
   Shield,
   Ship,
   Users,
+  Wifi,
+  WifiOff,
 } from 'lucide-react';
 import {
   buildSedmsProjectUrl,
   buildTalkDmUrl,
+  buildTalkRoomUrl,
   isSafeNavigationUrl,
   SGW_PORTAL_LINKS,
 } from '../deepLink';
@@ -36,13 +46,34 @@ export interface AccessibleListViewProps {
 }
 
 const STATUS_BADGE_CLASS: Record<HarborShip['statusTone'], string> = {
-  active: 'bg-sky-500/20 text-sky-200 border-sky-400/40',
-  review: 'bg-amber-500/20 text-amber-200 border-amber-400/40',
-  hold: 'bg-rose-500/20 text-rose-200 border-rose-400/40',
-  completed: 'bg-emerald-500/20 text-emerald-200 border-emerald-400/40',
-  neutral: 'bg-slate-700/60 text-slate-200 border-slate-500/40',
+  active: 'bg-sky-950/90 text-sky-100 border-sky-400/60',
+  review: 'bg-amber-950/90 text-amber-100 border-amber-400/60',
+  hold: 'bg-rose-950/90 text-rose-100 border-rose-400/60',
+  completed: 'bg-emerald-950/90 text-emerald-100 border-emerald-400/60',
+  neutral: 'bg-slate-800 text-slate-100 border-slate-500/60',
 };
 
+function renderShipStatusIcon(tone: HarborShip['statusTone']): React.ReactNode {
+  switch (tone) {
+    case 'active':
+      return <PlayCircle className="h-3.5 w-3.5 text-sky-300 shrink-0" aria-hidden="true" />;
+    case 'review':
+      return <Clock className="h-3.5 w-3.5 text-amber-300 shrink-0" aria-hidden="true" />;
+    case 'hold':
+      return <PauseCircle className="h-3.5 w-3.5 text-rose-300 shrink-0" aria-hidden="true" />;
+    case 'completed':
+      return <CheckCircle2 className="h-3.5 w-3.5 text-emerald-300 shrink-0" aria-hidden="true" />;
+    default:
+      return <Ship className="h-3.5 w-3.5 text-slate-300 shrink-0" aria-hidden="true" />;
+  }
+}
+
+/**
+ * Hybrid Quick Radar & 2D Accessible List Dashboard.
+ * - Zero 3D manipulation required: 1-tap >= 44x44px touch buttons for 대화·파일·도면·메일.
+ * - Strictly 0px horizontal overflow at 375px mobile width and WCAG AA >= 4.5:1 contrast.
+ * - Never relies on color alone for status (always pairs icon + explicit Korean text).
+ */
 export const AccessibleListView: React.FC<AccessibleListViewProps> = ({
   user,
   runtimeEnv,
@@ -86,50 +117,157 @@ export const AccessibleListView: React.FC<AccessibleListViewProps> = ({
     }
   };
 
+  /**
+   * Keyboard roving navigation (ArrowDown / ArrowUp / Home / End) inside list/table containers.
+   */
+  const handleRovingKeyDown = useCallback((e: React.KeyboardEvent<HTMLElement>) => {
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) return;
+    const container = e.currentTarget;
+    const items = Array.from(
+      container.querySelectorAll<HTMLElement>('[data-kbd-item="true"]'),
+    );
+    if (items.length === 0) return;
+
+    const currentIdx = items.indexOf(document.activeElement as HTMLElement);
+    if (currentIdx === -1) return;
+
+    e.preventDefault();
+    let nextIdx = currentIdx;
+    if (e.key === 'ArrowDown') nextIdx = (currentIdx + 1) % items.length;
+    else if (e.key === 'ArrowUp') nextIdx = (currentIdx - 1 + items.length) % items.length;
+    else if (e.key === 'Home') nextIdx = 0;
+    else if (e.key === 'End') nextIdx = items.length - 1;
+
+    items[nextIdx]?.focus();
+  }, []);
+
   return (
     <main
-      className="min-h-screen w-full overflow-y-auto bg-slate-950 px-4 pb-16 pt-20 text-slate-100"
-      aria-label="메타SGW 2D 목록 상황판"
+      id="main-content"
+      tabIndex={-1}
+      data-testid="quick-radar-view"
+      className="min-h-screen w-full overflow-x-hidden overflow-y-auto bg-slate-950 px-3 sm:px-4 pb-16 pt-24 sm:pt-20 text-slate-100 focus:outline-none"
+      aria-label="메타SGW 빠른 레이더 및 2D 목록 상황판"
     >
-      <div className="mx-auto max-w-6xl space-y-6">
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-20 focus:z-50 focus:rounded-lg focus:bg-sky-700 focus:px-3 focus:py-2 focus:text-xs focus:font-bold focus:text-white focus:outline-2 focus:outline-sky-300"
+      >
+        본문으로 건너뛰기
+      </a>
+
+      <div className="mx-auto max-w-6xl space-y-5">
         {!webglSupported && (
           <div
             role="status"
-            className="rounded-xl border border-amber-400/40 bg-amber-950/40 px-4 py-3 text-sm text-amber-100"
+            className="rounded-xl border border-amber-400/50 bg-amber-950/60 px-4 py-3 text-sm text-amber-100"
           >
-            이 브라우저 환경은 3D WebGL 가속을 지원하지 않아 2D 접근성 목록 모드로 자동 전환되었습니다.
+            이 브라우저 환경은 3D WebGL 가속을 지원하지 않아 빠른 레이더(2D) 모드로 자동 전환되었습니다.
             모든 SGW 및 SEDMS 연동 기능을 동일하게 사용할 수 있습니다.
           </div>
         )}
 
-        {/* 1. SEDMS Projects Table */}
+        {/* 1. 1-Tap Quick Radar Actions (대화 · 파일 · 도면 · 메일 — >= 44x44px touch targets) */}
+        <section aria-labelledby="heading-quick-radar-actions" className="space-y-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <h1 id="heading-quick-radar-actions" className="text-base font-bold text-white">
+              빠른 레이더 — 1탭 바로가기
+            </h1>
+            <span className="text-xs text-slate-300">
+              프로젝트 {ships.length} · 접속 동료 {people.filter((p) => p.online).length}/{people.length}
+            </span>
+          </div>
+
+          <div
+            data-testid="quick-radar-1tap-grid"
+            className="grid grid-cols-2 gap-2.5 sm:grid-cols-4"
+          >
+            <a
+              href={safeHref(SGW_PORTAL_LINKS.talkHome)}
+              onClick={handleLinkClick('대화 (SGTALK)')}
+              data-testid="radar-tap-talk"
+              aria-label="대화 — SGTALK 사내 채팅 열기"
+              className="flex min-h-[56px] min-w-[44px] items-center gap-3 rounded-xl border border-slate-700 bg-slate-900 px-3.5 py-3 text-left text-white hover:border-sky-400 hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400"
+            >
+              <MessageSquare className="h-5 w-5 text-sky-300 shrink-0" aria-hidden="true" />
+              <div className="min-w-0">
+                <div className="text-sm font-bold leading-tight text-white">대화</div>
+                <div className="truncate text-xs text-slate-300">SGTALK 채팅</div>
+              </div>
+            </a>
+
+            <a
+              href={safeHref(SGW_PORTAL_LINKS.nas)}
+              onClick={handleLinkClick('파일 (SGW NAS)')}
+              data-testid="radar-tap-nas"
+              aria-label="파일 — SGW NAS 공유 문서함 열기"
+              className="flex min-h-[56px] min-w-[44px] items-center gap-3 rounded-xl border border-slate-700 bg-slate-900 px-3.5 py-3 text-left text-white hover:border-teal-400 hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400"
+            >
+              <Building2 className="h-5 w-5 text-teal-300 shrink-0" aria-hidden="true" />
+              <div className="min-w-0">
+                <div className="text-sm font-bold leading-tight text-white">파일</div>
+                <div className="truncate text-xs text-slate-300">SGW NAS</div>
+              </div>
+            </a>
+
+            <a
+              href={safeHref(SGW_PORTAL_LINKS.sedmsProjects)}
+              onClick={handleLinkClick('도면 (SEDMS)')}
+              data-testid="radar-tap-sedms"
+              aria-label="도면 — SEDMS 프로젝트 및 도면 열기"
+              className="flex min-h-[56px] min-w-[44px] items-center gap-3 rounded-xl border border-slate-700 bg-slate-900 px-3.5 py-3 text-left text-white hover:border-emerald-400 hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400"
+            >
+              <FolderKanban className="h-5 w-5 text-emerald-300 shrink-0" aria-hidden="true" />
+              <div className="min-w-0">
+                <div className="text-sm font-bold leading-tight text-white">도면</div>
+                <div className="truncate text-xs text-slate-300">SEDMS 열기</div>
+              </div>
+            </a>
+
+            <a
+              href={safeHref(SGW_PORTAL_LINKS.bmail)}
+              onClick={handleLinkClick('메일 (bmail)')}
+              data-testid="radar-tap-mail"
+              aria-label="메일 — bmail PC 메일 앱 열기"
+              className="flex min-h-[56px] min-w-[44px] items-center gap-3 rounded-xl border border-slate-700 bg-slate-900 px-3.5 py-3 text-left text-white hover:border-indigo-400 hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400"
+            >
+              <Mail className="h-5 w-5 text-indigo-300 shrink-0" aria-hidden="true" />
+              <div className="min-w-0">
+                <div className="text-sm font-bold leading-tight text-white">메일</div>
+                <div className="truncate text-xs text-slate-300">bmail 열기</div>
+              </div>
+            </a>
+          </div>
+        </section>
+
+        {/* 2. SEDMS Projects (Mobile 1-Tap Cards + Desktop Table) */}
         <section
           aria-labelledby="heading-sedms-projects"
-          className="rounded-2xl border border-slate-800 bg-slate-900/90 p-5 shadow-lg"
+          className="rounded-2xl border border-slate-800 bg-slate-900/95 p-4 sm:p-5 shadow-lg"
         >
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-4">
-            <div className="flex items-center gap-2.5">
-              <Ship className="h-5 w-5 text-sky-400" aria-hidden="true" />
-              <div>
-                <h1 id="heading-sedms-projects" className="text-base font-bold text-white">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-3.5">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <Ship className="h-5 w-5 text-sky-400 shrink-0" aria-hidden="true" />
+              <div className="min-w-0">
+                <h2 id="heading-sedms-projects" className="text-base font-bold text-white">
                   정박 프로젝트 선박 (SEDMS)
-                </h1>
+                </h2>
                 <p className="text-xs text-slate-300">
                   {isPreview
-                    ? '미리보기 데모용 가명 프로젝트 목록입니다. 실제 SEDMS 이동은 SGW 운영 환경에서 동작합니다.'
-                    : '현재 SGW 계정으로 접근 가능한 SEDMS 프로젝트 목록입니다. 클릭 시 SSO를 통해 SEDMS로 바로 이동합니다.'}
+                    ? '미리보기 데모 가명 프로젝트입니다. 상태 아이콘과 텍스트로 진행 현황을 구분합니다.'
+                    : '참여 중인 SEDMS 프로젝트입니다. 각 선박에서 도면·대화·파일로 즉시 이동합니다.'}
                 </p>
               </div>
             </div>
 
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2.5">
               {!isPreview && (
-                <label className="inline-flex items-center gap-1.5 text-xs text-slate-300 cursor-pointer">
+                <label className="hidden sm:inline-flex items-center gap-1.5 text-xs text-slate-200 cursor-pointer">
                   <input
                     type="checkbox"
                     checked={openInNewTab}
                     onChange={(e) => setOpenInNewTab(e.target.checked)}
-                    className="h-3.5 w-3.5 rounded border-slate-600 bg-slate-800 accent-sky-500"
+                    className="h-4 w-4 rounded border-slate-600 bg-slate-800 accent-sky-500"
                   />
                   새 창으로 열기
                 </label>
@@ -138,10 +276,11 @@ export const AccessibleListView: React.FC<AccessibleListViewProps> = ({
               <button
                 type="button"
                 onClick={onRefreshProjects}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-100 hover:bg-slate-700"
+                aria-label="프로젝트 목록 새로고침"
+                className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs font-semibold text-slate-100 hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400"
               >
-                <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" />
-                새로고침
+                <RefreshCw className="h-4 w-4" aria-hidden="true" />
+                <span>새로고침</span>
               </button>
             </div>
           </div>
@@ -152,19 +291,19 @@ export const AccessibleListView: React.FC<AccessibleListViewProps> = ({
             )}
 
             {projectsState === 'pending' && (
-              <div className="rounded-xl border border-slate-700 bg-slate-950/70 p-6 text-center space-y-3">
+              <div className="rounded-xl border border-slate-700 bg-slate-950/70 p-5 text-center space-y-3">
                 <p className="text-base font-semibold text-white">
                   {projectsMessage || '프로젝트 연결 준비 중'}
                 </p>
                 <p className="text-xs text-slate-300">
-                  SGW 게이트웨이의 SEDMS 프로젝트 목록 API가 아직 활성화되지 않았습니다. 아래 버튼으로 SEDMS 프로젝트 화면으로 직접 이동할 수 있습니다.
+                  SGW 게이트웨이의 SEDMS 프로젝트 목록 API가 아직 활성화되지 않았습니다.
                 </p>
                 <a
                   href={safeHref(SGW_PORTAL_LINKS.sedmsProjects)}
                   target={!isPreview && openInNewTab ? '_blank' : undefined}
                   rel={!isPreview && openInNewTab ? 'noopener noreferrer' : undefined}
                   onClick={handleLinkClick('SEDMS 프로젝트 목록')}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-sky-600 px-4 py-2 text-xs font-semibold text-white hover:bg-sky-500"
+                  className="inline-flex min-h-[44px] items-center gap-1.5 rounded-lg bg-sky-700 px-4 py-2 text-xs font-semibold text-white hover:bg-sky-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400"
                 >
                   <FolderKanban className="h-4 w-4" aria-hidden="true" />
                   SEDMS 프로젝트 목록 열기
@@ -174,100 +313,201 @@ export const AccessibleListView: React.FC<AccessibleListViewProps> = ({
             )}
 
             {projectsState === 'forbidden' && (
-              <div className="rounded-xl border border-rose-500/40 bg-rose-950/30 p-6 text-center text-sm text-rose-100">
+              <div className="rounded-xl border border-rose-500/40 bg-rose-950/40 p-5 text-center text-sm text-rose-100">
                 권한 없음 — SEDMS 프로젝트 조회 권한이 필요합니다.
               </div>
             )}
 
             {projectsState === 'ready' && ships.length === 0 && (
-              <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-6 text-center text-sm text-slate-300">
+              <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-5 text-center text-sm text-slate-300">
                 현재 참여 중인 SEDMS 프로젝트가 없습니다.
               </div>
             )}
 
             {projectsState === 'ready' && ships.length > 0 && (
-              <div className="overflow-x-auto">
-                <table className="w-full border-collapse text-left text-sm">
-                  <thead>
-                    <tr className="border-b border-slate-800 text-xs font-semibold uppercase text-slate-300">
-                      <th scope="col" className="py-2.5 pr-3">선석</th>
-                      <th scope="col" className="py-2.5 pr-3">코드</th>
-                      <th scope="col" className="py-2.5 pr-3">프로젝트명</th>
-                      <th scope="col" className="py-2.5 pr-3">내 권한</th>
-                      <th scope="col" className="py-2.5 pr-3">상태</th>
-                      <th scope="col" className="py-2.5 pr-3">최근 갱신</th>
-                      <th scope="col" className="py-2.5 text-right">이동</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-800/80">
-                    {ships.map((ship) => {
-                      const ssoHref = safeHref(buildSedmsProjectUrl(ship.id));
-                      return (
-                        <tr key={ship.id} className="hover:bg-slate-800/40">
-                          <td className="py-3 pr-3 font-mono text-xs text-slate-300">{ship.berthLabel}</td>
-                          <td className="py-3 pr-3 font-mono text-xs text-slate-200">{ship.code}</td>
-                          <td className="py-3 pr-3 font-semibold text-white">
-                            <button
-                              type="button"
-                              onClick={() => onSelectShip(ship)}
-                              className="text-left hover:text-sky-300 underline-offset-4 hover:underline"
-                            >
-                              {ship.name}
-                            </button>
-                          </td>
-                          <td className="py-3 pr-3 text-xs text-slate-200">{ship.role}</td>
-                          <td className="py-3 pr-3">
-                            <span
-                              className={`inline-block rounded border px-2 py-0.5 text-xs font-semibold ${STATUS_BADGE_CLASS[ship.statusTone]}`}
-                            >
-                              {ship.status}
-                            </span>
-                          </td>
-                          <td className="py-3 pr-3 font-mono text-xs text-slate-300">{ship.updatedAt}</td>
-                          <td className="py-3 text-right">
-                            <a
-                              href={ssoHref}
-                              target={!isPreview && openInNewTab ? '_blank' : undefined}
-                              rel={!isPreview && openInNewTab ? 'noopener noreferrer' : undefined}
-                              onClick={handleLinkClick(`SEDMS 프로젝트(${ship.code}) 입장`)}
-                              className="inline-flex items-center gap-1 rounded-lg bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-sky-500"
-                            >
-                              SEDMS 열기
-                              <ExternalLink className="h-3 w-3" aria-hidden="true" />
-                            </a>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
+              <>
+                {/* Mobile (< md): Zero-overflow 1-tap cards (>= 44x44px touch targets) */}
+                <ul className="space-y-3 md:hidden" onKeyDown={handleRovingKeyDown}>
+                  {ships.map((ship) => {
+                    const ssoHref = safeHref(buildSedmsProjectUrl(ship.id));
+                    const talkHref = safeHref(buildTalkRoomUrl(ship.id));
+                    const nasHref = safeHref(SGW_PORTAL_LINKS.nas);
+                    return (
+                      <li
+                        key={ship.id}
+                        className="rounded-xl border border-slate-800 bg-slate-950/90 p-3.5 space-y-3"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="font-mono text-[11px] text-slate-300 truncate">
+                              {ship.berthLabel} · {ship.code}
+                            </p>
+                            <h3 className="text-sm font-bold text-white truncate">{ship.name}</h3>
+                            <p className="mt-0.5 text-xs text-slate-300">
+                              역할: {ship.role} · 갱신: {ship.updatedAt}
+                            </p>
+                          </div>
+
+                          <span
+                            className={`inline-flex shrink-0 items-center gap-1 rounded-md border px-2 py-1 text-xs font-semibold ${STATUS_BADGE_CLASS[ship.statusTone]}`}
+                          >
+                            {renderShipStatusIcon(ship.statusTone)}
+                            <span>{ship.appearance.statusLabelKo}</span>
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 text-xs text-slate-300">
+                          <Lightbulb
+                            className={`h-3.5 w-3.5 shrink-0 ${
+                              ship.appearance.hasDeckLights ? 'text-amber-300' : 'text-slate-400'
+                            }`}
+                            aria-hidden="true"
+                          />
+                          <span>
+                            {ship.appearance.hasDeckLights
+                              ? '갑판 불빛 점등 (7일 이내 갱신)'
+                              : '갑판 불빛 소등 (7일 경과)'}
+                          </span>
+                        </div>
+
+                        <div className="grid grid-cols-4 gap-1.5">
+                          <a
+                            href={ssoHref}
+                            onClick={handleLinkClick(`도면 SEDMS(${ship.code})`)}
+                            aria-label={`${ship.name} 도면 SEDMS 열기`}
+                            className="flex min-h-[44px] min-w-[44px] flex-col items-center justify-center rounded-lg bg-sky-700 px-1.5 py-1.5 text-[11px] font-semibold text-white hover:bg-sky-600 focus-visible:outline-2 focus-visible:outline-sky-300"
+                          >
+                            <FolderKanban className="h-4 w-4" aria-hidden="true" />
+                            <span>도면</span>
+                          </a>
+
+                          <a
+                            href={talkHref}
+                            onClick={handleLinkClick(`팀 채팅(${ship.code})`)}
+                            aria-label={`${ship.name} 팀 채팅 대화 열기`}
+                            className="flex min-h-[44px] min-w-[44px] flex-col items-center justify-center rounded-lg border border-slate-700 bg-slate-800 px-1.5 py-1.5 text-[11px] font-semibold text-slate-100 hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-sky-300"
+                          >
+                            <MessageSquare className="h-4 w-4 text-sky-300" aria-hidden="true" />
+                            <span>대화</span>
+                          </a>
+
+                          <a
+                            href={nasHref}
+                            onClick={handleLinkClick(`NAS 파일(${ship.code})`)}
+                            aria-label={`${ship.name} NAS 파일 폴더 열기`}
+                            className="flex min-h-[44px] min-w-[44px] flex-col items-center justify-center rounded-lg border border-slate-700 bg-slate-800 px-1.5 py-1.5 text-[11px] font-semibold text-slate-100 hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-sky-300"
+                          >
+                            <Building2 className="h-4 w-4 text-teal-300" aria-hidden="true" />
+                            <span>파일</span>
+                          </a>
+
+                          <button
+                            type="button"
+                            data-kbd-item="true"
+                            onClick={() => onSelectShip(ship)}
+                            aria-label={`${ship.name} 선상 패널 열기`}
+                            className="flex min-h-[44px] min-w-[44px] flex-col items-center justify-center rounded-lg border border-slate-700 bg-slate-800 px-1.5 py-1.5 text-[11px] font-semibold text-slate-100 hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-sky-300"
+                          >
+                            <Anchor className="h-4 w-4 text-amber-300" aria-hidden="true" />
+                            <span>승선</span>
+                          </button>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+
+                {/* Desktop (>= md): Full accessible data table */}
+                <div className="hidden md:block overflow-x-auto">
+                  <table className="w-full border-collapse text-left text-sm">
+                    <thead>
+                      <tr className="border-b border-slate-800 text-xs font-semibold text-slate-300">
+                        <th scope="col" className="py-2.5 pr-3">선석</th>
+                        <th scope="col" className="py-2.5 pr-3">코드</th>
+                        <th scope="col" className="py-2.5 pr-3">프로젝트명</th>
+                        <th scope="col" className="py-2.5 pr-3">내 권한</th>
+                        <th scope="col" className="py-2.5 pr-3">상태</th>
+                        <th scope="col" className="py-2.5 pr-3">최근 갱신</th>
+                        <th scope="col" className="py-2.5 text-right">이동</th>
+                      </tr>
+                    </thead>
+                    <tbody
+                      className="divide-y divide-slate-800/80"
+                      onKeyDown={handleRovingKeyDown}
+                    >
+                      {ships.map((ship) => {
+                        const ssoHref = safeHref(buildSedmsProjectUrl(ship.id));
+                        return (
+                          <tr key={ship.id} className="hover:bg-slate-800/40">
+                            <td className="py-3 pr-3 font-mono text-xs text-slate-300">{ship.berthLabel}</td>
+                            <td className="py-3 pr-3 font-mono text-xs text-slate-200">{ship.code}</td>
+                            <td className="py-3 pr-3 font-semibold text-white">
+                              <button
+                                type="button"
+                                data-kbd-item="true"
+                                onClick={() => onSelectShip(ship)}
+                                aria-label={`${ship.name} (${ship.code}) 프로젝트 상세 보기`}
+                                className="rounded text-left hover:text-sky-300 underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400"
+                              >
+                                {ship.name}
+                              </button>
+                            </td>
+                            <td className="py-3 pr-3 text-xs text-slate-200">{ship.role}</td>
+                            <td className="py-3 pr-3">
+                              <span
+                                className={`inline-flex items-center gap-1 rounded border px-2 py-0.5 text-xs font-semibold ${STATUS_BADGE_CLASS[ship.statusTone]}`}
+                              >
+                                {renderShipStatusIcon(ship.statusTone)}
+                                <span>{ship.appearance.statusLabelKo}</span>
+                              </span>
+                            </td>
+                            <td className="py-3 pr-3 font-mono text-xs text-slate-300">{ship.updatedAt}</td>
+                            <td className="py-3 text-right">
+                              <a
+                                href={ssoHref}
+                                target={!isPreview && openInNewTab ? '_blank' : undefined}
+                                rel={!isPreview && openInNewTab ? 'noopener noreferrer' : undefined}
+                                onClick={handleLinkClick(`SEDMS 프로젝트(${ship.code}) 입장`)}
+                                aria-label={`${ship.name} SEDMS 프로젝트 열기`}
+                                className="inline-flex min-h-[36px] items-center gap-1 rounded-lg bg-sky-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-sky-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400"
+                              >
+                                SEDMS 열기
+                                <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                              </a>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </>
             )}
           </div>
         </section>
 
-        {/* 2. People & Presence */}
+        {/* 3. People & Presence Radar */}
         <section
           aria-labelledby="heading-harbor-people"
-          className="rounded-2xl border border-slate-800 bg-slate-900/90 p-5 shadow-lg"
+          className="rounded-2xl border border-slate-800 bg-slate-900/95 p-4 sm:p-5 shadow-lg"
         >
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-4">
-            <div className="flex items-center gap-2.5">
-              <Users className="h-5 w-5 text-emerald-400" aria-hidden="true" />
-              <div>
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-3.5">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <Users className="h-5 w-5 text-emerald-400 shrink-0" aria-hidden="true" />
+              <div className="min-w-0">
                 <h2 id="heading-harbor-people" className="text-base font-bold text-white">
                   직원 · 접속 현황 (SGW)
                 </h2>
                 <p className="text-xs text-slate-300">
-                  30초 기준 접속 상태가 표시되며, 직원을 클릭하면 SGTALK 1:1 대화로 바로 연결됩니다.
+                  아이콘과 텍스트로 접속 상태를 표시하며 1탭으로 대화·메일을 실행합니다.
                 </p>
               </div>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="relative">
+            <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+              <div className="relative flex-1 sm:flex-none">
                 <Search
-                  className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400"
+                  className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"
                   aria-hidden="true"
                 />
                 <input
@@ -276,15 +516,15 @@ export const AccessibleListView: React.FC<AccessibleListViewProps> = ({
                   onChange={(e) => setQuery(e.target.value)}
                   placeholder="이름 · 부서 · 직급 검색"
                   aria-label="직원 검색"
-                  className="w-52 rounded-lg border border-slate-700 bg-slate-950 py-1.5 pl-8 pr-3 text-xs text-white placeholder:text-slate-400 focus:border-sky-500 focus:outline-none"
+                  className="min-h-[44px] w-full sm:w-52 rounded-lg border border-slate-700 bg-slate-950 py-2 pl-9 pr-3 text-xs text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-2 focus:outline-sky-400"
                 />
               </div>
-              <label className="inline-flex items-center gap-1.5 text-xs text-slate-200 cursor-pointer">
+              <label className="inline-flex min-h-[44px] items-center gap-1.5 text-xs text-slate-200 cursor-pointer px-1">
                 <input
                   type="checkbox"
                   checked={onlineOnly}
                   onChange={(e) => setOnlineOnly(e.target.checked)}
-                  className="h-3.5 w-3.5 rounded border-slate-600 bg-slate-800 accent-emerald-500"
+                  className="h-4 w-4 rounded border-slate-600 bg-slate-800 accent-emerald-500"
                 />
                 접속 중만 보기
               </label>
@@ -296,109 +536,98 @@ export const AccessibleListView: React.FC<AccessibleListViewProps> = ({
               표시할 직원 정보가 없습니다.
             </p>
           ) : (
-            <ul className="mt-4 grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+            <ul
+              className="mt-4 grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3"
+              onKeyDown={handleRovingKeyDown}
+            >
               {filteredPeople.map((person) => (
                 <li
                   key={person.sub}
-                  className="flex items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950/75 px-3.5 py-3"
+                  className="flex items-center justify-between gap-2 rounded-xl border border-slate-800 bg-slate-950/90 px-3 py-2.5"
                 >
                   <button
                     type="button"
+                    data-kbd-item="true"
                     onClick={() => onSelectPerson(person)}
-                    className="min-w-0 text-left flex-1"
+                    aria-label={`${person.name} (${person.dept}, ${person.online ? '접속 중' : '오프라인'}) 상세 보기`}
+                    className="min-h-[44px] min-w-0 text-left flex-1 rounded px-1 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400"
                   >
-                    <div className="flex items-center gap-2">
-                      <span
-                        className={`h-2.5 w-2.5 shrink-0 rounded-full ${
-                          person.online ? 'bg-emerald-400' : 'bg-slate-600'
-                        }`}
-                        aria-label={person.online ? '접속 중' : '오프라인'}
-                      />
-                      <span className="truncate text-sm font-semibold text-white">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="truncate text-sm font-bold text-white">
                         {person.name}
                       </span>
-                      {person.isPartner && (
-                        <span className="rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-amber-200 border border-amber-400/40">
-                          협력사
-                        </span>
-                      )}
+                      <span
+                        className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] font-semibold ${
+                          person.online
+                            ? 'border-emerald-400/50 bg-emerald-950/80 text-emerald-100'
+                            : 'border-slate-600 bg-slate-800 text-slate-200'
+                        }`}
+                      >
+                        {person.online ? (
+                          <Wifi className="h-3 w-3 text-emerald-300 shrink-0" aria-hidden="true" />
+                        ) : (
+                          <WifiOff className="h-3 w-3 text-slate-300 shrink-0" aria-hidden="true" />
+                        )}
+                        <span>{person.online ? '접속 중' : '오프라인'}</span>
+                      </span>
                     </div>
-                    <p className="mt-0.5 truncate text-xs text-slate-300">
-                      {person.dept} · {person.title}
+                    <p className="mt-0.5 flex items-center gap-1 truncate text-xs text-slate-300">
+                      {person.isPartner ? (
+                        <Briefcase className="h-3 w-3 text-amber-300 shrink-0" aria-hidden="true" />
+                      ) : (
+                        <Building2 className="h-3 w-3 text-sky-300 shrink-0" aria-hidden="true" />
+                      )}
+                      <span className="truncate">
+                        {person.dept} · {person.isPartner ? '협력사' : '본사'}
+                      </span>
                     </p>
                   </button>
 
-                  <a
-                    href={safeHref(buildTalkDmUrl(person.sub))}
-                    onClick={handleLinkClick(`SGTALK 대화(${person.name})`)}
-                    className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-sky-500/40 bg-sky-600/20 px-2.5 py-1.5 text-xs font-semibold text-sky-200 hover:bg-sky-600 hover:text-white"
-                  >
-                    <MessageSquare className="h-3.5 w-3.5" aria-hidden="true" />
-                    대화
-                  </a>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    <a
+                      href={safeHref(buildTalkDmUrl(person.sub))}
+                      onClick={handleLinkClick(`SGTALK 대화(${person.name})`)}
+                      aria-label={`${person.name}와 SGTALK 1:1 대화`}
+                      className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center gap-1 rounded-lg bg-sky-700 px-2.5 py-2 text-xs font-semibold text-white hover:bg-sky-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400"
+                    >
+                      <MessageSquare className="h-4 w-4 shrink-0" aria-hidden="true" />
+                      <span>대화</span>
+                    </a>
+
+                    <a
+                      href={safeHref(SGW_PORTAL_LINKS.bmail)}
+                      onClick={handleLinkClick(`bmail 메일(${person.name})`)}
+                      aria-label={`${person.name}에게 bmail 열기`}
+                      className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg border border-slate-700 bg-slate-800 p-2 text-indigo-200 hover:bg-slate-700 hover:text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400"
+                    >
+                      <Mail className="h-4 w-4 shrink-0" aria-hidden="true" />
+                    </a>
+                  </div>
                 </li>
               ))}
             </ul>
           )}
         </section>
 
-        {/* 3. SGW Workspace Shortcuts */}
-        <section aria-labelledby="heading-sgw-links" className="space-y-3">
-          <h2 id="heading-sgw-links" className="text-sm font-bold text-slate-200">
-            SGW 업무 바로가기
-          </h2>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        {/* 4. Admin Shortcut (display-only hint; server enforces access) */}
+        {!user.isPartner && (
+          <section aria-labelledby="heading-sgw-admin-link">
+            <h2 id="heading-sgw-admin-link" className="sr-only">
+              SGW 관리자 바로가기
+            </h2>
             <a
-              href={safeHref(SGW_PORTAL_LINKS.talkHome)}
-              onClick={handleLinkClick('SGTALK · SGW 비서')}
-              className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-900/90 p-4 hover:border-sky-500/60"
+              href={safeHref(SGW_PORTAL_LINKS.admin)}
+              onClick={handleLinkClick('SGW 관리자')}
+              className="flex min-h-[52px] items-center gap-3 rounded-xl border border-slate-800 bg-slate-900/95 px-4 py-3 hover:border-amber-500/60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400"
             >
-              <MessageSquare className="h-5 w-5 text-sky-400 shrink-0" aria-hidden="true" />
+              <Shield className="h-5 w-5 text-amber-400 shrink-0" aria-hidden="true" />
               <div>
-                <div className="text-sm font-semibold text-white">SGTALK · SGW 비서</div>
-                <div className="text-xs text-slate-300">사내 채팅 및 AI 비서 열기</div>
+                <div className="text-sm font-semibold text-white">SGW 관리자</div>
+                <div className="text-xs text-slate-300">직원·권한·감사 관리</div>
               </div>
             </a>
-
-            <a
-              href={safeHref(SGW_PORTAL_LINKS.nas)}
-              onClick={handleLinkClick('SGW NAS')}
-              className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-900/90 p-4 hover:border-teal-500/60"
-            >
-              <Building2 className="h-5 w-5 text-teal-400 shrink-0" aria-hidden="true" />
-              <div>
-                <div className="text-sm font-semibold text-white">SGW NAS</div>
-                <div className="text-xs text-slate-300">공유 문서함으로 이동</div>
-              </div>
-            </a>
-
-            <a
-              href={safeHref(SGW_PORTAL_LINKS.bmail)}
-              onClick={handleLinkClick('bmail')}
-              className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-900/90 p-4 hover:border-indigo-500/60"
-            >
-              <Mail className="h-5 w-5 text-indigo-400 shrink-0" aria-hidden="true" />
-              <div>
-                <div className="text-sm font-semibold text-white">bmail 열기</div>
-                <div className="text-xs text-slate-300">PC 메일 앱 실행 (bmail://)</div>
-              </div>
-            </a>
-
-            {!user.isPartner && (
-              <a
-                href={safeHref(SGW_PORTAL_LINKS.admin)}
-                onClick={handleLinkClick('SGW 관리자')}
-                className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-900/90 p-4 hover:border-amber-500/60"
-              >
-                <Shield className="h-5 w-5 text-amber-400 shrink-0" aria-hidden="true" />
-                <div>
-                  <div className="text-sm font-semibold text-white">SGW 관리자</div>
-                  <div className="text-xs text-slate-300">직원·권한·감사 관리</div>
-                </div>
-              </a>
-            )}
-          </div>
-        </section>
+          </section>
+        )}
       </div>
     </main>
   );

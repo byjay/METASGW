@@ -41,7 +41,7 @@ export const AuthGateOverlay: React.FC<AuthGateOverlayProps> = ({
     >
       <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl space-y-5">
         <div className="flex items-center gap-3">
-          <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-sky-600 text-white">
+          <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-sky-700 text-white">
             {status === 'forbidden' || status === 'not_found' || status === 'error' ? (
               <AlertTriangle className="h-5 w-5" aria-hidden="true" />
             ) : (
@@ -66,7 +66,7 @@ export const AuthGateOverlay: React.FC<AuthGateOverlayProps> = ({
           <div className="flex flex-col gap-2">
             <a
               href={loginHref}
-              className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-sky-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-sky-500"
+              className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-sky-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-sky-600 focus-visible:outline-2 focus-visible:outline-sky-400"
             >
               <LogIn className="h-4 w-4" aria-hidden="true" />
               SGW 로그인 화면으로 이동
@@ -79,13 +79,14 @@ export const AuthGateOverlay: React.FC<AuthGateOverlayProps> = ({
             <button
               type="button"
               onClick={onRetry}
-              className="flex-1 rounded-xl border border-slate-700 bg-slate-800 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700"
+              aria-label="SGW 세션 다시 확인"
+              className="flex-1 rounded-xl border border-slate-700 bg-slate-800 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-sky-400"
             >
               다시 확인
             </button>
             <a
               href={loginHref}
-              className="flex-1 inline-flex items-center justify-center rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-500"
+              className="flex-1 inline-flex items-center justify-center rounded-xl bg-sky-700 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-600 focus-visible:outline-2 focus-visible:outline-sky-400"
             >
               SGW 홈으로
             </a>
@@ -207,7 +208,7 @@ export const ShipBriefingModal: React.FC<ShipBriefingModalProps> = ({
                 onPreviewLinkBlocked(`SEDMS 프로젝트(${ship.code}) 입장`);
               }
             }}
-            className="flex-1 inline-flex items-center justify-center gap-2 rounded-xl bg-sky-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-sky-500"
+            className="flex-1 inline-flex items-center justify-center gap-2 rounded-xl bg-sky-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-sky-600 focus-visible:outline-2 focus-visible:outline-sky-400"
           >
             SEDMS 프로젝트 열기
             <ExternalLink className="h-4 w-4" aria-hidden="true" />
@@ -215,7 +216,8 @@ export const ShipBriefingModal: React.FC<ShipBriefingModalProps> = ({
           <button
             type="button"
             onClick={onClose}
-            className="rounded-xl border border-slate-700 bg-slate-800 px-4 py-2.5 text-sm font-medium text-slate-200 hover:bg-slate-700"
+            aria-label="선박 상세 창 닫기"
+            className="rounded-xl border border-slate-700 bg-slate-800 px-4 py-2.5 text-sm font-medium text-slate-200 hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-sky-400"
           >
             닫기
           </button>
@@ -305,7 +307,7 @@ export const PersonActionModal: React.FC<PersonActionModalProps> = ({
                 onPreviewLinkBlocked(`SGTALK 1:1 대화(${person.name})`);
               }
             }}
-            className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-sky-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-sky-500"
+            className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-sky-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-sky-600 focus-visible:outline-2 focus-visible:outline-sky-400"
           >
             <MessageSquare className="h-4 w-4" aria-hidden="true" />
             SGTALK 1:1 대화하기
@@ -318,7 +320,8 @@ export const PersonActionModal: React.FC<PersonActionModalProps> = ({
                 onFocus3D(person.sub);
                 onClose();
               }}
-              className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-slate-700 bg-slate-800 px-4 py-2 text-xs font-semibold text-slate-100 hover:bg-slate-700"
+              aria-label={`3D 항구에서 ${person.name} 위치 찾아가기`}
+              className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-slate-700 bg-slate-800 px-4 py-2 text-xs font-semibold text-slate-100 hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-sky-400"
             >
               <MapPin className="h-3.5 w-3.5 text-emerald-400" aria-hidden="true" />
               3D 항구에서 위치 찾아가기

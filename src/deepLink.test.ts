@@ -49,6 +49,7 @@ describe('deepLink frozen contracts & URL safety', () => {
     assert.equal(isSafeNavigationUrl('/nas/'), true);
     assert.equal(isSafeNavigationUrl('bmail://inbox'), true);
     assert.equal(isSafeNavigationUrl('https://sgw.seastar.work/talk/'), true);
+    assert.equal(isSafeNavigationUrl('http://localhost:3000/'), true);
 
     // XSS / protocol-injection payloads MUST be rejected
     assert.equal(isSafeNavigationUrl('javascript:alert(1)'), false);
@@ -56,6 +57,8 @@ describe('deepLink frozen contracts & URL safety', () => {
     assert.equal(isSafeNavigationUrl('data:text/html,<script>alert(1)</script>'), false);
     assert.equal(isSafeNavigationUrl('vbscript:msgbox(1)'), false);
     assert.equal(isSafeNavigationUrl('file:///etc/passwd'), false);
+    assert.equal(isSafeNavigationUrl('blob:https://example.com/123'), false);
+    assert.equal(isSafeNavigationUrl('/talk/\u0000evil'), false);
     assert.equal(isSafeNavigationUrl('//evil.example/phish'), false);
     assert.equal(isSafeNavigationUrl('/\\evil.example'), false);
     assert.equal(isSafeNavigationUrl(''), false);

@@ -11,6 +11,12 @@ import type {
   SgwUser,
 } from './sgwAdapter';
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function formatIsoDateDaysAgo(nowMs: number, daysAgo: number): string {
+  return new Date(nowMs - daysAgo * DAY_MS).toISOString().slice(0, 10);
+}
+
 export function getPreviewDemoUser(): SgwUser {
   return {
     sub: 'user01',
@@ -70,39 +76,39 @@ export function getPreviewDemoPresence(nowMs = Date.now()): SgwPresenceEntry[] {
   ];
 }
 
-export function getPreviewDemoProjects(): SedmsProject[] {
+export function getPreviewDemoProjects(nowMs = Date.now()): SedmsProject[] {
   return [
     {
       id: 'proj01',
-      code: 'PRJ-01',
+      code: 'VESSEL-LNG-01',
       name: 'proj01',
       role: 'manager',
       status: 'active',
-      updated_at: '2026-11-26',
+      updated_at: formatIsoDateDaysAgo(nowMs, 1),
     },
     {
       id: 'proj02',
-      code: 'PRJ-02',
+      code: 'VESSEL-CTN-02',
       name: 'proj02',
       role: 'reviewer',
       status: 'review',
-      updated_at: '2026-11-25',
+      updated_at: formatIsoDateDaysAgo(nowMs, 3),
     },
     {
       id: 'proj03',
-      code: 'PRJ-03',
+      code: 'VESSEL-TNK-03',
       name: 'proj03',
       role: 'member',
       status: 'hold',
-      updated_at: '2026-11-22',
+      updated_at: formatIsoDateDaysAgo(nowMs, 6),
     },
     {
       id: 'proj04',
-      code: 'PRJ-04',
+      code: 'VESSEL-GEN-04',
       name: 'proj04',
       role: 'viewer',
       status: 'completed',
-      updated_at: '2026-11-18',
+      updated_at: formatIsoDateDaysAgo(nowMs, 12),
     },
   ];
 }
