@@ -96,16 +96,27 @@ describe('SGW Integration Guide (§1, §6, §7, §8) static compliance audit', (
     }
   });
 
-  it('5) confines all network fetch() calls to sgwAdapter.ts and bans token storage & external CDNs', () => {
+  it('5) confines all network fetch() calls to sgwAdapter.ts & meta/metaClient.ts and bans token storage & external CDNs', () => {
+    const ALLOWED_FETCH_FILES = new Set(['src/sgwAdapter.ts', 'src/meta/metaClient.ts']);
     for (const file of RUNTIME_SOURCE_FILES) {
       const rel = relative(ROOT, file).replace(/\\/g, '/');
       const code = stripComments(readFileSync(file, 'utf8'));
 
-      if (rel !== 'src/sgwAdapter.ts') {
+      if (!ALLOWED_FETCH_FILES.has(rel)) {
         assert.equal(
           /\bfetch\s*\(/.test(code),
           false,
-          `Direct fetch() outside sgwAdapter.ts found in ${rel}`,
+          `Direct fetch() outside approved SGW adapters found in ${rel}`,
+        );
+      } else {
+        assert.ok(
+          code.includes("credentials: 'same-origin'"),
+          `${rel} must enforce credentials: 'same-origin'`,
+        );
+        assert.equal(
+          /['"]Authorization['"]\s*:/.test(code),
+          false,
+          `${rel} must never send Authorization headers`,
         );
       }
 
