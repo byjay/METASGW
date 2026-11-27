@@ -297,7 +297,7 @@ export function mapProjectsToHarborShips(
 
   const count = projects.length;
   const maxPerRow = count === 4 ? 2 : 3;
-  const spacingX = count === 4 ? 52 : 46;
+  const spacingX = count === 4 ? 62 : 46;
 
   return projects.map((project, idx) => {
     const row = Math.floor(idx / maxPerRow);
@@ -306,8 +306,9 @@ export function mapProjectsToHarborShips(
 
     const startX = -((itemsInRow - 1) * spacingX) / 2;
     const berthX = startX + col * spacingX;
-    // Quay wall ends at z=-2.5. Row 0 at z=20.5 guarantees >= 15m clear water channel.
-    const berthZ = 20.5 + row * 26;
+    // Quay wall ends at z=-2.5; Hero 씨스타호 & FD-01 occupy z=15.5..17.5.
+    // Business project ships moor cleanly in the main foreground basin starting at z=45.
+    const berthZ = 45 + row * 26;
 
     const appearance = deriveShipAppearance(project.status, project.updated_at, nowMs);
     const hash = stableHash(project.id);

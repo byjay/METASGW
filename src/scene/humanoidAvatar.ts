@@ -268,8 +268,8 @@ export function buildHarborAvatar(options: {
   const group = new THREE.Group();
 
   const jacketColor = new THREE.Color(options.shirtHex).getHex();
-  const helmetColor = options.isPartner ? 0xf59e0b : options.isCurrentUser ? 0x38bdf8 : 0xf8fafc;
-  const vestColor = options.isPartner ? 0xd96b27 : 0x1a5f8a;
+  const helmetColor = options.isPartner ? 0xfbbf24 : options.isCurrentUser ? 0x38bdf8 : 0xf8fafc;
+  const vestColor = options.isPartner ? 0xea580c : 0x0284c7;
 
   // Root containers for each LOD tier
   const detailedRoot = new THREE.Group();
@@ -285,7 +285,7 @@ export function buildHarborAvatar(options: {
         new THREE.MeshBasicMaterial({
           map: options.contactShadowTex,
           transparent: true,
-          opacity: 0.58,
+          opacity: 0.62,
           depthWrite: false,
         }),
     );
@@ -295,13 +295,13 @@ export function buildHarborAvatar(options: {
     group.add(shadow);
   }
 
-  // 2) Instant Articulated Procedural Humanoid Rig (2.85m diorama-readable scale)
+  // 2) Instant Articulated Procedural Humanoid Rig (2.85m diorama-readable base scale)
   const fallbackRigGroup = new THREE.Group();
   fallbackRigGroup.scale.setScalar(1.62);
   const rigGeos = getMergedRigGeos(jacketColor, vestColor, helmetColor);
   const bodyMat = getCachedMat(
     'avatar_vertex_pbr',
-    () => new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.5, metalness: 0.14 }),
+    () => new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.46, metalness: 0.12 }),
   );
 
   const hips = new THREE.Group();
@@ -356,21 +356,25 @@ export function buildHarborAvatar(options: {
   detailedRoot.add(fallbackRigGroup);
 
   // 3) Mid-distance Simplified Silhouette LOD
-  simpleRoot.scale.setScalar(1.62);
+  const simpleInner = new THREE.Group();
+  simpleInner.scale.setScalar(1.62);
   const simpleMat = new THREE.MeshStandardMaterial({
-    color: jacketColor,
-    roughness: 0.6,
-    metalness: 0.1,
+    color: vestColor,
+    roughness: 0.48,
+    metalness: 0.12,
   });
   const simpleBody = new THREE.Mesh(g.simpleBody, simpleMat);
   simpleBody.position.y = 0.85;
-  simpleRoot.add(simpleBody);
-  const simpleHelmetMat = new THREE.MeshStandardMaterial({ color: helmetColor, roughness: 0.45 });
+  simpleBody.castShadow = true;
+  simpleInner.add(simpleBody);
+  const simpleHelmetMat = new THREE.MeshStandardMaterial({ color: helmetColor, roughness: 0.36 });
   const simpleHead = new THREE.Mesh(g.simpleHead, simpleHelmetMat);
   simpleHead.position.y = 1.56;
-  simpleRoot.add(simpleHead);
+  simpleHead.castShadow = true;
+  simpleInner.add(simpleHead);
+  simpleRoot.add(simpleInner);
 
-  // 4) Far-distance Billboard Icon Sprite LOD (unobtrusive iconization!)
+  // 4) Far-distance Billboard Icon Sprite LOD (guarantees minimum legible screen size at overview/far zoom)
   let billboardSprite: THREE.Sprite | null = null;
   if (options.billboardIconTex) {
     const bbMat = new THREE.SpriteMaterial({
@@ -380,8 +384,8 @@ export function buildHarborAvatar(options: {
       depthWrite: false,
     });
     billboardSprite = new THREE.Sprite(bbMat);
-    billboardSprite.position.set(0, 1.35, 0);
-    billboardSprite.scale.set(1.5, 1.5, 1);
+    billboardSprite.position.set(0, 2.8, 0);
+    billboardSprite.scale.set(4.5, 4.5, 1);
     billboardSprite.visible = false;
     group.add(billboardSprite);
   }
@@ -415,6 +419,12 @@ export function buildHarborAvatar(options: {
         });
         wrapper.add(vrmScene);
         addSafetyHelmetProp(wrapper, helmetColor, 2.68, 1.48);
+        const hum = vrm.humanoid;
+        const lArm = hum?.getNormalizedBoneNode('leftUpperArm');
+        const rArm = hum?.getNormalizedBoneNode('rightUpperArm');
+        if (lArm) lArm.rotation.set(0, 0, 1.18);
+        if (rArm) rArm.rotation.set(0, 0, -1.18);
+        vrm.update(0);
         externalModelRoot = wrapper;
         detailedRoot.add(wrapper);
         fallbackRigGroup.visible = false;
@@ -463,12 +473,24 @@ export function buildHarborAvatar(options: {
       currentLod = nextLod;
       detailedRoot.visible = nextLod === 'detailed';
       simpleRoot.visible = nextLod === 'simple';
+
+      // Distance-adaptive scale floor guarantees avatars stay clearly readable in Harbor Overview
+      // while remaining natural human proportion up close (d <= 45m).
+      const safeDist = Number.isFinite(cameraDistance) ? cameraDistance : 160;
+      const distBoost =
+        safeDist <= 45
+          ? 1.0
+          : THREE.MathUtils.clamp(1.0 + ((safeDist - 45) / 130) * 1.25, 1.0, 2.35);
+      detailedRoot.scale.setScalar(distBoost);
+      simpleRoot.scale.setScalar(distBoost);
+
       if (billboardSprite) {
         billboardSprite.visible = nextLod === 'billboard';
         if (nextLod === 'billboard') {
-          // Gently scale icon with distance so it stays tiny & readable without covering ships
-          const iconSize = THREE.MathUtils.clamp(cameraDistance * 0.022, 1.35, 2.8);
+          // Minimum legible screen-space billboard icon at far distances
+          const iconSize = THREE.MathUtils.clamp(safeDist * 0.032, 4.4, 9.8);
           billboardSprite.scale.set(iconSize, iconSize, 1);
+          billboardSprite.position.y = Math.max(2.6, iconSize * 0.55);
         }
       } else {
         simpleRoot.visible = nextLod !== 'detailed';
@@ -476,6 +498,16 @@ export function buildHarborAvatar(options: {
       return nextLod;
     },
     updateAnimation: (dt, elapsed, action, reducedMotion) => {
+      if (currentLod === 'simple') {
+        if (!reducedMotion && action === 'run') {
+          simpleInner.position.y = Math.abs(Math.sin(elapsed * 9.5)) * 0.14;
+          simpleInner.rotation.z = Math.sin(elapsed * 4.75) * 0.07;
+        } else {
+          simpleInner.position.y = 0;
+          simpleInner.rotation.z = 0;
+        }
+        return;
+      }
       if (currentLod !== 'detailed') return;
 
       // Animate loaded VRM humanoid bones (walk / idle / wave)

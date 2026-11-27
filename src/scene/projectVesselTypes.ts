@@ -4,6 +4,7 @@ import type { DecorativeVesselType } from './sceneryCatalog';
 import type { HarborTexturePack } from './textures';
 
 export const VESSEL_SILHOUETTE_IDS = [
+  'seastar_flagship',
   'lng_carrier',
   'container_ship',
   'vlcc_tanker',
@@ -351,8 +352,97 @@ export function buildProjectVessel3D(
   const silverMetal = new THREE.MeshStandardMaterial({ color: 0xb2becb, roughness: 0.4, metalness: 0.38 });
   const darkSteel = new THREE.MeshStandardMaterial({ color: 0x222c38, roughness: 0.56, metalness: 0.52 });
 
-  if (vesselType === 'lng_carrier') {
-    // 1. Flagship Moss-Type LNG Carrier (also used for Hero "씨스타호")
+  if (vesselType === 'seastar_flagship') {
+    // 0. HERO FLAGSHIP "씨스타호" — Unmistakable Pearl-White Hull + Bold Royal-Blue Sheer Stripe & Domes
+    const pureWhiteHull = new THREE.MeshStandardMaterial({ color: 0xf1f5f9, roughness: 0.36, metalness: 0.14 });
+    const royalBlueBand = new THREE.MeshStandardMaterial({ color: 0x0f5cc0, roughness: 0.34, metalness: 0.24 });
+    const deepBlueBoot = new THREE.MeshStandardMaterial({ color: 0x0b356b, roughness: 0.48, metalness: 0.2 });
+    const teakDeck = new THREE.MeshStandardMaterial({ color: 0x3b6e8c, roughness: 0.62, metalness: 0.1 });
+
+    addCurvedMarineHull(g, {
+      halfBeam: 5.9,
+      parallelHalfLen: 15.2,
+      bowLen: 10.8,
+      sternLen: 5.2,
+      freeboardH: 3.9,
+      hullMat: pureWhiteHull,
+      bootMat: deepBlueBoot,
+      deckMat: teakDeck,
+      railMat: royalBlueBand,
+    });
+
+    // Signature full-length continuous Royal-Blue Hull Stripe along both sides & bow flare
+    g.add(
+      createSculptedHullLayer({
+        halfBeam: 6.08,
+        parallelHalfLen: 15.2,
+        bowLen: 10.6,
+        sternLen: 5.1,
+        height: 1.05,
+        yBottom: 2.35,
+        bevel: 0.08,
+        mat: royalBlueBand,
+      }),
+    );
+
+    // Secondary crisp cyan-blue upper sheer accent ribbon
+    g.add(
+      createSculptedHullLayer({
+        halfBeam: 6.05,
+        parallelHalfLen: 15.0,
+        bowLen: 10.2,
+        sternLen: 5.0,
+        height: 0.32,
+        yBottom: 4.25,
+        bevel: 0.04,
+        mat: royalBlueBand,
+      }),
+    );
+
+    // 4 gleaming pearl-white spherical Moss domes with Royal-Blue base skirts
+    const domeGeo = new THREE.SphereGeometry(3.75, 24, 18);
+    const collarGeo = new THREE.CylinderGeometry(3.95, 4.15, 2.0, 24);
+    const equatorGeo = new THREE.TorusGeometry(3.82, 0.16, 8, 24);
+    for (const tz of [-11.8, -3.7, 4.4, 12.5]) {
+      const collar = new THREE.Mesh(collarGeo, royalBlueBand);
+      collar.position.set(0, 5.55, tz);
+      g.add(collar);
+
+      const dome = new THREE.Mesh(domeGeo, pureWhiteHull);
+      dome.position.set(0, 6.65, tz);
+      g.add(dome);
+
+      const equator = new THREE.Mesh(equatorGeo, royalBlueBand);
+      equator.rotation.x = Math.PI / 2;
+      equator.position.set(0, 6.65, tz);
+      g.add(equator);
+    }
+
+    // Elevated white/blue cryogenic catwalk & dual pipes
+    const pipeDeck = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.24, 29.0), royalBlueBand);
+    pipeDeck.position.set(0, 10.6, 0.2);
+    g.add(pipeDeck);
+
+    for (const px of [-0.36, 0.36]) {
+      const pipe = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 29.4, 10), pureWhiteHull);
+      pipe.rotation.x = Math.PI / 2;
+      pipe.position.set(px, 10.95, 0.2);
+      g.add(pipe);
+    }
+
+    addCommercialSuperstructure(g, {
+      zCenter: 17.6,
+      deckY: 5.1,
+      width: 9.4,
+      levels: 4,
+      whiteMat: pureWhiteHull,
+      glassMat,
+      funnelMat: royalBlueBand,
+      lifeboatMat: lifeboatOrange,
+      darkSteelMat: darkSteel,
+    });
+  } else if (vesselType === 'lng_carrier') {
+    // 1. Standard Moss-Type LNG Carrier (business project ship)
     addCurvedMarineHull(g, {
       halfBeam: 5.9,
       parallelHalfLen: 15.2,
@@ -537,51 +627,69 @@ export function buildProjectVessel3D(
       darkSteelMat: darkSteel,
     });
   } else if (vesselType === 'floating_dock') {
-    // 4. Monumental Floating Dry Dock (FD-01) — Ballast Barge, Twin Wing Walls, 2 Rail Cranes & Curved Hull Inside!
-    const dockSteel = new THREE.MeshStandardMaterial({ color: 0x364659, roughness: 0.56, metalness: 0.34 });
-    const hazardYellow = new THREE.MeshStandardMaterial({ color: 0xdca420, roughness: 0.44, metalness: 0.18 });
+    // 4. Monumental Floating Dry Dock (FD-01) — Wide Open Ballast Deck, Twin Towering Wing Walls, Rib Buttresses, 2 Cranes & Inner Hull
+    const dockSteel = new THREE.MeshStandardMaterial({ color: 0x3b4d63, roughness: 0.52, metalness: 0.38 });
+    const dockWallLight = new THREE.MeshStandardMaterial({ color: 0x526780, roughness: 0.48, metalness: 0.34 });
+    const dockDeckConcrete = new THREE.MeshStandardMaterial({ color: 0x6c7c8e, roughness: 0.78, metalness: 0.14 });
+    const hazardYellow = new THREE.MeshStandardMaterial({ color: 0xebb320, roughness: 0.4, metalness: 0.2 });
 
-    // Submerged ballast pontoon barge
-    const pontoon = new THREE.Mesh(new THREE.BoxGeometry(20.6, 2.2, 50.0), dockSteel);
-    pontoon.position.set(0, 0.72, 0);
+    // Broad submerged ballast pontoon barge (unmistakably wide rectangular dry-dock footprint)
+    const pontoon = new THREE.Mesh(new THREE.BoxGeometry(23.4, 2.3, 51.0), dockSteel);
+    pontoon.position.set(0, 0.75, 0);
     g.add(pontoon);
 
-    const floorPlate = new THREE.Mesh(new THREE.BoxGeometry(15.2, 0.28, 48.0), deckSlate);
-    floorPlate.position.set(0, 1.92, 0);
+    // Wide bright open dry-dock working deck plate
+    const floorPlate = new THREE.Mesh(new THREE.BoxGeometry(17.2, 0.32, 49.4), dockDeckConcrete);
+    floorPlate.position.set(0, 1.98, 0);
     g.add(floorPlate);
 
-    // Twin towering wing walls + floodlight towers + 2 rail-mounted dock cranes
+    // Longitudinal yellow safety guide lanes on wide dock deck
+    for (const lx of [-6.8, 6.8]) {
+      const lane = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.08, 48.2), hazardYellow);
+      lane.position.set(lx, 2.18, 0);
+      g.add(lane);
+    }
+
+    // Twin towering port & starboard wing walls + external structural steel ribs + 2 rail-mounted dock cranes
     for (const side of [-1, 1]) {
-      const wall = new THREE.Mesh(new THREE.BoxGeometry(2.7, 10.2, 49.0), dockSteel);
-      wall.position.set(side * 8.95, 6.4, 0);
+      const wallX = side * 10.1;
+      const wall = new THREE.Mesh(new THREE.BoxGeometry(3.0, 11.0, 50.0), dockWallLight);
+      wall.position.set(wallX, 6.9, 0);
       g.add(wall);
 
-      const waterlineBand = new THREE.Mesh(new THREE.BoxGeometry(2.84, 1.35, 49.2), hullRed);
-      waterlineBand.position.set(side * 8.95, 1.4, 0);
+      // External vertical steel stiffening ribs along wing walls for unmistakable dry-dock architecture
+      for (let rz = -22; rz <= 22; rz += 5.5) {
+        const rib = new THREE.Mesh(new THREE.BoxGeometry(0.55, 10.6, 0.65), dockSteel);
+        rib.position.set(wallX + side * 1.55, 6.8, rz);
+        g.add(rib);
+      }
+
+      const waterlineBand = new THREE.Mesh(new THREE.BoxGeometry(3.2, 1.55, 50.3), hullRed);
+      waterlineBand.position.set(wallX, 1.48, 0);
       g.add(waterlineBand);
 
-      const topRail = new THREE.Mesh(new THREE.BoxGeometry(2.86, 0.34, 49.2), hazardYellow);
-      topRail.position.set(side * 8.95, 11.6, 0);
+      const topRail = new THREE.Mesh(new THREE.BoxGeometry(3.28, 0.46, 50.3), hazardYellow);
+      topRail.position.set(wallX, 12.55, 0);
       g.add(topRail);
 
       // Rail-mounted dock jib crane (1 on Port wall, 1 on Starboard wall = 2 dock cranes!)
-      const craneZ = side < 0 ? -9.5 : 8.5;
+      const craneZ = side < 0 ? -10.0 : 9.0;
       const craneGroup = new THREE.Group();
-      craneGroup.position.set(side * 8.95, 11.75, craneZ);
+      craneGroup.position.set(wallX, 12.75, craneZ);
 
-      const gantry = new THREE.Mesh(new THREE.BoxGeometry(2.4, 2.8, 3.6), marineBlue);
-      gantry.position.set(0, 1.4, 0);
+      const gantry = new THREE.Mesh(new THREE.BoxGeometry(2.6, 3.0, 3.8), marineBlue);
+      gantry.position.set(0, 1.5, 0);
       craneGroup.add(gantry);
 
-      const craneCab = new THREE.Mesh(new THREE.BoxGeometry(2.1, 2.1, 2.6), whiteSteel);
-      craneCab.position.set(0, 3.85, 0);
+      const craneCab = new THREE.Mesh(new THREE.BoxGeometry(2.2, 2.2, 2.7), whiteSteel);
+      craneCab.position.set(0, 4.05, 0);
       craneGroup.add(craneCab);
 
       const boomPivot = new THREE.Group();
-      boomPivot.position.set(-side * 0.4, 4.4, 0);
+      boomPivot.position.set(-side * 0.4, 4.6, 0);
       boomPivot.rotation.y = side < 0 ? -0.52 : Math.PI - 0.52;
-      const craneBoom = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.7, 15.0), craneOchre);
-      craneBoom.position.set(0, 3.6, -6.2);
+      const craneBoom = new THREE.Mesh(new THREE.BoxGeometry(0.68, 0.76, 16.0), craneOchre);
+      craneBoom.position.set(0, 3.8, -6.5);
       craneBoom.rotation.x = 0.52;
       boomPivot.add(craneBoom);
       craneGroup.add(boomPivot);
@@ -590,17 +698,17 @@ export function buildProjectVessel3D(
     }
 
     // Dockmaster Control Room on Port Aft Wing Wall
-    const ctrl = new THREE.Mesh(new THREE.BoxGeometry(3.4, 2.6, 4.8), whiteSteel);
-    ctrl.position.set(-8.95, 13.0, 18.8);
+    const ctrl = new THREE.Mesh(new THREE.BoxGeometry(3.6, 2.8, 5.0), whiteSteel);
+    ctrl.position.set(-10.1, 14.1, 19.2);
     g.add(ctrl);
-    const ctrlWin = new THREE.Mesh(new THREE.BoxGeometry(3.52, 0.92, 3.8), glassMat);
-    ctrlWin.position.set(-8.95, 13.2, 18.8);
+    const ctrlWin = new THREE.Mesh(new THREE.BoxGeometry(3.74, 0.96, 4.0), glassMat);
+    ctrlWin.position.set(-10.1, 14.3, 19.2);
     g.add(ctrlWin);
 
-    // Keel & bilge timber/steel blocks along dry-dock floor
+    // Keel & bilge timber/steel blocks along wide dry-dock floor
     for (let k = -16; k <= 16; k += 4) {
-      const block = new THREE.Mesh(new THREE.BoxGeometry(4.2, 1.15, 1.25), darkSteel);
-      block.position.set(0, 2.55, k);
+      const block = new THREE.Mesh(new THREE.BoxGeometry(4.8, 1.15, 1.35), darkSteel);
+      block.position.set(0, 2.65, k);
       g.add(block);
     }
 

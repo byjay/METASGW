@@ -13,6 +13,7 @@
  */
 
 export type DecorativeVesselType =
+  | 'seastar_flagship'
   | 'lng_carrier'
   | 'container_ship'
   | 'floating_dock'
@@ -47,26 +48,28 @@ export interface DecorativeVesselSpec {
 }
 
 /**
- * Hero & Home-Harbor decorative vessels (strictly outside the central 2x2 business project basin
- * x in [-74, 74], z in [-2, 68] so business ships never collide with decorative scenery).
+ * Hero & Home-Harbor decorative vessels:
+ *   - Hero #1 씨스타호 & Hero #2 FD-01 sit prominently in front of the Central North Quay (z ~ 15.5..17.5)
+ *     with generous clearance from the quay wall (z = -2.5), piers (x = ±75), and Row 0 business berths (z = 44).
+ *   - All other background vessels flank the outer piers and open channel.
  */
 export const HOME_HARBOR_DECORATIVE_VESSELS: readonly DecorativeVesselSpec[] = [
-  // HERO #1: 씨스타호 — Flagship LNG Carrier framed on West Harbor Entrance Wing (100% uncropped on Frame 1!)
+  // HERO #1: 씨스타호 — Signature White Hull + Royal-Blue Stripe Flagship directly in front of Central Quay
   {
     id: 'deco-seastar-hero',
     isDecorative: true,
     isHero: true,
     defaultName: '씨스타호',
-    subtitle: '대표 LNG 운반선 · 장식 선박',
-    vesselType: 'lng_carrier',
-    x: -74,
-    z: 60,
-    defaultYawDeg: 78,
+    subtitle: '대표 플래그십 · 장식 선박',
+    vesselType: 'seastar_flagship',
+    x: -29,
+    z: 15.5,
+    defaultYawDeg: 90,
     scale: 0.96,
-    halfLength: 25,
-    halfBeam: 8.0,
+    halfLength: 24,
+    halfBeam: 7.2,
   },
-  // HERO #2: FD-01 — Monumental Floating Dry Dock framed on East Harbor Entrance Wing (100% uncropped on Frame 1!)
+  // HERO #2: FD-01 — Wide Ballast Deck & Twin Wing-Wall Floating Dry Dock directly in front of Central Quay
   {
     id: 'deco-fd-01',
     isDecorative: true,
@@ -74,12 +77,12 @@ export const HOME_HARBOR_DECORATIVE_VESSELS: readonly DecorativeVesselSpec[] = [
     defaultName: 'FD-01',
     subtitle: '대형 플로팅 도크 · 장식 선박',
     vesselType: 'floating_dock',
-    x: 78,
-    z: 60,
-    defaultYawDeg: 282,
-    scale: 0.96,
-    halfLength: 26,
-    halfBeam: 11.5,
+    x: 31,
+    z: 17.5,
+    defaultYawDeg: 270,
+    scale: 0.92,
+    halfLength: 24.5,
+    halfBeam: 10.6,
   },
   // Moored outfitting & service vessels around outer harbor wings
   {
@@ -117,9 +120,9 @@ export const HOME_HARBOR_DECORATIVE_VESSELS: readonly DecorativeVesselSpec[] = [
     defaultName: '항만 예인선 01',
     subtitle: '배경 장식 선박',
     vesselType: 'harbor_tug',
-    x: -54,
-    z: 74,
-    defaultYawDeg: 40,
+    x: -66,
+    z: 48,
+    defaultYawDeg: 45,
     scale: 1.0,
     halfLength: 7.5,
     halfBeam: 3.4,
@@ -131,9 +134,9 @@ export const HOME_HARBOR_DECORATIVE_VESSELS: readonly DecorativeVesselSpec[] = [
     defaultName: '항만 예인선 02',
     subtitle: '배경 장식 선박',
     vesselType: 'harbor_tug',
-    x: 56,
-    z: 76,
-    defaultYawDeg: 320,
+    x: 66,
+    z: 50,
+    defaultYawDeg: 315,
     scale: 1.0,
     halfLength: 7.5,
     halfBeam: 3.4,

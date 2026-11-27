@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { Sky } from 'three/addons/objects/Sky.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
@@ -65,6 +65,14 @@ interface PersonNpcRuntime {
   rig: BuiltHumanoidRig;
   hitProxy: THREE.Mesh;
   phase: number;
+  instanceIdx: number;
+  homeX: number;
+  homeZ: number;
+  curX: number;
+  curZ: number;
+  heading: number;
+  patrolDir: 1 | -1;
+  patrolRange: number;
 }
 
 const _scratchProj = new THREE.Vector3();
@@ -76,6 +84,80 @@ const _scratchForward = new THREE.Vector3();
 const _scratchRight = new THREE.Vector3();
 const _scratchCamUp = new THREE.Vector3(0, 1, 0);
 const _scratchOffset = new THREE.Vector3();
+const _scratchInstDummy = new THREE.Object3D();
+
+/**
+ * Procedural Maritime Sky Dome — smooth azure day & golden sunset gradient with
+ * zero Preetham white horizon blowout strip directly below the top HUD.
+ */
+function createMaritimeSkyDome(): {
+  mesh: THREE.Mesh;
+  uniforms: {
+    uZenithColor: { value: THREE.Color };
+    uMidColor: { value: THREE.Color };
+    uHorizonColor: { value: THREE.Color };
+    uNadirColor: { value: THREE.Color };
+    uSunDir: { value: THREE.Vector3 };
+    uSunColor: { value: THREE.Color };
+    uSunGlow: { value: number };
+  };
+} {
+  const uniforms = {
+    uZenithColor: { value: new THREE.Color(0x145cb3) },
+    uMidColor: { value: new THREE.Color(0x3e91db) },
+    uHorizonColor: { value: new THREE.Color(0x93c7ec) },
+    uNadirColor: { value: new THREE.Color(0x08345e) },
+    uSunDir: { value: new THREE.Vector3(0.45, 0.65, 0.6) },
+    uSunColor: { value: new THREE.Color(0xfff5db) },
+    uSunGlow: { value: 0.32 },
+  };
+  const geo = new THREE.SphereGeometry(2900, 32, 24);
+  const mat = new THREE.ShaderMaterial({
+    uniforms,
+    side: THREE.BackSide,
+    depthWrite: false,
+    fog: false,
+    vertexShader: /* glsl */ `
+      varying vec3 vWorldDir;
+      void main() {
+        vWorldDir = normalize(position);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      uniform vec3 uZenithColor;
+      uniform vec3 uMidColor;
+      uniform vec3 uHorizonColor;
+      uniform vec3 uNadirColor;
+      uniform vec3 uSunDir;
+      uniform vec3 uSunColor;
+      uniform float uSunGlow;
+      varying vec3 vWorldDir;
+      void main() {
+        vec3 d = normalize(vWorldDir);
+        float h = d.y;
+        vec3 col;
+        if (h >= 0.0) {
+          float tMid = smoothstep(0.0, 0.24, h);
+          float tZen = smoothstep(0.18, 0.78, h);
+          col = mix(uHorizonColor, uMidColor, tMid);
+          col = mix(col, uZenithColor, tZen);
+        } else {
+          float tDown = smoothstep(0.0, -0.14, h);
+          col = mix(uHorizonColor, uNadirColor, tDown);
+        }
+        float sunAmt = max(dot(d, normalize(uSunDir)), 0.0);
+        col += uSunColor * pow(sunAmt, 14.0) * uSunGlow;
+        col += uSunColor * smoothstep(0.9982, 0.9995, sunAmt) * 0.75;
+        gl_FragColor = vec4(col, 1.0);
+      }
+    `,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.frustumCulled = false;
+  mesh.renderOrder = -10;
+  return { mesh, uniforms };
+}
 
 const EMPTY_BATCH_METRICS: RenderBatchMetrics = {
   instancedMeshCount: 0,
@@ -166,7 +248,7 @@ export class HarborSceneController implements HarborSceneHandle {
   private scene: THREE.Scene;
   private camera: THREE.PerspectiveCamera;
   private controls: OrbitControls;
-  private sky: Sky;
+  private skyDome: ReturnType<typeof createMaritimeSkyDome>;
   private textures: HarborTexturePack;
   private envRT: THREE.WebGLRenderTarget | null = null;
   private sunKeyLight!: THREE.DirectionalLight;
@@ -245,7 +327,7 @@ export class HarborSceneController implements HarborSceneHandle {
     });
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 0.84;
+    this.renderer.toneMappingExposure = 1.06;
     this.renderer.info.autoReset = false;
     this.renderer.setPixelRatio(
       resolvePixelRatioForQuality(this.qualityTier, window.devicePixelRatio || 1),
@@ -253,14 +335,14 @@ export class HarborSceneController implements HarborSceneHandle {
     this.renderer.shadowMap.enabled = this.qualityTier !== 'low';
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.setSize(w, h);
+    this.renderer.domElement.style.display = 'block';
     container.appendChild(this.renderer.domElement);
 
     this.scene = new THREE.Scene();
-    this.sky = new Sky();
-    this.sky.scale.setScalar(2600);
-    this.scene.add(this.sky);
+    this.skyDome = createMaritimeSkyDome();
+    this.scene.add(this.skyDome.mesh);
 
-    this.camera = new THREE.PerspectiveCamera(50, w / h, 0.5, 2400);
+    this.camera = new THREE.PerspectiveCamera(50, w / h, 0.5, 3600);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = !this.isSoftwareGl && !this.reducedMotion;
     this.controls.dampingFactor = 0.08;
@@ -453,75 +535,80 @@ export class HarborSceneController implements HarborSceneHandle {
 
   private applyAtmosphere(sunset: boolean): void {
     this.darkTheme = sunset;
-    const skyUniforms = this.sky.material.uniforms;
-    // Clear Azure Maritime Day (낮) vs Coastal Golden Sunset (해질녘)
-    const elevation = sunset ? 7.5 : 46;
-    const azimuth = sunset ? 218 : 38;
-    const fogHex = sunset ? 0x232942 : 0x7cb3da;
-    const fogDensity = sunset ? 0.0011 : 0.00038;
+    const isLowTier = this.qualityTier === 'low';
+    const isMediumTier = this.qualityTier === 'medium';
 
+    // Crisp Azure Maritime Day (낮) vs Rich Warm Golden Sunset (해질녘)
+    const elevation = sunset ? 12 : 40;
+    const azimuth = sunset ? 224 : 36;
+    const fogHex = sunset ? 0x9a5d52 : 0x86bee8;
+    const oceanFogDensity = isLowTier ? (sunset ? 0.0014 : 0.0012) : sunset ? 0.00024 : 0.00018;
+
+    const u = this.skyDome.uniforms;
     if (sunset) {
-      skyUniforms['turbidity'].value = 8.5;
-      skyUniforms['rayleigh'].value = 3.0;
-      skyUniforms['mieCoefficient'].value = 0.006;
-      skyUniforms['mieDirectionalG'].value = 0.82;
-      this.sunKeyLight.color.setHex(0xffb470);
-      this.sunKeyLight.intensity = 1.45;
-      this.hemiFillLight.color.setHex(0x6d7aa8);
-      this.hemiFillLight.groundColor.setHex(0x1f2536);
-      this.hemiFillLight.intensity = 0.72;
-      this.ambientLight.intensity = 0.16;
-      this.renderer.toneMappingExposure = 0.9;
+      u.uZenithColor.value.setHex(0x162246);
+      u.uMidColor.value.setHex(0x6b4166);
+      u.uHorizonColor.value.setHex(0xe88642);
+      u.uNadirColor.value.setHex(0x162038);
+      u.uSunColor.value.setHex(0xffb45c);
+      u.uSunGlow.value = 0.52;
+      this.scene.background = new THREE.Color(0x2a2440);
+
+      this.sunKeyLight.color.setHex(0xff9b45);
+      this.sunKeyLight.intensity = 2.45;
+      this.hemiFillLight.color.setHex(0xdd855e);
+      this.hemiFillLight.groundColor.setHex(0x172033);
+      this.hemiFillLight.intensity = 0.68;
+      this.ambientLight.intensity = 0.08;
+      this.renderer.toneMappingExposure = 1.04;
     } else {
-      skyUniforms['turbidity'].value = 1.15;
-      skyUniforms['rayleigh'].value = 3.1;
-      skyUniforms['mieCoefficient'].value = 0.001;
-      skyUniforms['mieDirectionalG'].value = 0.7;
-      this.sunKeyLight.color.setHex(0xfff3de);
-      this.sunKeyLight.intensity = 1.45;
-      this.hemiFillLight.color.setHex(0x7cb9eb);
-      this.hemiFillLight.groundColor.setHex(0x2b3e50);
-      this.hemiFillLight.intensity = 0.48;
-      this.ambientLight.intensity = 0.12;
-      this.renderer.toneMappingExposure = 0.84;
+      u.uZenithColor.value.setHex(0x145cb3);
+      u.uMidColor.value.setHex(0x3e91db);
+      u.uHorizonColor.value.setHex(0x93c7ec);
+      u.uNadirColor.value.setHex(0x08345e);
+      u.uSunColor.value.setHex(0xfff5db);
+      u.uSunGlow.value = 0.28;
+      this.scene.background = new THREE.Color(0x3e91db);
+
+      this.sunKeyLight.color.setHex(0xfff6e5);
+      this.sunKeyLight.intensity = 2.65;
+      this.hemiFillLight.color.setHex(0x8cc8f7);
+      this.hemiFillLight.groundColor.setHex(0x1b3044);
+      this.hemiFillLight.intensity = 0.72;
+      this.ambientLight.intensity = 0.08;
+      this.renderer.toneMappingExposure = 1.06;
     }
 
     const phi = THREE.MathUtils.degToRad(90 - elevation);
     const theta = THREE.MathUtils.degToRad(azimuth);
     _sunVec.setFromSphericalCoords(1, phi, theta);
-    skyUniforms['sunPosition'].value.copy(_sunVec);
-    this.sunKeyLight.position.copy(_sunVec).multiplyScalar(140);
+    u.uSunDir.value.copy(_sunVec);
+    this.sunKeyLight.position.copy(_sunVec).multiplyScalar(145);
 
-    // Distance-only linear fog so foreground/midground ships, cranes & quay stay razor crisp
-    this.scene.fog = sunset
-      ? new THREE.Fog(fogHex, 260, 1300)
-      : new THREE.Fog(fogHex, 320, 1500);
+    // Distant fog only so Home Harbor foreground/midground stays razor-sharp with rich contrast.
+    // Closer fog is applied ONLY on 'low' quality tier.
+    const fogNear = isLowTier ? (sunset ? 200 : 220) : isMediumTier ? (sunset ? 420 : 480) : sunset ? 480 : 560;
+    const fogFar = isLowTier ? (sunset ? 860 : 920) : isMediumTier ? (sunset ? 1750 : 2000) : sunset ? 2050 : 2350;
+    this.scene.fog = new THREE.Fog(fogHex, fogNear, fogFar);
 
     this.ocean.setAtmosphere({
       sunDir: _sunVec,
-      sunColor: sunset ? 0xffb36b : 0xfff4df,
-      deepColor: sunset ? 0x071a33 : 0x06355e,
-      shallowColor: sunset ? 0x123857 : 0x0c5480,
-      horizonColor: sunset ? 0x4d3f59 : 0x6ca8d9,
+      sunColor: sunset ? 0xffa454 : 0xfff5e0,
+      deepColor: sunset ? 0x0c1e3b : 0x042b54,
+      shallowColor: sunset ? 0x1b3658 : 0x0a4f82,
+      horizonColor: sunset ? 0xc97648 : 0x5da2d8,
       fogColor: fogHex,
-      fogDensity,
+      fogDensity: oceanFogDensity,
     });
 
-    if (this.qualityTier !== 'low') {
+    if (!isLowTier) {
       const pmrem = new THREE.PMREMGenerator(this.renderer);
-      const envScene = new THREE.Scene();
-      const envSky = new Sky();
-      envSky.scale.setScalar(100);
-      Object.keys(skyUniforms).forEach((k) => {
-        if (envSky.material.uniforms[k]) {
-          envSky.material.uniforms[k].value = skyUniforms[k].value;
-        }
-      });
-      envScene.add(envSky);
+      const roomEnv = new RoomEnvironment();
       if (this.envRT) this.envRT.dispose();
-      this.envRT = pmrem.fromScene(envScene, 0.04);
+      this.envRT = pmrem.fromScene(roomEnv, 0.04);
+      roomEnv.dispose();
       this.scene.environment = this.envRT.texture;
-      this.scene.environmentIntensity = sunset ? 0.3 : 0.24;
+      this.scene.environmentIntensity = sunset ? 0.34 : 0.28;
       pmrem.dispose();
     } else {
       this.scene.environment = null;
@@ -700,7 +787,20 @@ export class HarborSceneController implements HarborSceneHandle {
       });
 
       this.peopleRoot.add(rig.group);
-      this.personRuntimes.push({ person, rig, hitProxy, phase: idx * 0.8 });
+      this.personRuntimes.push({
+        person,
+        rig,
+        hitProxy,
+        phase: idx * 0.85,
+        instanceIdx: idx,
+        homeX: person.position.x,
+        homeZ: person.position.z,
+        curX: person.position.x,
+        curZ: person.position.z,
+        heading: person.facingYaw,
+        patrolDir: idx % 2 === 0 ? 1 : -1,
+        patrolRange: person.online ? 4.6 + (idx % 3) * 1.4 : 0,
+      });
     });
 
     this.presenceRingBatch = createInstancedRingBatch(ringSpecs, {
@@ -825,8 +925,8 @@ export class HarborSceneController implements HarborSceneHandle {
   }
 
   public disembarkToHarbor(durationMs = 450): void {
-    const toTarget = new THREE.Vector3(0, 2.0, 22);
-    const toPos = new THREE.Vector3(0, 74, 188);
+    const toTarget = new THREE.Vector3(0, 3.0, 22);
+    const toPos = new THREE.Vector3(0, 58, 162);
 
     if (durationMs <= 0 || this.reducedMotion) {
       this.cameraTween = null;
@@ -865,7 +965,8 @@ export class HarborSceneController implements HarborSceneHandle {
   public focusPerson(sub: string): void {
     const found = this.personRuntimes.find((r) => r.person.sub === sub);
     if (!found) return;
-    const { x, z } = found.person.position;
+    const x = found.curX;
+    const z = found.curZ;
     const y = sampleHarborElevation(x, z);
     this.controls.target.set(x, y + 1.4, z);
     this.camera.position.set(x + 8, y + 9, z + 12);
@@ -891,15 +992,16 @@ export class HarborSceneController implements HarborSceneHandle {
     if (preset === 'overview') {
       // Wide panoramic vista framing Home Harbor, 씨스타호, FD-01 & outer bay
       this.controls.target.set(0, 2.5, 28);
-      this.camera.position.set(0, 96, 212);
+      this.camera.position.set(0, 88, 206);
     } else if (preset === 'quay') {
       this.controls.target.set(this.playerPos.x, this.playerPos.y + 1.8, this.playerPos.z);
       this.camera.position.set(this.playerPos.x + 11, this.playerPos.y + 10.5, this.playerPos.z + 18);
     } else {
-      // Default establishing shot framing North Quay, quay avatars, all 4 business ships,
-      // Hero 씨스타호 (west wing), Floating Dry Dock FD-01 (east wing), Goliath cranes & background vessels
-      this.controls.target.set(0, 2.0, 22);
-      this.camera.position.set(0, 74, 188);
+      // Default establishing shot framing North Quay, visible walking avatars,
+      // Hero 씨스타호 (white+blue) & Floating Dock FD-01 (wide twin-wall dock) dead center in front of Central Quay,
+      // plus all 4 business ships, Goliath cranes & background vessels
+      this.controls.target.set(0, 3.0, 22);
+      this.camera.position.set(0, 58, 162);
     }
     this.controls.update();
     this.chunkManager.update(this.controls.target.x, this.controls.target.z, this.elapsedTotal);
@@ -1169,8 +1271,8 @@ export class HarborSceneController implements HarborSceneHandle {
       const nx = moveX / mag;
       const nz = moveZ / mag;
       const peers = this.personRuntimes.map((r) => ({
-        x: r.person.position.x,
-        z: r.person.position.z,
+        x: r.curX,
+        z: r.curZ,
       }));
       // Full physical collision resolution: wall sliding, water stop, peer separation (Req #17)
       const resolved = resolveAvatarPhysicsMovement(
@@ -1242,8 +1344,8 @@ export class HarborSceneController implements HarborSceneHandle {
       const sub = this.hoveredLabelId.slice(7);
       const rt = this.personRuntimes.find((r) => r.person.sub === sub);
       if (rt) {
-        const y = sampleHarborElevation(rt.person.position.x, rt.person.position.z);
-        const p = this.projectToScreen(rt.person.position.x, y + 2.35, rt.person.position.z);
+        const y = sampleHarborElevation(rt.curX, rt.curZ);
+        const p = this.projectToScreen(rt.curX, y + 3.2, rt.curZ);
         candidates.push({
           id: `person:${rt.person.sub}`,
           text: rt.person.name,
@@ -1438,16 +1540,72 @@ export class HarborSceneController implements HarborSceneHandle {
     this.ocean.update(this.elapsedTotal, this.controls.target.x, this.controls.target.z);
 
     const suppressMotion = this.shouldSuppressMotion();
+    let anyNpcMoved = false;
     for (const rt of this.personRuntimes) {
+      const distToPlayer = Math.hypot(
+        rt.curX - this.playerPos.x,
+        rt.curZ - this.playerPos.z,
+      );
+
+      let action: 'idle' | 'run' | 'wave' = 'idle';
+      if (rt.person.online && distToPlayer < 7.5) {
+        action = 'wave';
+      } else if (!suppressMotion && rt.person.online && rt.patrolRange > 0.5) {
+        // Gentle quay-only patrol walk — strictly clamped to concrete quay (zero water/building clipping)
+        const walkSpeed = 1.55;
+        const desiredX = rt.curX + rt.patrolDir * walkSpeed * dt;
+        const desiredZ = rt.homeZ;
+        const otherPeers: Array<{ x: number; z: number }> = [
+          { x: this.playerPos.x, z: this.playerPos.z },
+        ];
+        for (const other of this.personRuntimes) {
+          if (other !== rt) otherPeers.push({ x: other.curX, z: other.curZ });
+        }
+        const resolved = resolveAvatarPhysicsMovement(
+          { x: rt.curX, z: rt.curZ },
+          { x: desiredX, z: desiredZ },
+          otherPeers,
+        );
+        const movedDist = Math.hypot(resolved.x - rt.curX, resolved.z - rt.curZ);
+        if (
+          movedDist < walkSpeed * dt * 0.25 ||
+          Math.abs(resolved.x - rt.homeX) >= rt.patrolRange
+        ) {
+          rt.patrolDir = rt.patrolDir === 1 ? -1 : 1;
+        } else {
+          rt.curX = resolved.x;
+          rt.curZ = resolved.z;
+          rt.heading = rt.patrolDir > 0 ? Math.PI * 0.5 : -Math.PI * 0.5;
+          const y = sampleHarborElevation(rt.curX, rt.curZ);
+          rt.rig.group.position.set(rt.curX, y, rt.curZ);
+          rt.rig.group.rotation.y = rt.heading;
+          anyNpcMoved = true;
+
+          if (this.presenceRingBatch) {
+            _scratchInstDummy.position.set(rt.curX, y + 0.055, rt.curZ);
+            _scratchInstDummy.rotation.set(0, 0, 0);
+            _scratchInstDummy.scale.set(1, 1, 1);
+            _scratchInstDummy.updateMatrix();
+            this.presenceRingBatch.setMatrixAt(rt.instanceIdx, _scratchInstDummy.matrix);
+          }
+          if (this.npcShadowBatch) {
+            _scratchInstDummy.position.set(rt.curX, y + 0.03, rt.curZ);
+            _scratchInstDummy.rotation.set(0, 0, 0);
+            _scratchInstDummy.scale.set(2.35, 1, 2.35);
+            _scratchInstDummy.updateMatrix();
+            this.npcShadowBatch.setMatrixAt(rt.instanceIdx, _scratchInstDummy.matrix);
+          }
+        }
+        action = 'run';
+      }
+
       const dist = this.camera.position.distanceTo(rt.rig.group.position);
       rt.rig.updateLod(dist);
-      // Gentle occasional friendly wave when player stands close to an online colleague
-      const distToPlayer = Math.hypot(
-        rt.person.position.x - this.playerPos.x,
-        rt.person.position.z - this.playerPos.z,
-      );
-      const action = rt.person.online && distToPlayer < 7.5 ? 'wave' : 'idle';
       rt.rig.updateAnimation(dt, this.elapsedTotal + rt.phase, action, suppressMotion);
+    }
+    if (anyNpcMoved) {
+      if (this.presenceRingBatch) this.presenceRingBatch.instanceMatrix.needsUpdate = true;
+      if (this.npcShadowBatch) this.npcShadowBatch.instanceMatrix.needsUpdate = true;
     }
 
     this.world.update(dt, this.elapsedTotal, suppressMotion);
@@ -1510,6 +1668,8 @@ export class HarborSceneController implements HarborSceneHandle {
       this.composerRT.dispose();
       this.composerRT = null;
     }
+    this.skyDome.mesh.geometry.dispose();
+    (this.skyDome.mesh.material as THREE.Material).dispose();
     this.controls.dispose();
     this.chunkManager.dispose();
     this.world.dispose();

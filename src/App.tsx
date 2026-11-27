@@ -1083,8 +1083,8 @@ export function App() {
             }),
           );
         }
-      } else if (label.id.startsWith('deco-ship:')) {
-        const id = label.id.slice(10);
+      } else if (label.id.startsWith('deco:') || label.id.startsWith('deco-ship:')) {
+        const id = label.id.startsWith('deco:') ? label.id.slice(5) : label.id.slice(10);
         if (decorativeById.has(id)) {
           setProjectSession((prev) =>
             transitionProjectSessionState(prev, {
@@ -1207,14 +1207,14 @@ export function App() {
         <div
           className={
             viewMode === '3d' && sceneReady3D
-              ? 'relative h-screen w-screen overflow-hidden'
+              ? 'fixed inset-0 h-dvh w-screen overflow-hidden bg-slate-950'
               : 'hidden'
           }
           aria-hidden={viewMode !== '3d' || !sceneReady3D}
         >
           <div
             ref={canvasContainerRef}
-            className="h-full w-full"
+            className="block h-full w-full"
             aria-label="메타SGW 3D 항구 캔버스"
           />
 

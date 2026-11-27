@@ -158,22 +158,22 @@ export function createMaritimeOcean(
   const group = new THREE.Group();
 
   // 1) High-tier reflective Three.js Water (bundled locally, zero CDN!)
-  const waterGeo = new THREE.PlaneGeometry(3600, 3600);
+  const waterGeo = new THREE.PlaneGeometry(6000, 6000);
   const reflectiveWater = new Water(waterGeo, {
     textureWidth: 1024,
     textureHeight: 1024,
     waterNormals,
     sunDirection: new THREE.Vector3(0.55, 0.65, 0.5).normalize(),
     sunColor: 0xffe4b8,
-    waterColor: 0x06355e,
-    distortionScale: 0.72,
+    waterColor: 0x052e59,
+    distortionScale: 0.78,
     fog: true,
   });
-  reflectiveWater.material.uniforms['size'].value = 6.0;
-  // Preserve rich deep maritime navy ocean color while keeping crisp anti-aliased ship reflections
+  reflectiveWater.material.uniforms['size'].value = 6.5;
+  // Preserve rich deep maritime navy ocean color while keeping crisp anti-aliased ship reflections (never milky grey!)
   reflectiveWater.material.fragmentShader = reflectiveWater.material.fragmentShader.replace(
     'vec3 albedo = mix( ( sunColor * diffuseLight * 0.3 + scatter ) * getShadowMask(), reflectionSample + specularLight, reflectance );',
-    'vec3 deepOcean = waterColor * (0.85 + 0.65 * max( 0.0, dot( surfaceNormal, eyeDirection ) )) + sunColor * diffuseLight * 0.14; vec3 reflBlended = mix( waterColor * 1.2, reflectionSample, 0.58 ) + specularLight * 0.25; vec3 albedo = mix( deepOcean * getShadowMask(), reflBlended, clamp( reflectance * 0.46 + 0.14, 0.14, 0.44 ) );',
+    'vec3 deepOcean = waterColor * (0.95 + 0.55 * max( 0.0, dot( surfaceNormal, eyeDirection ) )) + sunColor * diffuseLight * 0.16; vec3 reflBlended = mix( waterColor * 1.15, reflectionSample, 0.42 ) + specularLight * 0.32; vec3 albedo = mix( deepOcean * getShadowMask(), reflBlended, clamp( reflectance * 0.38 + 0.12, 0.12, 0.38 ) );',
   );
   reflectiveWater.rotation.x = -Math.PI / 2;
   reflectiveWater.position.y = -0.04;
@@ -193,7 +193,7 @@ export function createMaritimeOcean(
   group.add(shoreFoamMesh);
 
   // 2) Medium/Low fallback plane with custom GLSL shader or Lambert
-  const fallbackGeo = new THREE.PlaneGeometry(3200, 3200, 64, 64);
+  const fallbackGeo = new THREE.PlaneGeometry(6000, 6000, 64, 64);
   fallbackGeo.rotateX(-Math.PI / 2);
 
   const uniforms = {
