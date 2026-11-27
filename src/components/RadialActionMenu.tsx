@@ -367,7 +367,7 @@ export const RadialActionMenu: React.FC<RadialActionMenuProps> = ({
       onKeyDown={handleKeyDown}
     >
       <div
-        className="fixed w-[328px] max-w-[calc(100vw-1.25rem)] max-h-[calc(100vh-5.5rem)] overflow-y-auto -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-slate-600/90 bg-slate-950/96 p-3.5 text-slate-100 shadow-2xl space-y-3"
+        className="fixed w-[344px] max-w-[calc(100vw-1.25rem)] max-h-[calc(100vh-5.5rem)] overflow-y-auto -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-slate-600/90 bg-slate-950/96 p-3.5 text-slate-100 shadow-2xl space-y-3"
         style={{ left: `${center.x}px`, top: `${center.y}px` }}
         onClick={(e) => e.stopPropagation()}
       >
@@ -463,9 +463,9 @@ export const RadialActionMenu: React.FC<RadialActionMenuProps> = ({
                 onBoardShip(target.ship.id);
               }}
               aria-label={`${displayTitle} 승선 패널 열기`}
-              className="inline-flex flex-1 min-h-[38px] items-center justify-center gap-1.5 rounded-xl bg-sky-700 px-3 py-1.5 text-xs font-bold text-white hover:bg-sky-600 focus-visible:outline-2 focus-visible:outline-sky-300"
+              className="inline-flex flex-1 min-h-[38px] items-center justify-center gap-1 whitespace-nowrap rounded-xl bg-sky-700 px-2.5 py-1.5 text-[11px] sm:text-xs font-bold text-white hover:bg-sky-600 focus-visible:outline-2 focus-visible:outline-sky-300"
             >
-              <Anchor className="h-3.5 w-3.5" aria-hidden="true" />
+              <Anchor className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
               승선
             </button>
           )}
@@ -478,9 +478,9 @@ export const RadialActionMenu: React.FC<RadialActionMenuProps> = ({
                 onClose();
               }}
               aria-label={`${target.person.name} 3D 항구 위치로 이동`}
-              className="inline-flex flex-1 min-h-[38px] items-center justify-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-100 hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-sky-300"
+              className="inline-flex flex-1 min-h-[38px] items-center justify-center gap-1.5 whitespace-nowrap rounded-xl border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-100 hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-sky-300"
             >
-              <Compass className="h-3.5 w-3.5 text-sky-400" aria-hidden="true" />
+              <Compass className="h-3.5 w-3.5 shrink-0 text-sky-400" aria-hidden="true" />
               항구 위치 보기
             </button>
           )}
@@ -495,13 +495,13 @@ export const RadialActionMenu: React.FC<RadialActionMenuProps> = ({
                 setRenameOpen((v) => !v);
                 setRotateOpen(false);
               }}
-              className={`inline-flex flex-1 min-h-[38px] items-center justify-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-xs font-semibold transition focus-visible:outline-2 focus-visible:outline-sky-300 ${
+              className={`inline-flex flex-1 min-h-[38px] items-center justify-center gap-1 whitespace-nowrap rounded-xl border px-2 py-1.5 text-[11px] sm:text-xs font-semibold transition focus-visible:outline-2 focus-visible:outline-sky-300 ${
                 renameOpen
                   ? 'border-sky-400 bg-sky-950 text-sky-100'
                   : 'border-slate-700 bg-slate-900 text-slate-100 hover:bg-slate-800'
               }`}
             >
-              <Pencil className="h-3.5 w-3.5 text-sky-300" aria-hidden="true" />
+              <Pencil className="h-3.5 w-3.5 shrink-0 text-sky-300" aria-hidden="true" />
               이름 바꾸기
             </button>
           )}
@@ -516,13 +516,13 @@ export const RadialActionMenu: React.FC<RadialActionMenuProps> = ({
                 setRotateOpen((v) => !v);
                 setRenameOpen(false);
               }}
-              className={`inline-flex flex-1 min-h-[38px] items-center justify-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-xs font-semibold transition focus-visible:outline-2 focus-visible:outline-sky-300 ${
+              className={`inline-flex flex-1 min-h-[38px] items-center justify-center gap-1 whitespace-nowrap rounded-xl border px-2 py-1.5 text-[11px] sm:text-xs font-semibold transition focus-visible:outline-2 focus-visible:outline-sky-300 ${
                 rotateOpen
                   ? 'border-amber-400 bg-amber-950/70 text-amber-100'
                   : 'border-slate-700 bg-slate-900 text-slate-100 hover:bg-slate-800'
               }`}
             >
-              <RotateCw className="h-3.5 w-3.5 text-amber-300" aria-hidden="true" />
+              <RotateCw className="h-3.5 w-3.5 shrink-0 text-amber-300" aria-hidden="true" />
               방향 바꾸기
             </button>
           )}

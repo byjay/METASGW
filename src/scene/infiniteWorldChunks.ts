@@ -236,14 +236,14 @@ export class InfiniteWorldChunkManager {
     const floatingVessels: Array<{ obj: THREE.Object3D; phase: number; baseY: number }> = [];
 
     const concreteMat = this.lowSpec
-      ? new THREE.MeshLambertMaterial({ color: 0x9aa6b4 })
+      ? new THREE.MeshLambertMaterial({ color: 0x8d9aa8 })
       : new THREE.MeshStandardMaterial({
-          color: 0xd4dde6,
+          color: 0xa4b0be,
           map: this.textures.concreteAlbedo,
           bumpMap: this.textures.concreteBump,
           bumpScale: 0.08,
-          roughness: 0.9,
-          metalness: 0.05,
+          roughness: 0.92,
+          metalness: 0.04,
         });
     const seawallMat = new THREE.MeshStandardMaterial({ color: 0x2c3a4c, roughness: 0.9, metalness: 0.08 });
     const hazardMat = new THREE.MeshStandardMaterial({
@@ -252,13 +252,13 @@ export class InfiniteWorldChunkManager {
       roughness: 0.65,
     });
     const warehouseWallMat = new THREE.MeshStandardMaterial({
-      color: rand() > 0.5 ? 0xdbe3ec : 0xcad5e2,
-      roughness: 0.64,
-      metalness: 0.18,
+      color: rand() > 0.5 ? 0x3e5166 : 0x4b5e73,
+      roughness: 0.72,
+      metalness: 0.22,
     });
     const roofMat = new THREE.MeshStandardMaterial({
-      color: rand() > 0.5 ? 0x2c5270 : 0x475569,
-      roughness: 0.52,
+      color: rand() > 0.5 ? 0x1e344c : 0x2f3e4f,
+      roughness: 0.56,
       metalness: 0.34,
     });
     const cranePaintMat = new THREE.MeshStandardMaterial({
@@ -370,7 +370,7 @@ export class InfiniteWorldChunkManager {
       const lanternMat = new THREE.MeshStandardMaterial({
         color: 0xfef08a,
         emissive: 0xfbbf24,
-        emissiveIntensity: 2.2,
+        emissiveIntensity: 0.75,
       });
       const tower = new THREE.Mesh(new THREE.CylinderGeometry(1.1, 1.9, 13.5, 12), towerMat);
       tower.position.y = 6.75;
@@ -470,14 +470,17 @@ export class InfiniteWorldChunkManager {
     ground.position.set(0, 0.65, 0);
     group.add(ground);
 
-    // Distant coastal hills for natural horizon framing (never boxed-in walls!)
+    // Distant coastal ridges for natural horizon framing (never sharp pyramids or boxed walls)
     for (let i = 0; i < 3; i += 1) {
-      const r = 34 + rand() * 28;
-      const h = 14 + rand() * 24;
-      const hill = new THREE.Mesh(new THREE.ConeGeometry(r, h, 7), hillMat);
-      hill.position.set((rand() - 0.5) * 130, 1.4 + h * 0.45, -20 - rand() * 60);
-      hill.rotation.y = rand() * Math.PI;
-      group.add(hill);
+      const r = 38 + rand() * 26;
+      const ridge = new THREE.Mesh(
+        new THREE.SphereGeometry(r, 10, 6, 0, Math.PI * 2, 0, Math.PI * 0.5),
+        hillMat,
+      );
+      ridge.scale.set(1.55 + rand() * 0.4, 0.42 + rand() * 0.14, 0.9);
+      ridge.position.set((rand() - 0.5) * 130, -0.5, -20 - rand() * 60);
+      ridge.rotation.y = rand() * Math.PI;
+      group.add(ridge);
     }
 
     return { key: chunkKey(cx, cz), cx, cz, kind: 'inland', group, floatingVessels: [] };
@@ -489,7 +492,7 @@ export class InfiniteWorldChunkManager {
     const glow = new THREE.MeshStandardMaterial({
       color: 0xfef08a,
       emissive: colorHex === 0xb91c1c ? 0xf87171 : 0x4ade80,
-      emissiveIntensity: 1.8,
+      emissiveIntensity: 0.65,
     });
     const base = new THREE.Mesh(new THREE.CylinderGeometry(1.15, 1.35, 1.0, 10), mat);
     base.position.y = 0.4;

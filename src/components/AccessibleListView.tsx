@@ -26,19 +26,25 @@ import {
   buildTalkDmUrl,
   buildTalkRoomUrl,
   isSafeNavigationUrl,
+  SEDMS_PROJECTS_LOGIN_URL,
   SGW_PORTAL_LINKS,
 } from '../deepLink';
 import { getErrorDescriptor, type AppErrorCode } from '../errorCatalog';
 import type { HarborPerson, HarborShip } from '../mapping';
 import type { RuntimeEnv } from '../runtimeEnv';
-import type { SgwUser } from '../sgwAdapter';
+import {
+  SEDMS_EMPTY_PROJECTS_MESSAGE,
+  SEDMS_UNAVAILABLE_MESSAGE,
+  SEDMS_UNMAPPED_MESSAGE,
+  type SgwUser,
+} from '../sgwAdapter';
 import { WEBGL_RETRY_BUTTON_LABEL, type WebGLFallbackReason } from '../webglContextState';
 
 export interface AccessibleListViewProps {
   user: SgwUser;
   runtimeEnv: RuntimeEnv;
   ships: HarborShip[];
-  projectsState: 'loading' | 'ready' | 'pending' | 'forbidden' | 'error';
+  projectsState: 'loading' | 'ready' | 'unmapped' | 'unavailable' | 'pending' | 'forbidden' | 'error';
   projectsMessage: string;
   projectsErrorCode?: AppErrorCode | null;
   people: HarborPerson[];
@@ -423,9 +429,54 @@ export const AccessibleListView: React.FC<AccessibleListViewProps> = ({
               </div>
             )}
 
+            {projectsState === 'unmapped' && (
+              <div
+                data-testid="projects-unmapped-panel"
+                className="rounded-xl border border-sky-500/40 bg-sky-950/40 p-5 text-center space-y-3"
+              >
+                <p className="text-sm font-semibold text-white">{SEDMS_UNMAPPED_MESSAGE}</p>
+                <div className="flex flex-wrap items-center justify-center gap-2">
+                  <a
+                    href={safeHref(SEDMS_PROJECTS_LOGIN_URL)}
+                    target={!isPreview && openInNewTab ? '_blank' : undefined}
+                    rel={!isPreview && openInNewTab ? 'noopener noreferrer' : undefined}
+                    onClick={handleLinkClick('SEDMS 열기')}
+                    data-testid="sedms-unmapped-open-link"
+                    aria-label="SEDMS 열기"
+                    className="inline-flex min-h-[44px] items-center gap-1.5 rounded-lg bg-sky-700 px-4 py-2 text-xs font-semibold text-white hover:bg-sky-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400"
+                  >
+                    <FolderKanban className="h-4 w-4" aria-hidden="true" />
+                    <span>SEDMS 열기</span>
+                    <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                  </a>
+                </div>
+              </div>
+            )}
+
+            {projectsState === 'unavailable' && (
+              <div
+                data-testid="projects-unavailable-panel"
+                className="rounded-xl border border-slate-700 bg-slate-950/70 p-5 text-center space-y-3"
+              >
+                <p className="text-sm font-semibold text-white">{SEDMS_UNAVAILABLE_MESSAGE}</p>
+                <button
+                  type="button"
+                  onClick={onRefreshProjects}
+                  aria-label="프로젝트 목록 다시 확인"
+                  className="inline-flex min-h-[44px] items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 px-4 py-2 text-xs font-semibold text-slate-100 hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400"
+                >
+                  <RefreshCw className="h-4 w-4" aria-hidden="true" />
+                  <span>다시 확인</span>
+                </button>
+              </div>
+            )}
+
             {projectsState === 'ready' && ships.length === 0 && (
-              <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-5 text-center text-sm text-slate-300">
-                현재 참여 중인 SEDMS 프로젝트가 없습니다.
+              <div
+                data-testid="projects-empty-panel"
+                className="rounded-xl border border-slate-800 bg-slate-950/60 p-5 text-center text-sm text-slate-300"
+              >
+                {SEDMS_EMPTY_PROJECTS_MESSAGE}
               </div>
             )}
 

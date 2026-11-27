@@ -159,6 +159,7 @@ export class HarborSceneController implements HarborSceneHandle {
 
   private renderer: THREE.WebGLRenderer;
   private composer: EffectComposer | null = null;
+  private composerRT: THREE.WebGLRenderTarget | null = null;
   private bloomPass: UnrealBloomPass | null = null;
   private smaaPass: SMAAPass | null = null;
 
@@ -244,7 +245,7 @@ export class HarborSceneController implements HarborSceneHandle {
     });
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.04;
+    this.renderer.toneMappingExposure = 0.84;
     this.renderer.info.autoReset = false;
     this.renderer.setPixelRatio(
       resolvePixelRatioForQuality(this.qualityTier, window.devicePixelRatio || 1),
@@ -259,7 +260,7 @@ export class HarborSceneController implements HarborSceneHandle {
     this.sky.scale.setScalar(2600);
     this.scene.add(this.sky);
 
-    this.camera = new THREE.PerspectiveCamera(44, w / h, 0.5, 2200);
+    this.camera = new THREE.PerspectiveCamera(50, w / h, 0.5, 2400);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = !this.isSoftwareGl && !this.reducedMotion;
     this.controls.dampingFactor = 0.08;
@@ -309,14 +310,14 @@ export class HarborSceneController implements HarborSceneHandle {
     this.playerRig.group.position.set(this.playerPos.x, this.playerPos.y, this.playerPos.z);
     this.scene.add(this.playerRig.group);
 
-    const haloGeo = new THREE.RingGeometry(0.92, 1.24, 28);
+    const haloGeo = new THREE.RingGeometry(1.35, 1.88, 28);
     haloGeo.rotateX(-Math.PI / 2);
     this.playerHalo = new THREE.Mesh(
       haloGeo,
       new THREE.MeshBasicMaterial({
-        color: 0x38bdf8,
+        color: 0x0ea5e9,
         transparent: true,
-        opacity: 0.85,
+        opacity: 0.94,
         side: THREE.DoubleSide,
         depthWrite: false,
         polygonOffset: true,
@@ -324,7 +325,7 @@ export class HarborSceneController implements HarborSceneHandle {
         polygonOffsetUnits: -3,
       }),
     );
-    this.playerHalo.position.set(this.playerPos.x, this.playerPos.y + 0.05, this.playerPos.z);
+    this.playerHalo.position.set(this.playerPos.x, this.playerPos.y + 0.06, this.playerPos.z);
     this.scene.add(this.playerHalo);
 
     const wpGeo = new THREE.RingGeometry(0.55, 0.88, 24);
@@ -373,29 +374,42 @@ export class HarborSceneController implements HarborSceneHandle {
       this.bloomPass = null;
       this.smaaPass = null;
     }
+    if (this.composerRT) {
+      this.composerRT.dispose();
+      this.composerRT = null;
+    }
 
     // Post-processing active strictly in 'high' tier on hardware GPU (per Req #5 & threejs/SKILL.md §2.1)
     if (this.qualityTier !== 'high' || this.isSoftwareGl) {
       return;
     }
 
-    const composer = new EffectComposer(this.renderer);
-    composer.setPixelRatio(this.renderer.getPixelRatio());
+    const pr = this.renderer.getPixelRatio();
+    // Explicit HDR HalfFloatType target prevents 8-bit clipping & ACES blowout on hardware GPU
+    const rt = new THREE.WebGLRenderTarget(
+      Math.max(1, Math.floor(w * pr)),
+      Math.max(1, Math.floor(h * pr)),
+      {
+        type: THREE.HalfFloatType,
+        samples: 4,
+      },
+    );
+    const composer = new EffectComposer(this.renderer, rt);
+    composer.setPixelRatio(pr);
     composer.setSize(w, h);
 
     const renderPass = new RenderPass(this.scene, this.camera);
     composer.addPass(renderPass);
 
-    // Subtle bloom for beacon lights, sunset specular highlights & 3D scan point cloud
+    // High-threshold, ultra-subtle bloom so daylight sky, concrete & white superstructures never smear
     const bloomPass = new UnrealBloomPass(
       new THREE.Vector2(Math.max(1, Math.floor(w / 2)), Math.max(1, Math.floor(h / 2))),
-      0.16, // very subtle strength
-      0.35, // radius
-      0.92, // high threshold so daylight concrete never glows
+      0.06, // minimal strength
+      0.22, // tight radius
+      1.25, // strictly HDR-only threshold (> 1.0) so sunlit diffuse surfaces never bloom
     );
     composer.addPass(bloomPass);
 
-    const pr = this.renderer.getPixelRatio();
     const smaaPass = new SMAAPass();
     smaaPass.setSize(Math.max(1, Math.floor(w * pr)), Math.max(1, Math.floor(h * pr)));
     composer.addPass(smaaPass);
@@ -403,6 +417,7 @@ export class HarborSceneController implements HarborSceneHandle {
     const outputPass = new OutputPass();
     composer.addPass(outputPass);
 
+    this.composerRT = rt;
     this.composer = composer;
     this.bloomPass = bloomPass;
     this.smaaPass = smaaPass;
@@ -439,36 +454,36 @@ export class HarborSceneController implements HarborSceneHandle {
   private applyAtmosphere(sunset: boolean): void {
     this.darkTheme = sunset;
     const skyUniforms = this.sky.material.uniforms;
-    // Day (낮) vs Coastal Golden Sunset (해질녘) — Requirement #4 & #16
-    const elevation = sunset ? 6.5 : 42;
-    const azimuth = sunset ? 218 : 34;
-    const fogHex = sunset ? 0x26283e : 0xcde3f4;
-    const fogDensity = sunset ? 0.00145 : 0.00072;
+    // Clear Azure Maritime Day (낮) vs Coastal Golden Sunset (해질녘)
+    const elevation = sunset ? 7.5 : 46;
+    const azimuth = sunset ? 218 : 38;
+    const fogHex = sunset ? 0x232942 : 0x7cb3da;
+    const fogDensity = sunset ? 0.0011 : 0.00038;
 
     if (sunset) {
-      skyUniforms['turbidity'].value = 9.2;
-      skyUniforms['rayleigh'].value = 3.2;
-      skyUniforms['mieCoefficient'].value = 0.008;
-      skyUniforms['mieDirectionalG'].value = 0.84;
+      skyUniforms['turbidity'].value = 8.5;
+      skyUniforms['rayleigh'].value = 3.0;
+      skyUniforms['mieCoefficient'].value = 0.006;
+      skyUniforms['mieDirectionalG'].value = 0.82;
       this.sunKeyLight.color.setHex(0xffb470);
-      this.sunKeyLight.intensity = 1.65;
+      this.sunKeyLight.intensity = 1.45;
       this.hemiFillLight.color.setHex(0x6d7aa8);
       this.hemiFillLight.groundColor.setHex(0x1f2536);
-      this.hemiFillLight.intensity = 0.86;
-      this.ambientLight.intensity = 0.22;
-      this.renderer.toneMappingExposure = 0.96;
-    } else {
-      skyUniforms['turbidity'].value = 3.4;
-      skyUniforms['rayleigh'].value = 1.65;
-      skyUniforms['mieCoefficient'].value = 0.0038;
-      skyUniforms['mieDirectionalG'].value = 0.78;
-      this.sunKeyLight.color.setHex(0xfff4e0);
-      this.sunKeyLight.intensity = 1.85;
-      this.hemiFillLight.color.setHex(0xd4ecff);
-      this.hemiFillLight.groundColor.setHex(0x3f5266);
       this.hemiFillLight.intensity = 0.72;
       this.ambientLight.intensity = 0.16;
-      this.renderer.toneMappingExposure = 0.88;
+      this.renderer.toneMappingExposure = 0.9;
+    } else {
+      skyUniforms['turbidity'].value = 1.15;
+      skyUniforms['rayleigh'].value = 3.1;
+      skyUniforms['mieCoefficient'].value = 0.001;
+      skyUniforms['mieDirectionalG'].value = 0.7;
+      this.sunKeyLight.color.setHex(0xfff3de);
+      this.sunKeyLight.intensity = 1.45;
+      this.hemiFillLight.color.setHex(0x7cb9eb);
+      this.hemiFillLight.groundColor.setHex(0x2b3e50);
+      this.hemiFillLight.intensity = 0.48;
+      this.ambientLight.intensity = 0.12;
+      this.renderer.toneMappingExposure = 0.84;
     }
 
     const phi = THREE.MathUtils.degToRad(90 - elevation);
@@ -477,13 +492,17 @@ export class HarborSceneController implements HarborSceneHandle {
     skyUniforms['sunPosition'].value.copy(_sunVec);
     this.sunKeyLight.position.copy(_sunVec).multiplyScalar(140);
 
-    this.scene.fog = new THREE.FogExp2(fogHex, fogDensity);
+    // Distance-only linear fog so foreground/midground ships, cranes & quay stay razor crisp
+    this.scene.fog = sunset
+      ? new THREE.Fog(fogHex, 260, 1300)
+      : new THREE.Fog(fogHex, 320, 1500);
+
     this.ocean.setAtmosphere({
       sunDir: _sunVec,
-      sunColor: sunset ? 0xffb36b : 0xfff8e7,
-      deepColor: sunset ? 0x0b233f : 0x0c4e74,
-      shallowColor: sunset ? 0x1a4663 : 0x16809c,
-      horizonColor: sunset ? 0x5c475c : 0xb3d9f5,
+      sunColor: sunset ? 0xffb36b : 0xfff4df,
+      deepColor: sunset ? 0x071a33 : 0x06355e,
+      shallowColor: sunset ? 0x123857 : 0x0c5480,
+      horizonColor: sunset ? 0x4d3f59 : 0x6ca8d9,
       fogColor: fogHex,
       fogDensity,
     });
@@ -502,7 +521,7 @@ export class HarborSceneController implements HarborSceneHandle {
       if (this.envRT) this.envRT.dispose();
       this.envRT = pmrem.fromScene(envScene, 0.04);
       this.scene.environment = this.envRT.texture;
-      this.scene.environmentIntensity = sunset ? 0.38 : 0.42;
+      this.scene.environmentIntensity = sunset ? 0.3 : 0.24;
       pmrem.dispose();
     } else {
       this.scene.environment = null;
@@ -677,7 +696,7 @@ export class HarborSceneController implements HarborSceneHandle {
         x: person.position.x,
         y,
         z: person.position.z,
-        scale: 1.45,
+        scale: 2.35,
       });
 
       this.peopleRoot.add(rig.group);
@@ -685,10 +704,10 @@ export class HarborSceneController implements HarborSceneHandle {
     });
 
     this.presenceRingBatch = createInstancedRingBatch(ringSpecs, {
-      innerRadius: 0.72,
-      outerRadius: 0.98,
+      innerRadius: 1.25,
+      outerRadius: 1.72,
       segments: 24,
-      opacity: 0.82,
+      opacity: 0.92,
       polygonOffset: true,
     });
     if (this.presenceRingBatch) {
@@ -806,8 +825,8 @@ export class HarborSceneController implements HarborSceneHandle {
   }
 
   public disembarkToHarbor(durationMs = 450): void {
-    const toTarget = new THREE.Vector3(0, 3.2, 6);
-    const toPos = new THREE.Vector3(14, 36, 76);
+    const toTarget = new THREE.Vector3(0, 2.0, 22);
+    const toPos = new THREE.Vector3(0, 74, 188);
 
     if (durationMs <= 0 || this.reducedMotion) {
       this.cameraTween = null;
@@ -870,16 +889,17 @@ export class HarborSceneController implements HarborSceneHandle {
   private snapCameraToPreset(preset: CameraPreset): void {
     this.cameraTween = null;
     if (preset === 'overview') {
-      // Wide elevated vista framing Home Harbor, 씨스타호, FD-01 & surrounding coastline
-      this.controls.target.set(0, 3, 18);
-      this.camera.position.set(0, 88, 152);
+      // Wide panoramic vista framing Home Harbor, 씨스타호, FD-01 & outer bay
+      this.controls.target.set(0, 2.5, 28);
+      this.camera.position.set(0, 96, 212);
     } else if (preset === 'quay') {
-      this.controls.target.set(this.playerPos.x, this.playerPos.y + 1.4, this.playerPos.z);
-      this.camera.position.set(this.playerPos.x + 9, this.playerPos.y + 8.5, this.playerPos.z + 15);
+      this.controls.target.set(this.playerPos.x, this.playerPos.y + 1.8, this.playerPos.z);
+      this.camera.position.set(this.playerPos.x + 11, this.playerPos.y + 10.5, this.playerPos.z + 18);
     } else {
-      // Default elevated 3/4 view framing North Quay, all 4 business ships, Goliath cranes & outer harbor wings (Req #8)
-      this.controls.target.set(0, 2.5, 16);
-      this.camera.position.set(18, 52, 118);
+      // Default establishing shot framing North Quay, quay avatars, all 4 business ships,
+      // Hero 씨스타호 (west wing), Floating Dry Dock FD-01 (east wing), Goliath cranes & background vessels
+      this.controls.target.set(0, 2.0, 22);
+      this.camera.position.set(0, 74, 188);
     }
     this.controls.update();
     this.chunkManager.update(this.controls.target.x, this.controls.target.z, this.elapsedTotal);
@@ -1485,6 +1505,10 @@ export class HarborSceneController implements HarborSceneHandle {
     if (this.composer) {
       this.composer.dispose();
       this.composer = null;
+    }
+    if (this.composerRT) {
+      this.composerRT.dispose();
+      this.composerRT = null;
     }
     this.controls.dispose();
     this.chunkManager.dispose();

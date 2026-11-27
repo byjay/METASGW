@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Anchor, Info } from 'lucide-react';
+import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Anchor, ExternalLink, Info } from 'lucide-react';
 import {
   BOARDING_TRANSITION_MS,
   createInitialProjectSessionState,
@@ -8,22 +8,36 @@ import {
   type HarborProjectSessionState,
 } from './boardingState';
 import { AccessibleListView } from './components/AccessibleListView';
-import { BottomControlDock } from './components/BottomControlDock';
-import { HarborMiniMap } from './components/HarborMiniMap';
 import {
   AuthGateOverlay,
   PersonActionModal,
 } from './components/HarborOverlays';
 import { HudTopBar } from './components/HudTopBar';
-import { OnboardPanel } from './components/OnboardPanel';
-import { PeopleFinderDrawer } from './components/PeopleFinderDrawer';
-import { RadialActionMenu, type RadialTarget } from './components/RadialActionMenu';
+import type { RadialTarget } from './components/RadialActionMenu';
 import type { PortalBuildingSpec } from './core/navMeshEngine';
 import {
+  isSafeNavigationUrl,
   navigateSafely,
+  SEDMS_PROJECTS_LOGIN_URL,
   SGW_LOGIN_REDIRECT_URL,
   SGW_PORTAL_LINKS,
 } from './deepLink';
+
+const BottomControlDock = lazy(() =>
+  import('./components/BottomControlDock').then((m) => ({ default: m.BottomControlDock })),
+);
+const HarborMiniMap = lazy(() =>
+  import('./components/HarborMiniMap').then((m) => ({ default: m.HarborMiniMap })),
+);
+const OnboardPanel = lazy(() =>
+  import('./components/OnboardPanel').then((m) => ({ default: m.OnboardPanel })),
+);
+const PeopleFinderDrawer = lazy(() =>
+  import('./components/PeopleFinderDrawer').then((m) => ({ default: m.PeopleFinderDrawer })),
+);
+const RadialActionMenu = lazy(() =>
+  import('./components/RadialActionMenu').then((m) => ({ default: m.RadialActionMenu })),
+);
 import {
   detectDeviceProfile,
   subscribeReducedMotion,
@@ -57,6 +71,8 @@ import {
   fetchSedmsProjects,
   postAuthLogout,
   postPresenceHeartbeat,
+  SEDMS_UNAVAILABLE_MESSAGE,
+  SEDMS_UNMAPPED_MESSAGE,
   type SedmsProject,
   type SgwEmployee,
   type SgwPresenceEntry,
@@ -87,7 +103,14 @@ type AuthGateStatus =
   | 'not_found'
   | 'error';
 
-type ProjectsLoadState = 'loading' | 'ready' | 'pending' | 'forbidden' | 'error';
+type ProjectsLoadState =
+  | 'loading'
+  | 'ready'
+  | 'unmapped'
+  | 'unavailable'
+  | 'pending'
+  | 'forbidden'
+  | 'error';
 
 const PRESENCE_POLL_MS = 12_000;
 const TOAST_DURATION_MS = 3_500;
@@ -576,6 +599,22 @@ export function App() {
         setProjectsState('ready');
         setProjectsErrorCode(null);
         setProjectsMessage('');
+        setSyncDisconnected(false);
+        setSyncErrorCode(null);
+        setLastSyncedAtMs(Date.now());
+      } else if (res.status === 'unmapped') {
+        setProjects([]);
+        setProjectsState('unmapped');
+        setProjectsErrorCode(null);
+        setProjectsMessage(res.message);
+        setSyncDisconnected(false);
+        setSyncErrorCode(null);
+        setLastSyncedAtMs(Date.now());
+      } else if (res.status === 'unavailable') {
+        setProjects([]);
+        setProjectsState('unavailable');
+        setProjectsErrorCode(null);
+        setProjectsMessage(res.message);
         setSyncDisconnected(false);
         setSyncErrorCode(null);
         setLastSyncedAtMs(Date.now());
@@ -1285,8 +1324,45 @@ export function App() {
               </div>
             )}
 
+          {viewMode === '3d' &&
+            sceneReady3D &&
+            boardingState.phase === 'harbor' &&
+            (projectsState === 'unmapped' || projectsState === 'unavailable') && (
+              <div className="pointer-events-none fixed inset-x-0 top-24 sm:top-16 z-30 flex justify-center px-3">
+                <div
+                  role="status"
+                  data-testid={
+                    projectsState === 'unmapped'
+                      ? 'harbor-projects-unmapped-banner'
+                      : 'harbor-projects-unavailable-banner'
+                  }
+                  className="pointer-events-auto inline-flex flex-wrap items-center justify-center gap-2.5 rounded-xl border border-sky-400/50 bg-slate-950/92 px-3.5 py-2 text-xs font-semibold text-slate-100 shadow-xl"
+                >
+                  <span>
+                    {projectsState === 'unmapped' ? SEDMS_UNMAPPED_MESSAGE : SEDMS_UNAVAILABLE_MESSAGE}
+                  </span>
+                  {projectsState === 'unmapped' && (
+                    <a
+                      href={isSafeNavigationUrl(SEDMS_PROJECTS_LOGIN_URL) ? SEDMS_PROJECTS_LOGIN_URL : '/'}
+                      onClick={(e) => {
+                        if (isPreviewMode) {
+                          e.preventDefault();
+                          showPreviewBlockedToast('SEDMS 열기');
+                        }
+                      }}
+                      aria-label="SEDMS 열기"
+                      className="inline-flex min-h-[32px] items-center gap-1 rounded-lg bg-sky-700 px-3 py-1 text-xs font-bold text-white hover:bg-sky-600 focus-visible:outline-2 focus-visible:outline-sky-300"
+                    >
+                      <span>SEDMS 열기</span>
+                      <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                    </a>
+                  )}
+                </div>
+              </div>
+            )}
+
           {viewMode === '3d' && sceneReady3D && (
-            <>
+            <Suspense fallback={null}>
               <HarborMiniMap
                 open={minimapOpen && boardingState.phase === 'harbor'}
                 ships={mappedShips}
@@ -1317,6 +1393,7 @@ export function App() {
                 projectsState={projectsState}
                 projectsMessage={projectsMessage}
                 projectsErrorCode={projectsErrorCode}
+                runtimeEnv={runtimeEnv}
                 onlineCount={onlineCount}
                 totalPeopleCount={mappedPeople.length}
                 peopleDrawerOpen={peopleDrawerOpen}
@@ -1333,8 +1410,9 @@ export function App() {
                 onTogglePeopleDrawer={handleTogglePeopleDrawer}
                 onToggleMinimap={handleToggleMinimap}
                 onSwitchTo2D={() => handleToggleViewMode('2d')}
+                onPreviewLinkBlocked={showPreviewBlockedToast}
               />
-            </>
+            </Suspense>
           )}
         </div>
       )}
@@ -1371,37 +1449,41 @@ export function App() {
       )}
 
       {/* Single Unified Entity Action Popup (Ship / Decorative Ship / Person — Requirements #6, #15, #18, #19) */}
-      <RadialActionMenu
-        target={radialTarget}
-        runtimeEnv={runtimeEnv}
-        customShipName={activeRadialCustomName}
-        currentYawDeg={activeRadialYawDeg}
-        rotationWarning={rotationWarning}
-        onBoardShip={startBoardingShip}
-        onFocusPerson3D={viewMode === '3d' ? handleFocusPerson3D : undefined}
-        onRenameShip={handleRenameShip}
-        onRotateShipStep={handleRotateShipStep}
-        onRotateShipAbsolute={handleRotateShipAbsolute}
-        onSnapShipParallel={handleSnapShipParallel}
-        onPreviewLinkBlocked={showPreviewBlockedToast}
-        onClose={() =>
-          setProjectSession((prev) =>
-            transitionProjectSessionState(prev, { type: 'CLOSE_RADIAL' }),
-          )
-        }
-      />
+      <Suspense fallback={null}>
+        {radialTarget && (
+          <RadialActionMenu
+            target={radialTarget}
+            runtimeEnv={runtimeEnv}
+            customShipName={activeRadialCustomName}
+            currentYawDeg={activeRadialYawDeg}
+            rotationWarning={rotationWarning}
+            onBoardShip={startBoardingShip}
+            onFocusPerson3D={viewMode === '3d' ? handleFocusPerson3D : undefined}
+            onRenameShip={handleRenameShip}
+            onRotateShipStep={handleRotateShipStep}
+            onRotateShipAbsolute={handleRotateShipAbsolute}
+            onSnapShipParallel={handleSnapShipParallel}
+            onPreviewLinkBlocked={showPreviewBlockedToast}
+            onClose={() =>
+              setProjectSession((prev) =>
+                transitionProjectSessionState(prev, { type: 'CLOSE_RADIAL' }),
+              )
+            }
+          />
+        )}
 
-      <OnboardPanel
-        key={activeBoardedShip ? `${activeBoardedShip.id}:${projectSession.projectSessionEpoch}` : 'harbor'}
-        ship={activeBoardedShip}
-        customDisplayName={
-          activeBoardedShip ? shipDisplayPrefs[activeBoardedShip.id]?.customName : undefined
-        }
-        phase={boardingState.phase}
-        runtimeEnv={runtimeEnv}
-        onPreviewLinkBlocked={showPreviewBlockedToast}
-        onDisembark={handleDisembark}
-      />
+        {activeBoardedShip && (
+          <OnboardPanel
+            key={`${activeBoardedShip.id}:${projectSession.projectSessionEpoch}`}
+            ship={activeBoardedShip}
+            customDisplayName={shipDisplayPrefs[activeBoardedShip.id]?.customName}
+            phase={boardingState.phase}
+            runtimeEnv={runtimeEnv}
+            onPreviewLinkBlocked={showPreviewBlockedToast}
+            onDisembark={handleDisembark}
+          />
+        )}
+      </Suspense>
 
       {/* PersonActionModal only used from 2D list view so 3D never stacks 2 overlapping popups */}
       <PersonActionModal

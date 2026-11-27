@@ -160,23 +160,20 @@ export function createMaritimeOcean(
   // 1) High-tier reflective Three.js Water (bundled locally, zero CDN!)
   const waterGeo = new THREE.PlaneGeometry(3600, 3600);
   const reflectiveWater = new Water(waterGeo, {
-    textureWidth: 512,
-    textureHeight: 512,
+    textureWidth: 1024,
+    textureHeight: 1024,
     waterNormals,
     sunDirection: new THREE.Vector3(0.55, 0.65, 0.5).normalize(),
-    sunColor: 0xffe8c4,
-    waterColor: 0x063052,
-    distortionScale: 1.15,
+    sunColor: 0xffe4b8,
+    waterColor: 0x06355e,
+    distortionScale: 0.72,
     fog: true,
   });
-  reflectiveWater.material.uniforms['size'].value = 18.0;
-  // Soften Fresnel sky glare so daylight ocean retains rich maritime blue while preserving real reflections
+  reflectiveWater.material.uniforms['size'].value = 6.0;
+  // Preserve rich deep maritime navy ocean color while keeping crisp anti-aliased ship reflections
   reflectiveWater.material.fragmentShader = reflectiveWater.material.fragmentShader.replace(
-    'vec3 scatter = max( 0.0, dot( surfaceNormal, eyeDirection ) ) * waterColor;',
-    'vec3 scatter = (0.35 + 0.65 * max( 0.0, dot( surfaceNormal, eyeDirection ) )) * waterColor * 1.45;',
-  ).replace(
-    'vec3 albedo = mix( ( sunColor * diffuseLight * 0.3 + scatter ) * getShadowMask(), ( vec3( 0.1 ) + reflectionSample * 0.9 + reflectionSample * specularLight ), reflectance);',
-    'vec3 albedo = mix( ( sunColor * diffuseLight * 0.32 + scatter ) * getShadowMask(), ( waterColor * 0.55 + reflectionSample * 0.58 + reflectionSample * specularLight * 0.65 ), clamp(reflectance * 0.72, 0.08, 0.62));',
+    'vec3 albedo = mix( ( sunColor * diffuseLight * 0.3 + scatter ) * getShadowMask(), reflectionSample + specularLight, reflectance );',
+    'vec3 deepOcean = waterColor * (0.85 + 0.65 * max( 0.0, dot( surfaceNormal, eyeDirection ) )) + sunColor * diffuseLight * 0.14; vec3 reflBlended = mix( waterColor * 1.2, reflectionSample, 0.58 ) + specularLight * 0.25; vec3 albedo = mix( deepOcean * getShadowMask(), reflBlended, clamp( reflectance * 0.46 + 0.14, 0.14, 0.44 ) );',
   );
   reflectiveWater.rotation.x = -Math.PI / 2;
   reflectiveWater.position.y = -0.04;

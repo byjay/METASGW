@@ -48,11 +48,11 @@ function createHeadlessTextureStub(): HarborTexturePack {
 describe('Avatar Distance LOD, Decorative Scenery Separation & Infinite Chunked World', () => {
   it('classifies avatar distance into 3 LOD tiers (detailed / simple / 2D billboard icon)', () => {
     assert.equal(resolveAvatarLodLevel(10), 'detailed');
-    assert.equal(resolveAvatarLodLevel(144.9), 'detailed');
-    assert.equal(resolveAvatarLodLevel(145), 'simple');
-    assert.equal(resolveAvatarLodLevel(219.9), 'simple');
-    assert.equal(resolveAvatarLodLevel(220), 'billboard');
-    assert.equal(resolveAvatarLodLevel(320), 'billboard');
+    assert.equal(resolveAvatarLodLevel(214.9), 'detailed');
+    assert.equal(resolveAvatarLodLevel(215), 'simple');
+    assert.equal(resolveAvatarLodLevel(299.9), 'simple');
+    assert.equal(resolveAvatarLodLevel(300), 'billboard');
+    assert.equal(resolveAvatarLodLevel(420), 'billboard');
   });
 
   it('maintains strict separation for >= 12 decorative vessels including Hero 씨스타호 and FD-01', () => {

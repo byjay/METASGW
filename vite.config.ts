@@ -4,10 +4,13 @@ import fs from 'fs';
 import path from 'path';
 import {defineConfig} from 'vite';
 
-export default defineConfig(() => {
+export default defineConfig(({ command }) => {
   const base = process.env.VITE_META_BASE ?? '/';
   return {
     base,
+    define: {
+      'process.env.NODE_ENV': JSON.stringify(command === 'build' ? 'production' : 'development'),
+    },
     plugins: [
       react(),
       tailwindcss(),

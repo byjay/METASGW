@@ -49,11 +49,11 @@ SGW 저장소의 `/talk/` 배포 방식과 동일한 정적 번들 구조를 따
 | 용도 | 메서드·경로 | 비고 |
 | --- | --- | --- |
 | 로그인 세션 확인 | `GET /auth/me` | `401` → `/?next=/meta/` 이동 |
-| 로그아웃 | `POST /auth/logout` | 세션 종료 후 `/?next=/meta/` 이동 |
-| 직원 목록 | `GET /api/employees` | 부두 아바타·동료 찾기 목록 구성 |
-| 접속 현황 조회 | `GET /api/presence` | 30초 폴링, 실패 시 HUD에 `"연결 끊김 — 마지막 갱신 n분 전"` 표시 |
-| 접속 하트비트 | `POST /api/presence` | 30초 주기, 요청 바디에 클라이언트 신원 주장 필드 미포함 |
-| **내 SEDMS 프로젝트 목록** | `GET /api/gateway/sedms/projects` | **미구현 계약 (SEDMS 배포 후 활성화)**. 60초 캐시, `404`/`501` 수신 시 가짜 데이터를 만들지 않고 `"프로젝트 연결 준비 중"` 안내 유지 |
+| 로그아웃 | `POST /api/auth/logout` | 세션 종료 후 `/` 이동 |
+| 직원 목록 | `GET /api/employees` | 부두 아바타·동료 찾기 목록 구성 (`sub` 키 기준) |
+| 접속 현황 조회 | `GET /api/presence` | 12초 폴링, 실패 시 HUD에 `"연결 끊김 — 마지막 갱신 n분 전"` 표시 |
+| 접속 하트비트 | `POST /api/presence` | 12초 주기, 요청 바디에 클라이언트 신원 주장 필드 미포함 |
+| **내 SEDMS 프로젝트 목록** | `GET /api/gateway/sedms/projects` | **미구현 계약 (SEDMS 배포 후 활성화)**. 60초 캐시. `mapped:false` → `"SEDMS 에 한 번 로그인하면 내 프로젝트 배가 보입니다"` + `[SEDMS 열기](/api/sedms-sso?return=/projects)`, `available:false` → `"SEDMS 연결 준비 중"`, `mapped:true` & 0건 → `"참여 중인 프로젝트가 없습니다"`, `404`/`501` → 준비 중 안내 유지 |
 
 ### 딥링크 계약 (`src/deepLink.ts`)
 - SEDMS 이동: `/api/sedms-sso?return=<encoded>` (허용 경로: `/projects`, `/project/<id>`, `/app`, `return` 파라미터명 고정)
@@ -66,9 +66,9 @@ SGW 저장소의 `/talk/` 배포 방식과 동일한 정적 번들 구조를 따
 ## 4. 보안 규칙 요약
 
 - **서버 권한 단일 진실**: 브라우저 측 권한 판정 함수 없음. `401`/`403`/`404`/`429`/`5xx`/오프라인 응답을 `src/errorCatalog.ts` 단일 카탈로그로 처리.
-- **토큰·저장소 금지**: `Authorization` 헤더 미사용, `localStorage`·`sessionStorage`·`IndexedDB` 접근 금지, HttpOnly 동일 오리진 세션 쿠키만 사용.
+- **토큰·개인정보 저장소 금지**: `Authorization` 헤더 미사용, 토큰·세션·PII 의 `localStorage`/`sessionStorage`/`IndexedDB` 저장 금지(비-PII 선박 표시 설정만 `src/shipDisplayPrefs.ts` 에 격리). HttpOnly 동일 오리진 세션 쿠키만 사용.
 - **DOM·링크 안전성**: `innerHTML`, `dangerouslySetInnerHTML`, `eval`, `postMessage`, `window.open`, `window.alert` 전면 금지. 내비게이션 URL 은 동일 오리진 경로(`/...`), `http://`, `https://`, `bmail://` 만 허용.
-- **외부 CDN 차단**: 폰트·텍스처·스크립트 외부 CDN 미사용 (PBR 텍스처는 브라우저 `OffscreenCanvas`/`Canvas` 로 절차 생성).
+- **외부 CDN 차단**: 폰트·텍스처·스크립트·3D 모델 외부 CDN 미사용 (PBR 텍스처는 절차 생성, CC0 아바타 모델은 `public/models/` 로컬 번들).
 - **식별자 비노출**: 코드·테스트·문서에 실명, 실제 이메일·전화번호, 사내 주소, 고객사·조선소명, 호선번호를 포함하지 않으며 `src/compliance.test.ts` 로 자동 검사.
 - **프로젝트 전환 격리**: 다른 배 승선·하선 시 이전 프로젝트의 선상 패널·미니맵 선택·래디얼 메뉴 상태를 즉시 초기화(`src/boardingState.ts`).
 

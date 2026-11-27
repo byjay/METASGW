@@ -344,11 +344,11 @@ export function buildProjectVessel3D(
   const hullRed = new THREE.MeshStandardMaterial({ color: 0x8b2626, roughness: 0.6, metalness: 0.14 });
   const deckSlate = new THREE.MeshStandardMaterial({ color: 0x415061, roughness: 0.72, metalness: 0.12 });
   const deckGreen = new THREE.MeshStandardMaterial({ color: 0x2f5a4f, roughness: 0.7, metalness: 0.1 });
-  const whiteSteel = new THREE.MeshStandardMaterial({ color: 0xebf0f5, roughness: 0.46, metalness: 0.14 });
-  const marineBlue = new THREE.MeshStandardMaterial({ color: 0x1e567d, roughness: 0.44, metalness: 0.24 });
-  const craneOchre = new THREE.MeshStandardMaterial({ color: 0xc99626, roughness: 0.44, metalness: 0.28 });
-  const lifeboatOrange = new THREE.MeshStandardMaterial({ color: 0xc84b1e, roughness: 0.42, metalness: 0.16 });
-  const silverMetal = new THREE.MeshStandardMaterial({ color: 0xc4ced9, roughness: 0.34, metalness: 0.42 });
+  const whiteSteel = new THREE.MeshStandardMaterial({ color: 0xcfd8e2, roughness: 0.56, metalness: 0.12 });
+  const marineBlue = new THREE.MeshStandardMaterial({ color: 0x1e567d, roughness: 0.48, metalness: 0.24 });
+  const craneOchre = new THREE.MeshStandardMaterial({ color: 0xc48f22, roughness: 0.48, metalness: 0.26 });
+  const lifeboatOrange = new THREE.MeshStandardMaterial({ color: 0xc4471b, roughness: 0.46, metalness: 0.14 });
+  const silverMetal = new THREE.MeshStandardMaterial({ color: 0xb2becb, roughness: 0.4, metalness: 0.38 });
   const darkSteel = new THREE.MeshStandardMaterial({ color: 0x222c38, roughness: 0.56, metalness: 0.52 });
 
   if (vesselType === 'lng_carrier') {

@@ -48,27 +48,38 @@ function toCanvasTexture(canvas: ProceduralCanvas): THREE.CanvasTexture {
 }
 
 /**
- * Generates a tileable tangent-space water wave normal map via layered periodic waves
- * so Three.js `Water` renders crisp sun-glint reflections with zero external CDN requests.
+ * Generates a tileable 512x512 isotropic tangent-space water wave normal map via 16 balanced
+ * multi-directional periodic waves with full trilinear mipmapping and high anisotropy so
+ * Three.js `Water` renders natural harbor ripples with zero diagonal striping or aliasing.
  */
 function buildProceduralWaterNormalTexture(anisotropy: number): {
   tex: THREE.CanvasTexture;
   isOffscreen: boolean;
 } {
-  const size = 256;
+  const size = 512;
   const surface = makeProceduralCanvas(size, size);
   const ctx = surface.ctx;
   const img = ctx.createImageData(size, size);
   const data = img.data;
 
-  // Periodic multi-octave wave field (integer frequencies guarantee seamless wrap!)
+  // 16 isotropic periodic wave octaves spanning all compass directions (integer freqs = seamless wrap)
   const waves = [
-    { fx: 2, fy: 1, amp: 0.42, ph: 0.4 },
-    { fx: -3, fy: 2, amp: 0.32, ph: 1.7 },
-    { fx: 5, fy: -4, amp: 0.22, ph: 2.9 },
-    { fx: -7, fy: -5, amp: 0.14, ph: 4.1 },
-    { fx: 9, fy: 8, amp: 0.09, ph: 0.9 },
-    { fx: -11, fy: 6, amp: 0.06, ph: 5.2 },
+    { fx: 2, fy: 0, amp: 0.14, ph: 0.3 },
+    { fx: 0, fy: 2, amp: 0.14, ph: 1.9 },
+    { fx: 2, fy: 2, amp: 0.11, ph: 4.1 },
+    { fx: -2, fy: 2, amp: 0.11, ph: 2.6 },
+    { fx: 3, fy: 1, amp: 0.095, ph: 0.8 },
+    { fx: -1, fy: 3, amp: 0.095, ph: 3.4 },
+    { fx: 3, fy: -2, amp: 0.085, ph: 5.1 },
+    { fx: -3, fy: -1, amp: 0.085, ph: 1.2 },
+    { fx: 5, fy: 2, amp: 0.065, ph: 2.2 },
+    { fx: -2, fy: 5, amp: 0.065, ph: 4.8 },
+    { fx: 4, fy: -4, amp: 0.058, ph: 0.5 },
+    { fx: 4, fy: 4, amp: 0.058, ph: 3.7 },
+    { fx: 7, fy: -3, amp: 0.042, ph: 1.5 },
+    { fx: -3, fy: 7, amp: 0.042, ph: 5.5 },
+    { fx: 9, fy: 4, amp: 0.028, ph: 2.9 },
+    { fx: -4, fy: -9, amp: 0.028, ph: 0.1 },
   ];
 
   const TWO_PI = Math.PI * 2;
@@ -85,9 +96,9 @@ function buildProceduralWaterNormalTexture(anisotropy: number): {
         dhdu += c * wave.fx;
         dhdv += c * wave.fy;
       }
-      // Tangent-space normal (-dH/du, -dH/dv, 1) normalized & packed into [0..255]
-      const nx = -dhdu * 0.24;
-      const ny = -dhdv * 0.24;
+      // Subtle capillary tangent-space normal (-dH/du, -dH/dv, 1) normalized & packed into [0..255]
+      const nx = -dhdu * 0.12;
+      const ny = -dhdv * 0.12;
       const nz = 1.0;
       const invLen = 1 / Math.hypot(nx, ny, nz);
 
@@ -103,7 +114,11 @@ function buildProceduralWaterNormalTexture(anisotropy: number): {
   const tex = toCanvasTexture(surface.canvas);
   tex.wrapS = THREE.RepeatWrapping;
   tex.wrapT = THREE.RepeatWrapping;
+  tex.generateMipmaps = true;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
+  tex.magFilter = THREE.LinearFilter;
   tex.anisotropy = anisotropy;
+  tex.needsUpdate = true;
   return { tex, isOffscreen: surface.isOffscreen };
 }
 
@@ -111,7 +126,7 @@ function buildProceduralWaterNormalTexture(anisotropy: number): {
  * Generates all 3D PBR textures procedurally via OffscreenCanvas (zero external CDN calls).
  */
 export function createHarborTextures(maxAnisotropy: number): HarborTexturePack {
-  const anisotropy = Math.max(1, Math.min(maxAnisotropy, 8));
+  const anisotropy = Math.max(1, Math.min(maxAnisotropy, 16));
   const dynamicTextures: THREE.CanvasTexture[] = [];
   const billboardIconCache = new Map<string, THREE.CanvasTexture>();
   let usedOffscreenCanvas = false;

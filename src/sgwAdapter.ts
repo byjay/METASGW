@@ -12,7 +12,7 @@
  *       * 'sgw': NEVER uses preview fixtures under any circumstance (401→redirect, 403/404→error notice).
  */
 
-import { SGW_LOGIN_REDIRECT_URL } from './deepLink';
+import { SEDMS_PROJECTS_LOGIN_URL, SGW_LOGIN_REDIRECT_URL } from './deepLink';
 import {
   getErrorDescriptor,
   mapHttpStatusToErrorCode,
@@ -74,8 +74,14 @@ export interface SedmsProject {
   updated_at: string;
 }
 
+export const SEDMS_UNMAPPED_MESSAGE = 'SEDMS 에 한 번 로그인하면 내 프로젝트 배가 보입니다';
+export const SEDMS_UNAVAILABLE_MESSAGE = 'SEDMS 연결 준비 중';
+export const SEDMS_EMPTY_PROJECTS_MESSAGE = '참여 중인 프로젝트가 없습니다';
+
 export type SedmsProjectsResult =
-  | { status: 'ready'; projects: SedmsProject[]; cached: boolean }
+  | { status: 'ready'; projects: SedmsProject[]; mapped: boolean; cached: boolean }
+  | { status: 'unmapped'; message: string; ssoUrl: string; projects: [] }
+  | { status: 'unavailable'; message: string; projects: [] }
   | { status: 'pending'; errorCode: AppErrorCode; message: string; projects: [] }
   | { status: 'unauthenticated'; redirectUrl: string; errorCode: 'unauthorized'; message: string; projects: [] }
   | { status: 'forbidden'; errorCode: 'forbidden'; message: string; projects: [] }
@@ -439,14 +445,18 @@ function normalizeProjectRecord(raw: Record<string, unknown>): SedmsProject | nu
 
 /**
  * Loads the current user's SEDMS projects via `GET /api/gateway/sedms/projects`.
- * Caches successful results for 60 seconds in 'sgw' mode.
- * Returns `pending` ("프로젝트 연결 준비 중") on 404/501 without fabricating data.
+ * Caches successful mapped results for 60 seconds in 'sgw' mode.
+ * Handles explicit gateway states:
+ *   - `available: false` -> `unavailable` ("SEDMS 연결 준비 중")
+ *   - `mapped: false` -> `unmapped` ("SEDMS 에 한 번 로그인하면 내 프로젝트 배가 보입니다" + SSO link)
+ *   - `mapped: true` & 0 projects -> `ready` with empty projects ("참여 중인 프로젝트가 없습니다")
+ *   - 404/501 -> `pending` without fabricating data.
  */
 export async function fetchSedmsProjects(
   opts?: AdapterOptions & { forceRefresh?: boolean },
 ): Promise<SedmsProjectsResult> {
   if (resolveEnv(opts) === 'preview') {
-    return { status: 'ready', projects: getPreviewDemoProjects(), cached: false };
+    return { status: 'ready', projects: getPreviewDemoProjects(), mapped: true, cached: false };
   }
 
   const now = opts?.nowMs ?? Date.now();
@@ -455,7 +465,7 @@ export async function fetchSedmsProjects(
     projectsCache &&
     now - projectsCache.fetchedAt < PROJECTS_CACHE_TTL_MS
   ) {
-    return { status: 'ready', projects: projectsCache.projects, cached: true };
+    return { status: 'ready', projects: projectsCache.projects, mapped: true, cached: true };
   }
 
   const doFetch = getDefaultFetch(opts?.fetchImpl);
@@ -511,12 +521,34 @@ export async function fetchSedmsProjects(
     }
 
     const data = (await res.json()) as unknown;
+    const objRecord =
+      data && typeof data === 'object' && !Array.isArray(data)
+        ? (data as Record<string, unknown>)
+        : null;
+
+    if (objRecord && objRecord.available === false) {
+      return {
+        status: 'unavailable',
+        message: SEDMS_UNAVAILABLE_MESSAGE,
+        projects: [],
+      };
+    }
+
+    if (objRecord && objRecord.mapped === false) {
+      return {
+        status: 'unmapped',
+        message: SEDMS_UNMAPPED_MESSAGE,
+        ssoUrl: SEDMS_PROJECTS_LOGIN_URL,
+        projects: [],
+      };
+    }
+
     const list: unknown[] = Array.isArray(data)
       ? data
-      : data && typeof data === 'object' && Array.isArray((data as Record<string, unknown>).projects)
-        ? ((data as Record<string, unknown>).projects as unknown[])
-        : data && typeof data === 'object' && Array.isArray((data as Record<string, unknown>).items)
-          ? ((data as Record<string, unknown>).items as unknown[])
+      : objRecord && Array.isArray(objRecord.projects)
+        ? (objRecord.projects as unknown[])
+        : objRecord && Array.isArray(objRecord.items)
+          ? (objRecord.items as unknown[])
           : [];
 
     const projects: SedmsProject[] = [];
@@ -530,7 +562,7 @@ export async function fetchSedmsProjects(
     }
 
     projectsCache = { fetchedAt: now, projects };
-    return { status: 'ready', projects, cached: false };
+    return { status: 'ready', projects, mapped: true, cached: false };
   } catch {
     return {
       status: 'error',

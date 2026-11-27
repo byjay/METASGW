@@ -11,6 +11,7 @@ const SAFE_PROJECT_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const SAFE_SUB_RE = /^[A-Za-z0-9._:@-]{1,128}$/;
 
 export const SGW_LOGIN_REDIRECT_URL = '/?next=/meta/';
+export const SEDMS_PROJECTS_LOGIN_URL = '/api/sedms-sso?return=/projects';
 
 export const SGW_PORTAL_LINKS = {
   talkHome: '/talk/',

@@ -155,7 +155,7 @@ function buildPortalPavilion(
   group.position.set(spec.centerX, QUAY_DECK_TOP_Y, spec.centerZ);
 
   const accent = new THREE.Color(spec.accentHex);
-  const wallMat = new THREE.MeshStandardMaterial({ color: 0xe2e8f0, roughness: 0.54, metalness: 0.14 });
+  const wallMat = new THREE.MeshStandardMaterial({ color: 0xbac6d4, roughness: 0.62, metalness: 0.14 });
   const charcoalMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.5, metalness: 0.5 });
   const accentMat = new THREE.MeshStandardMaterial({ color: accent, roughness: 0.36, metalness: 0.35 });
 
@@ -180,8 +180,8 @@ function buildPortalPavilion(
     map: signTex,
     emissive: new THREE.Color(0xffffff),
     emissiveMap: signTex,
-    emissiveIntensity: 0.32,
-    roughness: 0.32,
+    emissiveIntensity: 0.12,
+    roughness: 0.42,
   });
   const signFrame = new THREE.Mesh(new THREE.BoxGeometry(6.0, 1.4, 0.24), charcoalMat);
   signFrame.position.set(0, 5.45, spec.depth * 0.5 - 0.1);
@@ -275,23 +275,23 @@ export function buildShipyardWorld(
 
   // PBR Materials (Standard) + Low-Spec Fallback Materials (Lambert)
   const concretePbrMat = new THREE.MeshStandardMaterial({
-    color: 0xdde4ec,
+    color: 0xb0bcc9,
     map: textures.concreteAlbedo,
     bumpMap: textures.concreteBump,
     bumpScale: 0.09,
     roughnessMap: textures.concreteRoughness,
-    roughness: 0.88,
-    metalness: 0.05,
-  });
-  const concreteLowMat = new THREE.MeshLambertMaterial({ color: 0xb6c2cf });
-
-  const asphaltPbrMat = new THREE.MeshStandardMaterial({
-    color: 0xcbd5e1,
-    map: textures.asphaltRoad,
     roughness: 0.9,
     metalness: 0.04,
   });
-  const asphaltLowMat = new THREE.MeshLambertMaterial({ color: 0x3f4e63 });
+  const concreteLowMat = new THREE.MeshLambertMaterial({ color: 0x9aa8b6 });
+
+  const asphaltPbrMat = new THREE.MeshStandardMaterial({
+    color: 0x94a3b8,
+    map: textures.asphaltRoad,
+    roughness: 0.92,
+    metalness: 0.04,
+  });
+  const asphaltLowMat = new THREE.MeshLambertMaterial({ color: 0x334155 });
 
   const containerYardPbrMat = new THREE.MeshStandardMaterial({
     color: 0xffffff,
@@ -316,23 +316,23 @@ export function buildShipyardWorld(
   const steelMat = new THREE.MeshStandardMaterial({ color: 0x475569, roughness: 0.38, metalness: 0.72 });
   const curtainMat = new THREE.MeshStandardMaterial({
     map: textures.curtainWall,
-    emissive: new THREE.Color(0xbae6fd),
+    emissive: new THREE.Color(0x93c5fd),
     emissiveMap: textures.curtainWall,
-    emissiveIntensity: 0.38,
-    roughness: 0.18,
-    metalness: 0.42,
+    emissiveIntensity: 0.14,
+    roughness: 0.24,
+    metalness: 0.38,
   });
   const aviationRedMat = new THREE.MeshStandardMaterial({
     color: 0xef4444,
     emissive: 0xef4444,
-    emissiveIntensity: 2.0,
-    roughness: 0.2,
+    emissiveIntensity: 0.9,
+    roughness: 0.26,
   });
   const bridgeGlowMat = new THREE.MeshStandardMaterial({
-    color: 0xfef3c7,
+    color: 0xf5e8c8,
     emissive: 0xfde68a,
-    emissiveIntensity: 1.25,
-    roughness: 0.16,
+    emissiveIntensity: 0.32,
+    roughness: 0.24,
   });
 
   staticDisposables.push(
@@ -398,9 +398,9 @@ export function buildShipyardWorld(
 
   // Central Plaza Inlay + Raised Observation Terrace & Flanking Ramps (matching sampleHarborElevation!)
   const plazaTileMat = new THREE.MeshStandardMaterial({
-    color: 0xd5dee8,
-    roughness: 0.72,
-    metalness: 0.06,
+    color: 0x8d9aa8,
+    roughness: 0.86,
+    metalness: 0.04,
     polygonOffset: true,
     polygonOffsetFactor: -1,
     polygonOffsetUnits: -1,
@@ -630,10 +630,10 @@ export function buildShipyardWorld(
   const lampHeadGeo = new THREE.BoxGeometry(0.45, 0.16, 0.72);
   const lampPoleMat = new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.45, metalness: 0.65 });
   const lampGlowMat = new THREE.MeshStandardMaterial({
-    color: 0xfef3c7,
+    color: 0xf5e8c8,
     emissive: 0xfde68a,
-    emissiveIntensity: 1.6,
-    roughness: 0.2,
+    emissiveIntensity: 0.45,
+    roughness: 0.28,
   });
 
   const lampPoleInst = new THREE.InstancedMesh(lampPoleGeo, lampPoleMat, lampCoords.length);
@@ -764,20 +764,80 @@ export function buildShipyardWorld(
   scene.add(buildGoliathCrane(-44.0, QUAY_DECK_TOP_Y, -39.5, 0xb4481c, textures.craneBannerOrange, aviationRedMat));
   scene.add(buildGoliathCrane(44.0, QUAY_DECK_TOP_Y, -39.5, 0x144e78, textures.craneBannerBlue, aviationRedMat));
 
-  // Rear shipyard assembly halls for realistic horizon depth
-  const hallMat = new THREE.MeshStandardMaterial({ color: 0xd0d9e3, roughness: 0.64, metalness: 0.16 });
-  const hallRoofMat = new THREE.MeshStandardMaterial({ color: 0x26445f, roughness: 0.54, metalness: 0.3 });
+  // Rear industrial shipyard fabrication hangars (dark slate corrugated steel + pitched navy roofs + bay doors)
+  const hallMat = new THREE.MeshStandardMaterial({
+    color: 0x3b4d62,
+    bumpMap: textures.containerRibBump,
+    bumpScale: 0.08,
+    roughness: 0.72,
+    metalness: 0.24,
+  });
+  const hallRoofMat = new THREE.MeshStandardMaterial({ color: 0x1c3147, roughness: 0.58, metalness: 0.34 });
+  const hallDoorMat = new THREE.MeshStandardMaterial({ color: 0x162230, roughness: 0.76, metalness: 0.28 });
+  const hallTrimMat = new THREE.MeshStandardMaterial({ color: 0x26394d, roughness: 0.6, metalness: 0.3 });
   for (const hx of [-64, 0, 64]) {
-    const hall = new THREE.Mesh(new THREE.BoxGeometry(44, 13.5, 22), hallMat);
-    hall.position.set(hx, 1.56 + 6.75, -68);
-    hall.castShadow = true;
-    hall.receiveShadow = true;
-    scene.add(hall);
-    const roof = new THREE.Mesh(new THREE.BoxGeometry(45.2, 0.8, 23.2), hallRoofMat);
-    roof.position.set(hx, 1.56 + 13.9, -68);
-    scene.add(roof);
+    const hallGroup = new THREE.Group();
+    hallGroup.position.set(hx, 1.56, -70);
+
+    const mainBody = new THREE.Mesh(new THREE.BoxGeometry(40, 12.2, 20), hallMat);
+    mainBody.position.y = 6.1;
+    mainBody.castShadow = true;
+    mainBody.receiveShadow = true;
+    hallGroup.add(mainBody);
+
+    // Architectural stepped industrial roof + clerestory monitor
+    const lowerRoof = new THREE.Mesh(new THREE.BoxGeometry(41.2, 0.9, 21.2), hallRoofMat);
+    lowerRoof.position.y = 12.65;
+    hallGroup.add(lowerRoof);
+    const upperMonitor = new THREE.Mesh(new THREE.BoxGeometry(34, 2.2, 9.5), hallRoofMat);
+    upperMonitor.position.y = 14.0;
+    hallGroup.add(upperMonitor);
+
+    // Recessed hangar bay doors & vertical structural steel pilasters facing harbor
+    for (const bx of [-12, 0, 12]) {
+      const bayDoor = new THREE.Mesh(new THREE.BoxGeometry(7.2, 6.8, 0.45), hallDoorMat);
+      bayDoor.position.set(bx, 3.4, 10.05);
+      hallGroup.add(bayDoor);
+    }
+    for (const px of [-18.5, -6, 6, 18.5]) {
+      const pilaster = new THREE.Mesh(new THREE.BoxGeometry(0.9, 12.2, 0.65), hallTrimMat);
+      pilaster.position.set(px, 6.1, 10.12);
+      hallGroup.add(pilaster);
+    }
+    scene.add(hallGroup);
   }
-  staticDisposables.push(hallMat, hallRoofMat);
+
+  // Distant coastal pine-slate mountain ridges behind the shipyard for organic natural skyline depth
+  const ridgeNearMat = new THREE.MeshStandardMaterial({
+    color: 0x2d4a40,
+    roughness: 0.94,
+    metalness: 0.02,
+    flatShading: true,
+  });
+  const ridgeFarMat = new THREE.MeshStandardMaterial({
+    color: 0x3b586e,
+    roughness: 0.95,
+    metalness: 0.02,
+    flatShading: true,
+  });
+  const ridgeSpecs = [
+    { x: -165, z: -138, sx: 1.7, sy: 0.48, sz: 0.95, r: 58, mat: ridgeNearMat },
+    { x: -82, z: -148, sx: 1.9, sy: 0.54, sz: 0.9, r: 62, mat: ridgeNearMat },
+    { x: 6, z: -165, sx: 2.2, sy: 0.56, sz: 0.95, r: 68, mat: ridgeFarMat },
+    { x: 96, z: -148, sx: 1.85, sy: 0.5, sz: 0.9, r: 60, mat: ridgeNearMat },
+    { x: 176, z: -138, sx: 1.65, sy: 0.46, sz: 0.95, r: 56, mat: ridgeNearMat },
+  ];
+  for (const rs of ridgeSpecs) {
+    const ridge = new THREE.Mesh(
+      new THREE.SphereGeometry(rs.r, 11, 7, 0, Math.PI * 2, 0, Math.PI * 0.5),
+      rs.mat,
+    );
+    ridge.scale.set(rs.sx, rs.sy, rs.sz);
+    ridge.position.set(rs.x, -1.0, rs.z);
+    ridge.rotation.y = (rs.x * 0.02) % Math.PI;
+    scene.add(ridge);
+  }
+  staticDisposables.push(hallMat, hallRoofMat, hallDoorMat, hallTrimMat, ridgeNearMat, ridgeFarMat);
 
   // Twin Pier-Head Lighthouses (West Red / East Green maritime harbor entrance markers)
   scene.add(buildPierLighthouse(-84.5, QUAY_DECK_TOP_Y, 34.5, 0xb91c1c, lampGlowMat));

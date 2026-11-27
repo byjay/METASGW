@@ -16,13 +16,13 @@ export interface BuiltHumanoidRig {
 
 /**
  * Pure distance-based LOD classifier for 3D avatars:
- *   - Near (< 145m): detailed CC0 VRM / GLB / articulated 3D humanoid (realistic 1.75m height)
- *   - Mid  (145m .. 220m): simplified low-poly silhouette
- *   - Far  (>= 220m): tiny unobtrusive 2D billboard icon sprite (never blocks harbor scenery)
+ *   - Near (< 215m): detailed CC0 VRM / GLB / articulated 3D humanoid (2.85m diorama-readable height)
+ *   - Mid  (215m .. 300m): simplified low-poly silhouette
+ *   - Far  (>= 300m): unobtrusive 2D billboard icon sprite (never blocks harbor scenery)
  */
 export function resolveAvatarLodLevel(cameraDistance: number): AvatarLodLevel {
-  if (!Number.isFinite(cameraDistance) || cameraDistance < 145) return 'detailed';
-  if (cameraDistance < 220) return 'simple';
+  if (!Number.isFinite(cameraDistance) || cameraDistance < 215) return 'detailed';
+  if (cameraDistance < 300) return 'simple';
   return 'billboard';
 }
 
@@ -53,7 +53,7 @@ let _sharedGeo: SharedAvatarGeos | null = null;
 function getSharedGeos(): SharedAvatarGeos {
   if (_sharedGeo) return _sharedGeo;
   _sharedGeo = {
-    shadow: new THREE.PlaneGeometry(1.3, 1.3),
+    shadow: new THREE.PlaneGeometry(2.2, 2.2),
     pelvis: new THREE.CylinderGeometry(0.18, 0.17, 0.2, 10),
     belt: new THREE.CylinderGeometry(0.19, 0.19, 0.05, 10),
     torsoUpper: new THREE.CylinderGeometry(0.21, 0.17, 0.42, 12),
@@ -223,20 +223,28 @@ function normalizeModelHeight(root: THREE.Object3D, targetHeight = 1.75): void {
   }
 }
 
-function addSafetyHelmetProp(parent: THREE.Object3D, helmetHex: number, headY: number): void {
+function addSafetyHelmetProp(
+  parent: THREE.Object3D,
+  helmetHex: number,
+  headY: number,
+  helmetScale = 1.48,
+): void {
   const g = getSharedGeos();
   const helmetMat = new THREE.MeshStandardMaterial({
     color: helmetHex,
     roughness: 0.36,
     metalness: 0.22,
   });
+  const helmetGroup = new THREE.Group();
+  helmetGroup.position.set(0, headY, 0);
+  helmetGroup.scale.setScalar(helmetScale);
   const dome = new THREE.Mesh(g.helmetDome, helmetMat);
-  dome.position.set(0, headY, 0);
   dome.castShadow = true;
-  parent.add(dome);
+  helmetGroup.add(dome);
   const brim = new THREE.Mesh(g.helmetBrim, helmetMat);
-  brim.position.set(0, headY + 0.005, 0.04);
-  parent.add(brim);
+  brim.position.set(0, 0.005, 0.04);
+  helmetGroup.add(brim);
+  parent.add(helmetGroup);
 }
 
 /**
@@ -287,8 +295,9 @@ export function buildHarborAvatar(options: {
     group.add(shadow);
   }
 
-  // 2) Instant Articulated Procedural Humanoid Rig (realistic 1.75m human scale!)
+  // 2) Instant Articulated Procedural Humanoid Rig (2.85m diorama-readable scale)
   const fallbackRigGroup = new THREE.Group();
+  fallbackRigGroup.scale.setScalar(1.62);
   const rigGeos = getMergedRigGeos(jacketColor, vestColor, helmetColor);
   const bodyMat = getCachedMat(
     'avatar_vertex_pbr',
@@ -347,6 +356,7 @@ export function buildHarborAvatar(options: {
   detailedRoot.add(fallbackRigGroup);
 
   // 3) Mid-distance Simplified Silhouette LOD
+  simpleRoot.scale.setScalar(1.62);
   const simpleMat = new THREE.MeshStandardMaterial({
     color: jacketColor,
     roughness: 0.6,
@@ -393,8 +403,9 @@ export function buildHarborAvatar(options: {
         if (disposed || !vrm) return;
         loadedVrm = vrm;
         const vrmScene = vrm.scene;
+        const wrapper = new THREE.Group();
         vrmScene.rotation.y = Math.PI; // VRM0/1 front faces +Z in HarborScene
-        normalizeModelHeight(vrmScene, 1.78);
+        normalizeModelHeight(vrmScene, 2.85);
         vrmScene.traverse((obj) => {
           const m = obj as THREE.Mesh;
           if (m.isMesh) {
@@ -402,16 +413,18 @@ export function buildHarborAvatar(options: {
             m.receiveShadow = true;
           }
         });
-        addSafetyHelmetProp(vrmScene, helmetColor, 1.72);
-        externalModelRoot = vrmScene;
-        detailedRoot.add(vrmScene);
+        wrapper.add(vrmScene);
+        addSafetyHelmetProp(wrapper, helmetColor, 2.68, 1.48);
+        externalModelRoot = wrapper;
+        detailedRoot.add(wrapper);
         fallbackRigGroup.visible = false;
       });
     } else {
       void loadLocalGlbTemplate(url).then((tpl) => {
         if (disposed || !tpl) return;
+        const wrapper = new THREE.Group();
         const cloned = SkeletonUtils.clone(tpl.scene);
-        normalizeModelHeight(cloned, 1.76);
+        normalizeModelHeight(cloned, 2.82);
         const tint = new THREE.Color(options.shirtHex);
         cloned.traverse((obj) => {
           const m = obj as THREE.Mesh;
@@ -427,14 +440,15 @@ export function buildHarborAvatar(options: {
             }
           }
         });
-        addSafetyHelmetProp(cloned, helmetColor, 1.68);
+        wrapper.add(cloned);
+        addSafetyHelmetProp(wrapper, helmetColor, 2.64, 1.46);
         if (tpl.animations.length > 0) {
           glbMixer = new THREE.AnimationMixer(cloned);
           glbWalkAction = glbMixer.clipAction(tpl.animations[0]);
           glbWalkAction.play();
         }
-        externalModelRoot = cloned;
-        detailedRoot.add(cloned);
+        externalModelRoot = wrapper;
+        detailedRoot.add(wrapper);
         fallbackRigGroup.visible = false;
       });
     }

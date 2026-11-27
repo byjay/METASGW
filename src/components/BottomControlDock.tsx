@@ -2,6 +2,7 @@ import React from 'react';
 import {
   CheckCircle2,
   Clock,
+  ExternalLink,
   Map as MapIcon,
   PauseCircle,
   PlayCircle,
@@ -10,14 +11,22 @@ import {
   Ship,
   Users,
 } from 'lucide-react';
+import { isSafeNavigationUrl, SEDMS_PROJECTS_LOGIN_URL } from '../deepLink';
 import { getErrorDescriptor, type AppErrorCode } from '../errorCatalog';
 import type { HarborShip } from '../mapping';
+import type { RuntimeEnv } from '../runtimeEnv';
+import {
+  SEDMS_EMPTY_PROJECTS_MESSAGE,
+  SEDMS_UNAVAILABLE_MESSAGE,
+  SEDMS_UNMAPPED_MESSAGE,
+} from '../sgwAdapter';
 
 export interface BottomControlDockProps {
   ships: HarborShip[];
-  projectsState: 'loading' | 'ready' | 'pending' | 'forbidden' | 'error';
+  projectsState: 'loading' | 'ready' | 'unmapped' | 'unavailable' | 'pending' | 'forbidden' | 'error';
   projectsMessage: string;
   projectsErrorCode?: AppErrorCode | null;
+  runtimeEnv?: RuntimeEnv;
   onlineCount: number;
   totalPeopleCount: number;
   peopleDrawerOpen: boolean;
@@ -28,6 +37,7 @@ export interface BottomControlDockProps {
   onTogglePeopleDrawer: () => void;
   onToggleMinimap: () => void;
   onSwitchTo2D: () => void;
+  onPreviewLinkBlocked?: (featureLabel: string) => void;
 }
 
 function renderDockStatusIcon(tone: HarborShip['statusTone']): React.ReactNode {
@@ -50,6 +60,7 @@ export const BottomControlDock: React.FC<BottomControlDockProps> = ({
   projectsState,
   projectsMessage: _projectsMessage,
   projectsErrorCode = null,
+  runtimeEnv = 'sgw',
   onlineCount,
   totalPeopleCount,
   peopleDrawerOpen,
@@ -60,7 +71,9 @@ export const BottomControlDock: React.FC<BottomControlDockProps> = ({
   onTogglePeopleDrawer,
   onToggleMinimap,
   onSwitchTo2D,
+  onPreviewLinkBlocked,
 }) => {
+  const safeSsoHref = isSafeNavigationUrl(SEDMS_PROJECTS_LOGIN_URL) ? SEDMS_PROJECTS_LOGIN_URL : '/';
   const dockErrorDesc =
     projectsState === 'pending'
       ? getErrorDescriptor(projectsErrorCode ?? 'not_found')
@@ -77,7 +90,7 @@ export const BottomControlDock: React.FC<BottomControlDockProps> = ({
         className="pointer-events-auto flex w-full max-w-[calc(100vw-1rem)] sm:w-auto sm:max-w-full flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-2 rounded-2xl border border-slate-700/90 bg-slate-950/96 px-2.5 py-2 sm:px-3 text-slate-100 shadow-2xl"
       >
         {/* Docked SEDMS Project Ships (horizontally scrollable on narrow mobile) */}
-        <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 sm:pb-0 sm:max-w-[52vw]">
+        <div className="flex items-center gap-1.5 overflow-x-auto sm:max-w-[62vw] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           <Ship className="h-4 w-4 shrink-0 text-sky-400" aria-hidden="true" />
           {projectsState === 'pending' && dockErrorDesc && (
             <span className="inline-flex items-center gap-2 rounded-lg border border-amber-400/40 bg-amber-950/70 px-2.5 py-1 text-xs font-medium text-amber-100 whitespace-nowrap">
@@ -114,8 +127,50 @@ export const BottomControlDock: React.FC<BottomControlDockProps> = ({
             </span>
           )}
 
+          {projectsState === 'unmapped' && (
+            <span
+              data-testid="dock-projects-unmapped"
+              className="inline-flex items-center gap-2 rounded-lg border border-sky-400/50 bg-sky-950/75 px-2.5 py-1 text-xs font-medium text-sky-100 whitespace-nowrap"
+            >
+              <span>{SEDMS_UNMAPPED_MESSAGE}</span>
+              <a
+                href={safeSsoHref}
+                onClick={(e) => {
+                  if (runtimeEnv === 'preview') {
+                    e.preventDefault();
+                    onPreviewLinkBlocked?.('SEDMS 열기');
+                  }
+                }}
+                aria-label="SEDMS 열기"
+                className="inline-flex items-center gap-1 rounded bg-sky-700 px-2 py-0.5 text-[11px] font-bold text-white hover:bg-sky-600 focus-visible:outline-2 focus-visible:outline-sky-300"
+              >
+                <span>SEDMS 열기</span>
+                <ExternalLink className="h-3 w-3" aria-hidden="true" />
+              </a>
+            </span>
+          )}
+
+          {projectsState === 'unavailable' && (
+            <span
+              data-testid="dock-projects-unavailable"
+              className="inline-flex items-center gap-2 rounded-lg border border-amber-400/40 bg-amber-950/70 px-2.5 py-1 text-xs font-medium text-amber-100 whitespace-nowrap"
+            >
+              <span>{SEDMS_UNAVAILABLE_MESSAGE}</span>
+              <button
+                type="button"
+                onClick={onRefreshProjects}
+                aria-label="프로젝트 목록 다시 확인"
+                className="rounded p-0.5 hover:bg-amber-500/20 focus-visible:outline-2 focus-visible:outline-sky-400"
+              >
+                <RefreshCw className="h-3 w-3" aria-hidden="true" />
+              </button>
+            </span>
+          )}
+
           {projectsState === 'ready' && ships.length === 0 && (
-            <span className="text-xs text-slate-300 whitespace-nowrap">참여 중인 프로젝트 없음</span>
+            <span data-testid="dock-projects-empty" className="text-xs text-slate-300 whitespace-nowrap">
+              {SEDMS_EMPTY_PROJECTS_MESSAGE}
+            </span>
           )}
 
           {projectsState === 'ready' &&
