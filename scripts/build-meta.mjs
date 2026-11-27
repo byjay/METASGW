@@ -29,7 +29,10 @@ const viteBin = resolve(root, 'node_modules', 'vite', 'bin', 'vite.js');
 
 runStep('Type check (tsc --noEmit)', [tscBin, '--noEmit']);
 runStep('Unit tests (scripts/run-tests.mjs)', [resolve(root, 'scripts', 'run-tests.mjs')]);
-runStep('Vite static build (base=/meta/)', [viteBin, 'build'], { VITE_META_BASE: '/meta/' });
+runStep('Vite static build (base=/meta/)', [viteBin, 'build'], {
+  NODE_ENV: 'production',
+  VITE_META_BASE: '/meta/',
+});
 
 const distDir = resolve(root, 'dist');
 const distIndex = resolve(distDir, 'index.html');

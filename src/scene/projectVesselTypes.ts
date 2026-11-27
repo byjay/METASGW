@@ -1,29 +1,45 @@
 import * as THREE from 'three';
 import { mergeSolidSubtreeToVertexColors } from './meshBatching';
+import type { DecorativeVesselType } from './sceneryCatalog';
 import type { HarborTexturePack } from './textures';
 
 export const VESSEL_SILHOUETTE_IDS = [
   'lng_carrier',
   'container_ship',
-  'floating_dock',
   'vlcc_tanker',
+  'bulk_carrier',
+  'floating_dock',
   'wtiv_jackup',
   'fpso_offshore',
   'cruise_liner',
   'roro_car_carrier',
   'icebreaker_research',
   'naval_vessel',
+  'harbor_tug',
 ] as const;
 
-export type VesselSilhouetteId = (typeof VESSEL_SILHOUETTE_IDS)[number];
+export type VesselSilhouetteId = (typeof VESSEL_SILHOUETTE_IDS)[number] | DecorativeVesselType;
 
 export function getVesselSilhouetteByIndex(index: number): VesselSilhouetteId {
-  return VESSEL_SILHOUETTE_IDS[Math.abs(index) % VESSEL_SILHOUETTE_IDS.length];
+  // Prioritize iconic commercial shipbuilding silhouettes for project berths (0..3)
+  const primaryOrder: VesselSilhouetteId[] = [
+    'lng_carrier',
+    'container_ship',
+    'vlcc_tanker',
+    'bulk_carrier',
+    'wtiv_jackup',
+    'fpso_offshore',
+    'cruise_liner',
+    'roro_car_carrier',
+    'icebreaker_research',
+    'naval_vessel',
+  ];
+  return primaryOrder[Math.abs(index) % primaryOrder.length];
 }
 
 /**
  * Cleanly disposes all geometries and materials inside a replaced 3D vessel group
- * so dynamically updated project berths have zero GPU memory leaks.
+ * so dynamically updated project berths and pooled infinite chunks have zero GPU memory leaks.
  */
 export function disposeObjectTree(root: THREE.Object3D): void {
   const geometries = new Set<THREE.BufferGeometry>();
@@ -45,21 +61,272 @@ export function disposeObjectTree(root: THREE.Object3D): void {
   materials.forEach((m) => m.dispose());
 }
 
-function makeHullBow(width: number, height: number, bowLen: number, mat: THREE.Material): THREE.Mesh {
-  const halfW = width * 0.5;
+/**
+ * Creates a sculpted naval hull silhouette in planform using THREE.Shape + ExtrudeGeometry
+ * with flared curved bow, smooth parallel midbody, and tapered transom stern (no boxy cubes!).
+ * Oriented so bow faces -Z, stern faces +Z, and extrusion runs vertically from yBottom to yBottom + height.
+ */
+function createSculptedHullLayer(opts: {
+  halfBeam: number;
+  parallelHalfLen: number;
+  bowLen: number;
+  sternLen: number;
+  height: number;
+  yBottom: number;
+  bevel?: number;
+  mat: THREE.Material;
+}): THREE.Mesh {
+  const { halfBeam, parallelHalfLen, bowLen, sternLen, height, yBottom, mat } = opts;
+  const bevel = opts.bevel ?? 0.24;
+
+  // Shape is in 2D (x, y) -> rotated +90° around X maps shape (x, y) to world (x, yBottom + h, y)
+  // Actually rotation.x = Math.PI / 2 maps local +Y -> world +Z and local +Z -> world -Y!
+  // So we place bow at shape y = -(parallelHalfLen + bowLen) and extrude depth = height downward,
+  // positioning mesh.position.y = yBottom + height.
   const shape = new THREE.Shape();
-  shape.moveTo(-halfW, 0);
-  shape.lineTo(halfW, 0);
-  shape.quadraticCurveTo(halfW * 0.8, -bowLen * 0.58, 0, -bowLen);
-  shape.quadraticCurveTo(-halfW * 0.8, -bowLen * 0.58, -halfW, 0);
-  const geo = new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: false });
+  const bowZ = -(parallelHalfLen + bowLen);
+  const sternZ = parallelHalfLen + sternLen;
+  const transomHalfW = halfBeam * 0.62;
+
+  shape.moveTo(0, bowZ);
+  // Starboard curved bow flare into parallel midbody
+  shape.bezierCurveTo(
+    halfBeam * 0.42,
+    bowZ + bowLen * 0.26,
+    halfBeam * 0.96,
+    -parallelHalfLen - bowLen * 0.24,
+    halfBeam,
+    -parallelHalfLen,
+  );
+  // Starboard parallel midbody
+  shape.lineTo(halfBeam, parallelHalfLen * 0.85);
+  // Starboard stern run to transom
+  shape.quadraticCurveTo(halfBeam * 0.92, sternZ - sternLen * 0.28, transomHalfW, sternZ);
+  // Transom stern
+  shape.lineTo(-transomHalfW, sternZ);
+  // Port stern run
+  shape.quadraticCurveTo(-halfBeam * 0.92, sternZ - sternLen * 0.28, -halfBeam, parallelHalfLen * 0.85);
+  // Port parallel midbody
+  shape.lineTo(-halfBeam, -parallelHalfLen);
+  // Port curved bow flare back to stem
+  shape.bezierCurveTo(
+    -halfBeam * 0.96,
+    -parallelHalfLen - bowLen * 0.24,
+    -halfBeam * 0.42,
+    bowZ + bowLen * 0.26,
+    0,
+    bowZ,
+  );
+  shape.closePath();
+
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: Math.max(0.1, height),
+    bevelEnabled: bevel > 0,
+    bevelThickness: bevel,
+    bevelSize: bevel * 0.85,
+    bevelSegments: 2,
+    curveSegments: 16,
+  });
+
   const mesh = new THREE.Mesh(geo, mat);
   mesh.rotation.x = Math.PI / 2;
+  mesh.position.y = yBottom + height;
   return mesh;
 }
 
 /**
- * Builds one of 10 distinct procedural 3D vessel silhouettes for docked SEDMS project ships.
+ * Adds a realistic 3-tier marine hull stack:
+ *   1) Anti-fouling crimson boot-top below/at waterline (narrower bilge curvature)
+ *   2) Crisp white Plimsoll waterline accent band
+ *   3) Flared low-saturation navy/slate freeboard hull + bulbous bow + recessed main deck & gunwale railings
+ */
+function addCurvedMarineHull(
+  g: THREE.Group,
+  opts: {
+    halfBeam: number;
+    parallelHalfLen: number;
+    bowLen: number;
+    sternLen: number;
+    freeboardH: number;
+    hullMat: THREE.Material;
+    bootMat: THREE.Material;
+    deckMat: THREE.Material;
+    railMat: THREE.Material;
+    includeBulbousBow?: boolean;
+  },
+): void {
+  const {
+    halfBeam,
+    parallelHalfLen,
+    bowLen,
+    sternLen,
+    freeboardH,
+    hullMat,
+    bootMat,
+    deckMat,
+    railMat,
+  } = opts;
+
+  // Lower bilge / anti-fouling red waterline hull (slightly tucked inward for realistic bilge curve)
+  g.add(
+    createSculptedHullLayer({
+      halfBeam: halfBeam * 0.95,
+      parallelHalfLen,
+      bowLen: bowLen * 0.94,
+      sternLen: sternLen * 0.92,
+      height: 1.45,
+      yBottom: -0.35,
+      bevel: 0.26,
+      mat: bootMat,
+    }),
+  );
+
+  // Upper flared freeboard hull
+  g.add(
+    createSculptedHullLayer({
+      halfBeam,
+      parallelHalfLen,
+      bowLen,
+      sternLen,
+      height: freeboardH,
+      yBottom: 1.05,
+      bevel: 0.22,
+      mat: hullMat,
+    }),
+  );
+
+  // Main deck plate slightly inset with raised bulwark lip
+  g.add(
+    createSculptedHullLayer({
+      halfBeam: halfBeam * 0.93,
+      parallelHalfLen: parallelHalfLen * 0.98,
+      bowLen: bowLen * 0.92,
+      sternLen: sternLen * 0.94,
+      height: 0.16,
+      yBottom: 1.05 + freeboardH + 0.16,
+      bevel: 0,
+      mat: deckMat,
+    }),
+  );
+
+  // Forecastle raised bow bulwark + anchor windlass detail
+  g.add(
+    createSculptedHullLayer({
+      halfBeam: halfBeam * 0.96,
+      parallelHalfLen: 0.5,
+      bowLen: bowLen * 0.92,
+      sternLen: 1.0,
+      height: 0.85,
+      yBottom: 1.05 + freeboardH + 0.15,
+      bevel: 0.1,
+      mat: hullMat,
+    }),
+  );
+
+  // Thin deck perimeter safety rails along port & starboard midbody
+  const railY = 1.05 + freeboardH + 0.72;
+  const railLen = parallelHalfLen * 1.78;
+  for (const side of [-1, 1]) {
+    const topRail = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.09, railLen), railMat);
+    topRail.position.set(side * (halfBeam * 0.94), railY, 0);
+    g.add(topRail);
+  }
+
+  // Bulbous bow projecting at waterline
+  if (opts.includeBulbousBow !== false) {
+    const bulb = new THREE.Mesh(new THREE.SphereGeometry(Math.min(1.5, halfBeam * 0.25), 14, 10), bootMat);
+    bulb.scale.set(0.82, 0.72, 2.35);
+    bulb.position.set(0, 0.24, -(parallelHalfLen + bowLen + 0.55));
+    g.add(bulb);
+  }
+}
+
+/**
+ * Adds a realistic stepped commercial ship accommodation house with bridge wings,
+ * panoramic tinted windows, orange enclosed lifeboats, radar mast, and tapered funnel.
+ */
+function addCommercialSuperstructure(
+  g: THREE.Group,
+  opts: {
+    zCenter: number;
+    deckY: number;
+    width: number;
+    levels: number;
+    whiteMat: THREE.Material;
+    glassMat: THREE.Material;
+    funnelMat: THREE.Material;
+    lifeboatMat: THREE.Material;
+    darkSteelMat: THREE.Material;
+  },
+): void {
+  const { zCenter, deckY, width, levels, whiteMat, glassMat, funnelMat, lifeboatMat, darkSteelMat } = opts;
+  const levelH = 1.95;
+
+  for (let lv = 0; lv < levels; lv += 1) {
+    const w = width * (1 - lv * 0.05);
+    const l = Math.max(4.4, 7.6 - lv * 0.65);
+    const y = deckY + lv * levelH + levelH * 0.5;
+    const tier = new THREE.Mesh(new THREE.BoxGeometry(w, levelH - 0.08, l), whiteMat);
+    tier.position.set(0, y, zCenter + lv * 0.12);
+    g.add(tier);
+
+    // Porthole / cabin window strip on each tier
+    const strip = new THREE.Mesh(new THREE.BoxGeometry(w + 0.1, 0.42, l * 0.76), glassMat);
+    strip.position.set(0, y + 0.16, zCenter + lv * 0.12 - 0.15);
+    g.add(strip);
+  }
+
+  const bridgeY = deckY + levels * levelH + 0.85;
+  // Navigation bridge + full-beam cantilevered bridge wings
+  const bridgeCore = new THREE.Mesh(new THREE.BoxGeometry(width * 0.88, 1.8, 3.6), whiteMat);
+  bridgeCore.position.set(0, bridgeY, zCenter - 0.65);
+  g.add(bridgeCore);
+
+  const wing = new THREE.Mesh(new THREE.BoxGeometry(width * 1.42, 1.35, 1.85), whiteMat);
+  wing.position.set(0, bridgeY + 0.1, zCenter - 1.25);
+  g.add(wing);
+
+  const bridgeGlass = new THREE.Mesh(new THREE.BoxGeometry(width * 1.34, 0.72, 1.95), glassMat);
+  bridgeGlass.position.set(0, bridgeY + 0.18, zCenter - 1.3);
+  g.add(bridgeGlass);
+
+  // Bridge roof radar mast + dual X/S-band scanners
+  const mastBaseY = bridgeY + 0.95;
+  const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.28, 4.6, 8), whiteMat);
+  mast.position.set(0, mastBaseY + 2.3, zCenter - 1.0);
+  g.add(mast);
+
+  const crossTree = new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.14, 0.18), whiteMat);
+  crossTree.position.set(0, mastBaseY + 3.1, zCenter - 1.0);
+  g.add(crossTree);
+
+  const radarBar = new THREE.Mesh(new THREE.BoxGeometry(2.8, 0.16, 0.24), darkSteelMat);
+  radarBar.position.set(0, mastBaseY + 4.2, zCenter - 1.0);
+  g.add(radarBar);
+
+  // Enclosed orange davit lifeboats on port & starboard sides
+  for (const side of [-1, 1]) {
+    const boat = new THREE.Mesh(new THREE.CapsuleGeometry(0.46, 1.85, 6, 10), lifeboatMat);
+    boat.rotation.x = Math.PI / 2;
+    boat.position.set(side * (width * 0.54 + 0.4), deckY + 2.6, zCenter + 0.8);
+    g.add(boat);
+  }
+
+  // Sculpted tapered exhaust funnel casing with dark soot top
+  const funnel = new THREE.Mesh(new THREE.CylinderGeometry(1.15, 1.75, 4.2, 8), funnelMat);
+  funnel.scale.set(0.82, 1.0, 1.25);
+  funnel.position.set(0, deckY + levels * levelH + 1.5, zCenter + 2.75);
+  g.add(funnel);
+
+  const funnelCap = new THREE.Mesh(new THREE.CylinderGeometry(1.12, 1.2, 0.65, 8), darkSteelMat);
+  funnelCap.scale.set(0.82, 1.0, 1.25);
+  funnelCap.position.set(0, deckY + levels * levelH + 3.7, zCenter + 2.75);
+  g.add(funnelCap);
+}
+
+/**
+ * Builds a high-craft procedural 3D vessel (curved Shape+ExtrudeGeometry hull, PBR marine paint,
+ * superstructure, railings, lifeboats, funnel, and vessel-class cargo silhouette).
  * Centered around local (0, 0, 0) with bow facing -Z and waterline at y = 0.
  */
 export function buildProjectVessel3D(
@@ -71,90 +338,93 @@ export function buildProjectVessel3D(
   const g = new THREE.Group();
   const glassMat = windowGlowMat.clone();
 
-  const hullNavy = new THREE.MeshStandardMaterial({ color: 0x163963, roughness: 0.46, metalness: 0.24 });
-  const hullRed = new THREE.MeshStandardMaterial({ color: 0x9f2222, roughness: 0.58, metalness: 0.16 });
-  const deckSlate = new THREE.MeshStandardMaterial({ color: 0x475569, roughness: 0.68, metalness: 0.12 });
-  const whiteSteel = new THREE.MeshStandardMaterial({ color: 0xf1f5f9, roughness: 0.44, metalness: 0.12 });
-  const accentBlue = new THREE.MeshStandardMaterial({ color: 0x0284c7, roughness: 0.42, metalness: 0.2 });
-  const craneYellow = new THREE.MeshStandardMaterial({ color: 0xeab308, roughness: 0.42, metalness: 0.24 });
-  const safetyOrange = new THREE.MeshStandardMaterial({ color: 0xea580c, roughness: 0.44, metalness: 0.16 });
-  const silverMetal = new THREE.MeshStandardMaterial({ color: 0xcbd5e1, roughness: 0.34, metalness: 0.34 });
+  // Realistic low-saturation maritime paint palette (Requirement #3)
+  const hullNavy = new THREE.MeshStandardMaterial({ color: 0x19324a, roughness: 0.48, metalness: 0.28 });
+  const hullSlate = new THREE.MeshStandardMaterial({ color: 0x2a3b4d, roughness: 0.52, metalness: 0.26 });
+  const hullRed = new THREE.MeshStandardMaterial({ color: 0x8b2626, roughness: 0.6, metalness: 0.14 });
+  const deckSlate = new THREE.MeshStandardMaterial({ color: 0x415061, roughness: 0.72, metalness: 0.12 });
+  const deckGreen = new THREE.MeshStandardMaterial({ color: 0x2f5a4f, roughness: 0.7, metalness: 0.1 });
+  const whiteSteel = new THREE.MeshStandardMaterial({ color: 0xebf0f5, roughness: 0.46, metalness: 0.14 });
+  const marineBlue = new THREE.MeshStandardMaterial({ color: 0x1e567d, roughness: 0.44, metalness: 0.24 });
+  const craneOchre = new THREE.MeshStandardMaterial({ color: 0xc99626, roughness: 0.44, metalness: 0.28 });
+  const lifeboatOrange = new THREE.MeshStandardMaterial({ color: 0xc84b1e, roughness: 0.42, metalness: 0.16 });
+  const silverMetal = new THREE.MeshStandardMaterial({ color: 0xc4ced9, roughness: 0.34, metalness: 0.42 });
+  const darkSteel = new THREE.MeshStandardMaterial({ color: 0x222c38, roughness: 0.56, metalness: 0.52 });
 
   if (vesselType === 'lng_carrier') {
-    const hull = new THREE.Mesh(new THREE.BoxGeometry(11.2, 4.8, 36.0), hullNavy);
-    hull.position.set(0, 2.2, 0);
-    g.add(hull);
-    const hullDeck = new THREE.Mesh(new THREE.BoxGeometry(11.1, 0.2, 35.8), deckSlate);
-    hullDeck.position.set(0, 4.62, 0);
-    g.add(hullDeck);
+    // 1. Flagship Moss-Type LNG Carrier (also used for Hero "씨스타호")
+    addCurvedMarineHull(g, {
+      halfBeam: 5.9,
+      parallelHalfLen: 15.2,
+      bowLen: 10.6,
+      sternLen: 5.2,
+      freeboardH: 3.7,
+      hullMat: hullNavy,
+      bootMat: hullRed,
+      deckMat: deckGreen,
+      railMat: whiteSteel,
+    });
 
-    const boot = new THREE.Mesh(new THREE.BoxGeometry(11.36, 1.25, 36.2), hullRed);
-    boot.position.set(0, 0.55, 0);
-    g.add(boot);
-
-    const bow = makeHullBow(11.2, 4.7, 10.2, hullNavy);
-    bow.position.set(0, 4.55, -18.0);
-    g.add(bow);
-
-    const bulb = new THREE.Mesh(new THREE.SphereGeometry(1.35, 14, 10), hullRed);
-    bulb.scale.set(0.88, 0.72, 2.4);
-    bulb.position.set(0, 0.22, -27.2);
-    g.add(bulb);
-
-    const domeGeo = new THREE.SphereGeometry(3.75, 22, 16);
-    const collarGeo = new THREE.CylinderGeometry(3.95, 4.05, 1.8, 20);
-    for (const tz of [-12.6, -4.4, 3.8, 12.0]) {
-      const collar = new THREE.Mesh(collarGeo, accentBlue);
-      collar.position.set(0, 5.2, tz);
+    const domeGeo = new THREE.SphereGeometry(3.85, 24, 18);
+    const collarGeo = new THREE.CylinderGeometry(4.02, 4.18, 1.9, 24);
+    const equatorGeo = new THREE.TorusGeometry(3.92, 0.14, 8, 24);
+    for (const tz of [-11.8, -3.7, 4.4, 12.5]) {
+      const collar = new THREE.Mesh(collarGeo, marineBlue);
+      collar.position.set(0, 5.4, tz);
       g.add(collar);
-      const dome = new THREE.Mesh(domeGeo, silverMetal);
-      dome.position.set(0, 6.3, tz);
+
+      const dome = new THREE.Mesh(domeGeo, whiteSteel);
+      dome.position.set(0, 6.45, tz);
       g.add(dome);
+
+      const equator = new THREE.Mesh(equatorGeo, silverMetal);
+      equator.rotation.x = Math.PI / 2;
+      equator.position.set(0, 6.45, tz);
+      g.add(equator);
     }
 
-    // Elevated cryogenic pipe rack + manifold header
-    const pipeRack = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.28, 30.0), silverMetal);
-    pipeRack.position.set(0, 9.95, -0.4);
-    g.add(pipeRack);
-    const pipeRun = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.32, 30.5, 10), safetyOrange);
-    pipeRun.rotation.x = Math.PI / 2;
-    pipeRun.position.set(0, 10.35, -0.4);
-    g.add(pipeRun);
-    const manifold = new THREE.Mesh(new THREE.BoxGeometry(3.2, 2.4, 2.2), safetyOrange);
-    manifold.position.set(3.8, 5.8, -0.4);
+    // Elevated cryogenic pipe trunkway + cargo manifold
+    const pipeDeck = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.24, 29.0), silverMetal);
+    pipeDeck.position.set(0, 10.45, 0.2);
+    g.add(pipeDeck);
+
+    for (const px of [-0.36, 0.36]) {
+      const pipe = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 29.4, 10), silverMetal);
+      pipe.rotation.x = Math.PI / 2;
+      pipe.position.set(px, 10.82, 0.2);
+      g.add(pipe);
+    }
+
+    const manifold = new THREE.Mesh(new THREE.BoxGeometry(3.4, 2.3, 2.4), lifeboatOrange);
+    manifold.position.set(4.1, 6.1, 0.4);
     g.add(manifold);
 
-    const house = new THREE.Mesh(new THREE.BoxGeometry(9.6, 7.8, 6.8), whiteSteel);
-    house.position.set(0, 8.2, 15.6);
-    g.add(house);
-    const wing = new THREE.Mesh(new THREE.BoxGeometry(13.0, 1.4, 2.2), whiteSteel);
-    wing.position.set(0, 11.4, 14.4);
-    g.add(wing);
-    const win = new THREE.Mesh(new THREE.BoxGeometry(12.2, 0.74, 2.3), glassMat);
-    win.position.set(0, 11.45, 14.35);
-    g.add(win);
-    const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.3, 4.8, 8), whiteSteel);
-    mast.position.set(0, 14.4, 14.6);
-    g.add(mast);
-    const radar = new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.18, 0.28), whiteSteel);
-    radar.position.set(0, 15.8, 14.6);
-    g.add(radar);
-    const funnel = new THREE.Mesh(new THREE.BoxGeometry(2.6, 3.8, 3.2), accentBlue);
-    funnel.position.set(0, 13.4, 17.8);
-    g.add(funnel);
+    addCommercialSuperstructure(g, {
+      zCenter: 17.6,
+      deckY: 4.95,
+      width: 9.2,
+      levels: 3,
+      whiteMat: whiteSteel,
+      glassMat,
+      funnelMat: marineBlue,
+      lifeboatMat: lifeboatOrange,
+      darkSteelMat: darkSteel,
+    });
   } else if (vesselType === 'container_ship') {
-    // 2. 24K Mega Container Ship — 36 Corrugated Multi-Color ISO Containers + Twin Deck Cranes
-    const hull = new THREE.Mesh(new THREE.BoxGeometry(10.6, 4.2, 35.0), hullNavy);
-    hull.position.set(0, 1.9, 0);
-    g.add(hull);
-    const hullDeck = new THREE.Mesh(new THREE.BoxGeometry(10.5, 0.2, 34.8), deckSlate);
-    hullDeck.position.set(0, 4.02, 0);
-    g.add(hullDeck);
-    const bow = makeHullBow(10.6, 4.1, 9.6, hullNavy);
-    bow.position.set(0, 3.95, -17.5);
-    g.add(bow);
+    // 2. Ultra-Large Container Vessel — Sculpted Curved Hull + Corrugated Multi-Color ISO Stacks + Lashing Bridges
+    addCurvedMarineHull(g, {
+      halfBeam: 5.7,
+      parallelHalfLen: 15.6,
+      bowLen: 9.8,
+      sternLen: 4.8,
+      freeboardH: 3.5,
+      hullMat: hullNavy,
+      bootMat: hullRed,
+      deckMat: deckSlate,
+      railMat: whiteSteel,
+    });
 
-    const cGeo = new THREE.BoxGeometry(2.15, 2.05, 5.8);
+    const cGeo = new THREE.BoxGeometry(2.15, 2.0, 5.7);
     const cMat = lowSpec
       ? new THREE.MeshLambertMaterial({ color: 0xffffff })
       : new THREE.MeshStandardMaterial({
@@ -162,24 +432,27 @@ export function buildProjectVessel3D(
           bumpMap: textures.containerRibBump,
           bumpScale: 0.09,
           roughnessMap: textures.containerRibRoughness,
-          roughness: 0.72,
-          metalness: 0.24,
+          roughness: 0.68,
+          metalness: 0.26,
         });
-    const palette = [0x0284c7, 0xdc2626, 0xd97706, 0x059669, 0x1d4ed8, 0xea580c];
-    const bays = [-12.5, -5.8, 0.9];
+    // Low-saturation realistic shipping line container palette
+    const palette = [0x1e5c8a, 0x8e3333, 0xb87628, 0x2a6b55, 0x354d6e, 0xa84d25];
+    const bays = [-12.2, -5.6, 1.0];
     const boxes = new THREE.InstancedMesh(cGeo, cMat, bays.length * 4 * 3);
     const dummy = new THREE.Object3D();
     const col = new THREE.Color();
     let idx = 0;
-    for (let b = 0; b < bays.length; b++) {
-      for (let c = 0; c < 4; c++) {
-        for (let t = 0; t < 3; t++) {
-          dummy.position.set(-3.45 + c * 2.3, 5.05 + t * 2.1, bays[b]);
+    for (let b = 0; b < bays.length; b += 1) {
+      for (let c = 0; c < 4; c += 1) {
+        for (let t = 0; t < 3; t += 1) {
+          dummy.position.set(-3.45 + c * 2.3, 5.7 + t * 2.05, bays[b]);
+          dummy.rotation.set(0, 0, 0);
+          dummy.scale.set(1, 1, 1);
           dummy.updateMatrix();
           boxes.setMatrixAt(idx, dummy.matrix);
           col.setHex(palette[(b * 5 + c * 3 + t * 2) % palette.length]);
           boxes.setColorAt(idx, col);
-          idx++;
+          idx += 1;
         }
       }
     }
@@ -188,449 +461,475 @@ export function buildProjectVessel3D(
     boxes.computeBoundingSphere();
     g.add(boxes);
 
-    for (const cz of [-9.1, -2.4]) {
-      const ped = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.72, 7.4, 10), craneYellow);
-      ped.position.set(0, 7.6, cz);
+    // Lashing bridges & twin deck cranes between bays
+    for (const cz of [-8.9, -2.3]) {
+      const lashing = new THREE.Mesh(new THREE.BoxGeometry(9.6, 3.8, 0.55), darkSteel);
+      lashing.position.set(0, 6.6, cz);
+      g.add(lashing);
+
+      const ped = new THREE.Mesh(new THREE.CylinderGeometry(0.48, 0.65, 7.6, 10), craneOchre);
+      ped.position.set(0, 8.6, cz);
       g.add(ped);
-      const boom = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.55, 9.5), craneYellow);
-      boom.position.set(0, 11.4, cz - 3.6);
-      boom.rotation.x = 0.25;
-      g.add(boom);
-    }
-
-    const tower = new THREE.Mesh(new THREE.BoxGeometry(9.0, 9.6, 6.2), whiteSteel);
-    tower.position.set(0, 8.8, 12.2);
-    g.add(tower);
-    const wing = new THREE.Mesh(new THREE.BoxGeometry(13.0, 1.5, 2.0), whiteSteel);
-    wing.position.set(0, 12.6, 11.0);
-    g.add(wing);
-    const win = new THREE.Mesh(new THREE.BoxGeometry(12.2, 0.75, 2.1), glassMat);
-    win.position.set(0, 12.65, 10.95);
-    g.add(win);
-    const funnel = new THREE.Mesh(new THREE.BoxGeometry(2.6, 3.8, 3.2), hullRed);
-    funnel.position.set(0, 13.8, 14.6);
-    g.add(funnel);
-  } else if (vesselType === 'floating_dock') {
-    // 3. Monumental Floating Dry Dock — Twin Wing Walls, Dock Cranes, Keel Blocks & Hull Under Construction
-    const dockSteel = new THREE.MeshStandardMaterial({ color: 0x3b4d63, roughness: 0.54, metalness: 0.24 });
-    const hazardYellow = new THREE.MeshStandardMaterial({ color: 0xfacc15, roughness: 0.44, metalness: 0.16 });
-    const pontoon = new THREE.Mesh(new THREE.BoxGeometry(19.6, 2.0, 48.0), dockSteel);
-    pontoon.position.set(0, 0.7, 0);
-    g.add(pontoon);
-    const floorPlate = new THREE.Mesh(new THREE.BoxGeometry(14.6, 0.26, 46.0), deckSlate);
-    floorPlate.position.set(0, 1.82, 0);
-    g.add(floorPlate);
-
-    for (const side of [-1, 1]) {
-      const wall = new THREE.Mesh(new THREE.BoxGeometry(2.5, 9.6, 47.0), dockSteel);
-      wall.position.set(side * 8.5, 6.2, 0);
-      g.add(wall);
-      const band = new THREE.Mesh(new THREE.BoxGeometry(2.62, 1.2, 47.2), hullRed);
-      band.position.set(side * 8.5, 2.2, 0);
-      g.add(band);
-      const rail = new THREE.Mesh(new THREE.BoxGeometry(2.66, 0.34, 47.2), hazardYellow);
-      rail.position.set(side * 8.5, 11.1, 0);
-      g.add(rail);
-
-      const cBase = new THREE.Mesh(new THREE.BoxGeometry(2.4, 2.6, 3.2), accentBlue);
-      cBase.position.set(side * 8.5, 12.5, side * -8.0);
-      g.add(cBase);
-      const cArm = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.7, 13.0), accentBlue);
-      cArm.position.set(side * 6.0, 16.4, side * -3.5);
-      cArm.rotation.x = 0.45 * -side;
-      cArm.rotation.z = side * 0.24;
-      g.add(cArm);
-    }
-
-    const ctrl = new THREE.Mesh(new THREE.BoxGeometry(3.2, 2.4, 4.2), whiteSteel);
-    ctrl.position.set(-8.5, 12.3, 17.5);
-    g.add(ctrl);
-    const ctrlWin = new THREE.Mesh(new THREE.BoxGeometry(3.3, 0.9, 3.2), glassMat);
-    ctrlWin.position.set(-8.5, 12.5, 17.5);
-    g.add(ctrlWin);
-
-    for (let k = -15; k <= 15; k += 5) {
-      const block = new THREE.Mesh(new THREE.BoxGeometry(3.8, 1.1, 1.4), hullRed);
-      block.position.set(0, 2.4, k);
-      g.add(block);
-    }
-
-    const innerHull = new THREE.Mesh(new THREE.BoxGeometry(9.0, 4.8, 32.0), hullNavy);
-    innerHull.position.set(0, 5.3, 0);
-    g.add(innerHull);
-    const innerBow = makeHullBow(9.0, 4.7, 7.6, hullNavy);
-    innerBow.position.set(0, 7.65, -16.0);
-    g.add(innerBow);
-    const innerBridge = new THREE.Mesh(new THREE.BoxGeometry(7.4, 4.2, 8.2), whiteSteel);
-    innerBridge.position.set(0, 9.7, 7.2);
-    g.add(innerBridge);
-    const innerWin = new THREE.Mesh(new THREE.BoxGeometry(7.6, 0.75, 2.6), glassMat);
-    innerWin.position.set(0, 11.1, 4.3);
-    g.add(innerWin);
-  } else if (vesselType === 'vlcc_tanker') {
-    // 4. 300,000 DWT VLCC Crude Oil Tanker — Wide Deep-Red Deck, Manifold Pipes, Hose Cranes & Catwalk
-    const tankerDeck = new THREE.MeshStandardMaterial({ color: 0x7f1d1d, roughness: 0.62, metalness: 0.14 });
-    const hull = new THREE.Mesh(new THREE.BoxGeometry(14.0, 4.4, 40.0), hullNavy);
-    hull.position.set(0, 2.0, 0);
-    g.add(hull);
-    const hullDeck = new THREE.Mesh(new THREE.BoxGeometry(13.9, 0.22, 39.8), tankerDeck);
-    hullDeck.position.set(0, 4.22, 0);
-    g.add(hullDeck);
-    const boot = new THREE.Mesh(new THREE.BoxGeometry(14.2, 1.4, 40.2), hullRed);
-    boot.position.set(0, 0.6, 0);
-    g.add(boot);
-    const bow = makeHullBow(14.0, 4.3, 9.2, hullNavy);
-    bow.position.set(0, 4.15, -20.0);
-    g.add(bow);
-
-    // Longitudinal cargo manifold pipelines & elevated central catwalk
-    for (const px of [-2.4, -1.2, 1.2, 2.4]) {
-      const pipe = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.24, 30.0, 8), silverMetal);
-      pipe.rotation.x = Math.PI / 2;
-      pipe.position.set(px, 4.55, -2.5);
-      g.add(pipe);
-    }
-    const catwalk = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.25, 31.0), craneYellow);
-    catwalk.position.set(0, 5.2, -2.0);
-    g.add(catwalk);
-
-    // Midship Cargo Manifold & Twin Hose-Handling Cranes
-    const manifold = new THREE.Mesh(new THREE.BoxGeometry(12.2, 1.4, 3.2), silverMetal);
-    manifold.position.set(0, 4.9, -1.5);
-    g.add(manifold);
-    for (const sx of [-4.6, 4.6]) {
-      const ped = new THREE.Mesh(new THREE.CylinderGeometry(0.45, 0.6, 5.2, 10), craneYellow);
-      ped.position.set(sx, 6.8, -1.5);
-      g.add(ped);
-      const jib = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.45, 7.0), craneYellow);
-      jib.position.set(sx, 9.6, -4.4);
-      jib.rotation.x = 0.35;
+      const jib = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.5, 9.2), craneOchre);
+      jib.position.set(0, 12.3, cz - 3.6);
+      jib.rotation.x = 0.26;
       g.add(jib);
     }
 
-    // Broad Aft Bridge Superstructure & Scrubber Funnel
-    const house = new THREE.Mesh(new THREE.BoxGeometry(11.4, 8.2, 6.8), whiteSteel);
-    house.position.set(0, 8.2, 15.8);
-    g.add(house);
-    const wing = new THREE.Mesh(new THREE.BoxGeometry(15.2, 1.4, 2.0), whiteSteel);
-    wing.position.set(0, 11.4, 14.5);
-    g.add(wing);
-    const win = new THREE.Mesh(new THREE.BoxGeometry(14.2, 0.72, 2.1), glassMat);
-    win.position.set(0, 11.45, 14.45);
-    g.add(win);
-    const funnel = new THREE.Mesh(new THREE.BoxGeometry(3.0, 4.2, 3.6), hullRed);
-    funnel.position.set(0, 13.6, 18.0);
-    g.add(funnel);
-  } else if (vesselType === 'wtiv_jackup') {
-    // 5. Offshore Wind Turbine Installation Vessel (WTIV Jack-Up) — 4 Towering Lattice Legs + Wind Blades + Helideck
-    const tealHull = new THREE.MeshStandardMaterial({ color: 0x0f766e, roughness: 0.46, metalness: 0.22 });
-    const hull = new THREE.Mesh(new THREE.BoxGeometry(14.8, 3.8, 38.0), tealHull);
-    hull.position.set(0, 1.8, 0);
-    g.add(hull);
-    const hullDeck = new THREE.Mesh(new THREE.BoxGeometry(14.7, 0.2, 37.8), deckSlate);
-    hullDeck.position.set(0, 3.72, 0);
-    g.add(hullDeck);
-    const bow = makeHullBow(14.8, 3.7, 7.0, tealHull);
-    bow.position.set(0, 3.65, -19.0);
-    g.add(bow);
+    addCommercialSuperstructure(g, {
+      zCenter: 13.6,
+      deckY: 4.75,
+      width: 9.0,
+      levels: 4,
+      whiteMat: whiteSteel,
+      glassMat,
+      funnelMat: hullRed,
+      lifeboatMat: lifeboatOrange,
+      darkSteelMat: darkSteel,
+    });
+  } else if (vesselType === 'bulk_carrier') {
+    // 3. General Cargo / Handymax Bulk Carrier — 4 Hatched Holds + 4 Articulated Deck Cranes
+    addCurvedMarineHull(g, {
+      halfBeam: 5.5,
+      parallelHalfLen: 14.8,
+      bowLen: 9.2,
+      sternLen: 4.6,
+      freeboardH: 3.4,
+      hullMat: hullSlate,
+      bootMat: hullRed,
+      deckMat: deckGreen,
+      railMat: whiteSteel,
+    });
 
-    // 4 Towering Jack-Up Lattice Legs (iconic silhouette!)
-    const legMat = new THREE.MeshStandardMaterial({ color: 0xfacc15, roughness: 0.42, metalness: 0.26 });
-    const jackHouseMat = new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.48, metalness: 0.22 });
-    const legCoords: Array<[number, number]> = [
-      [-6.2, -11.5],
-      [6.2, -11.5],
-      [-6.2, 12.5],
-      [6.2, 12.5],
-    ];
-    for (const [lx, lz] of legCoords) {
-      const jh = new THREE.Mesh(new THREE.BoxGeometry(3.0, 3.6, 3.0), jackHouseMat);
-      jh.position.set(lx, 5.4, lz);
+    // 4 raised cargo hatch coamings + corrugated hatch covers
+    for (const hz of [-12.0, -5.2, 1.6, 8.4]) {
+      const coaming = new THREE.Mesh(new THREE.BoxGeometry(7.8, 1.25, 5.2), hullRed);
+      coaming.position.set(0, 5.25, hz);
+      g.add(coaming);
+      const cover = new THREE.Mesh(new THREE.BoxGeometry(7.4, 0.3, 4.9), darkSteel);
+      cover.position.set(0, 5.95, hz);
+      g.add(cover);
+    }
+
+    // 3 Centerline Cargo Deck Cranes with angled jibs & crane houses
+    for (const cz of [-8.6, -1.8, 5.0]) {
+      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.56, 0.72, 6.2, 10), craneOchre);
+      post.position.set(0, 7.7, cz);
+      g.add(post);
+      const cab = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1.6, 1.8), whiteSteel);
+      cab.position.set(0, 10.6, cz + 0.2);
+      g.add(cab);
+      const boom = new THREE.Mesh(new THREE.BoxGeometry(0.48, 0.56, 10.6), craneOchre);
+      boom.position.set(0, 12.6, cz - 4.4);
+      boom.rotation.x = 0.34;
+      g.add(boom);
+    }
+
+    addCommercialSuperstructure(g, {
+      zCenter: 15.6,
+      deckY: 4.65,
+      width: 8.6,
+      levels: 3,
+      whiteMat: whiteSteel,
+      glassMat,
+      funnelMat: marineBlue,
+      lifeboatMat: lifeboatOrange,
+      darkSteelMat: darkSteel,
+    });
+  } else if (vesselType === 'floating_dock') {
+    // 4. Monumental Floating Dry Dock (FD-01) — Ballast Barge, Twin Wing Walls, 2 Rail Cranes & Curved Hull Inside!
+    const dockSteel = new THREE.MeshStandardMaterial({ color: 0x364659, roughness: 0.56, metalness: 0.34 });
+    const hazardYellow = new THREE.MeshStandardMaterial({ color: 0xdca420, roughness: 0.44, metalness: 0.18 });
+
+    // Submerged ballast pontoon barge
+    const pontoon = new THREE.Mesh(new THREE.BoxGeometry(20.6, 2.2, 50.0), dockSteel);
+    pontoon.position.set(0, 0.72, 0);
+    g.add(pontoon);
+
+    const floorPlate = new THREE.Mesh(new THREE.BoxGeometry(15.2, 0.28, 48.0), deckSlate);
+    floorPlate.position.set(0, 1.92, 0);
+    g.add(floorPlate);
+
+    // Twin towering wing walls + floodlight towers + 2 rail-mounted dock cranes
+    for (const side of [-1, 1]) {
+      const wall = new THREE.Mesh(new THREE.BoxGeometry(2.7, 10.2, 49.0), dockSteel);
+      wall.position.set(side * 8.95, 6.4, 0);
+      g.add(wall);
+
+      const waterlineBand = new THREE.Mesh(new THREE.BoxGeometry(2.84, 1.35, 49.2), hullRed);
+      waterlineBand.position.set(side * 8.95, 1.4, 0);
+      g.add(waterlineBand);
+
+      const topRail = new THREE.Mesh(new THREE.BoxGeometry(2.86, 0.34, 49.2), hazardYellow);
+      topRail.position.set(side * 8.95, 11.6, 0);
+      g.add(topRail);
+
+      // Rail-mounted dock jib crane (1 on Port wall, 1 on Starboard wall = 2 dock cranes!)
+      const craneZ = side < 0 ? -9.5 : 8.5;
+      const craneGroup = new THREE.Group();
+      craneGroup.position.set(side * 8.95, 11.75, craneZ);
+
+      const gantry = new THREE.Mesh(new THREE.BoxGeometry(2.4, 2.8, 3.6), marineBlue);
+      gantry.position.set(0, 1.4, 0);
+      craneGroup.add(gantry);
+
+      const craneCab = new THREE.Mesh(new THREE.BoxGeometry(2.1, 2.1, 2.6), whiteSteel);
+      craneCab.position.set(0, 3.85, 0);
+      craneGroup.add(craneCab);
+
+      const boomPivot = new THREE.Group();
+      boomPivot.position.set(-side * 0.4, 4.4, 0);
+      boomPivot.rotation.y = side < 0 ? -0.52 : Math.PI - 0.52;
+      const craneBoom = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.7, 15.0), craneOchre);
+      craneBoom.position.set(0, 3.6, -6.2);
+      craneBoom.rotation.x = 0.52;
+      boomPivot.add(craneBoom);
+      craneGroup.add(boomPivot);
+
+      g.add(craneGroup);
+    }
+
+    // Dockmaster Control Room on Port Aft Wing Wall
+    const ctrl = new THREE.Mesh(new THREE.BoxGeometry(3.4, 2.6, 4.8), whiteSteel);
+    ctrl.position.set(-8.95, 13.0, 18.8);
+    g.add(ctrl);
+    const ctrlWin = new THREE.Mesh(new THREE.BoxGeometry(3.52, 0.92, 3.8), glassMat);
+    ctrlWin.position.set(-8.95, 13.2, 18.8);
+    g.add(ctrlWin);
+
+    // Keel & bilge timber/steel blocks along dry-dock floor
+    for (let k = -16; k <= 16; k += 4) {
+      const block = new THREE.Mesh(new THREE.BoxGeometry(4.2, 1.15, 1.25), darkSteel);
+      block.position.set(0, 2.55, k);
+      g.add(block);
+    }
+
+    // Curved vessel under construction resting on the keel blocks inside FD-01!
+    const innerVessel = new THREE.Group();
+    innerVessel.position.set(0, 3.3, 0);
+    addCurvedMarineHull(innerVessel, {
+      halfBeam: 4.5,
+      parallelHalfLen: 10.5,
+      bowLen: 7.4,
+      sternLen: 3.8,
+      freeboardH: 3.1,
+      hullMat: hullNavy,
+      bootMat: hullRed,
+      deckMat: deckSlate,
+      railMat: whiteSteel,
+    });
+    addCommercialSuperstructure(innerVessel, {
+      zCenter: 9.2,
+      deckY: 4.25,
+      width: 6.8,
+      levels: 3,
+      whiteMat: whiteSteel,
+      glassMat,
+      funnelMat: marineBlue,
+      lifeboatMat: lifeboatOrange,
+      darkSteelMat: darkSteel,
+    });
+    g.add(innerVessel);
+  } else if (vesselType === 'vlcc_tanker') {
+    // 5. 300K DWT VLCC Tanker — Broad Curved Hull, Crimson Deck, Pipe Rack & Hose Cranes
+    const tankerDeck = new THREE.MeshStandardMaterial({ color: 0x732626, roughness: 0.66, metalness: 0.14 });
+    addCurvedMarineHull(g, {
+      halfBeam: 6.8,
+      parallelHalfLen: 16.5,
+      bowLen: 9.2,
+      sternLen: 4.8,
+      freeboardH: 3.4,
+      hullMat: hullNavy,
+      bootMat: hullRed,
+      deckMat: tankerDeck,
+      railMat: whiteSteel,
+    });
+
+    for (const px of [-2.4, -1.2, 1.2, 2.4]) {
+      const pipe = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 29.0, 8), silverMetal);
+      pipe.rotation.x = Math.PI / 2;
+      pipe.position.set(px, 4.95, -2.2);
+      g.add(pipe);
+    }
+    const catwalk = new THREE.Mesh(new THREE.BoxGeometry(1.05, 0.22, 30.0), craneOchre);
+    catwalk.position.set(0, 5.5, -1.8);
+    g.add(catwalk);
+
+    const manifold = new THREE.Mesh(new THREE.BoxGeometry(11.8, 1.4, 3.0), silverMetal);
+    manifold.position.set(0, 5.3, -1.5);
+    g.add(manifold);
+    for (const sx of [-4.6, 4.6]) {
+      const ped = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.56, 5.2, 10), craneOchre);
+      ped.position.set(sx, 7.2, -1.5);
+      g.add(ped);
+      const jib = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.42, 6.8), craneOchre);
+      jib.position.set(sx, 9.9, -4.3);
+      jib.rotation.x = 0.34;
+      g.add(jib);
+    }
+
+    addCommercialSuperstructure(g, {
+      zCenter: 16.2,
+      deckY: 4.65,
+      width: 10.6,
+      levels: 3,
+      whiteMat: whiteSteel,
+      glassMat,
+      funnelMat: hullRed,
+      lifeboatMat: lifeboatOrange,
+      darkSteelMat: darkSteel,
+    });
+  } else if (vesselType === 'harbor_tug') {
+    // 6. Compact Harbor Assist Tugboat (for decorative harbor scenery)
+    const tugRed = new THREE.MeshStandardMaterial({ color: 0x992b2b, roughness: 0.48, metalness: 0.22 });
+    addCurvedMarineHull(g, {
+      halfBeam: 2.6,
+      parallelHalfLen: 3.4,
+      bowLen: 3.1,
+      sternLen: 2.2,
+      freeboardH: 1.55,
+      hullMat: tugRed,
+      bootMat: darkSteel,
+      deckMat: deckSlate,
+      railMat: whiteSteel,
+      includeBulbousBow: false,
+    });
+    // Heavy black rubber bow fender
+    const bowFender = new THREE.Mesh(new THREE.TorusGeometry(1.15, 0.32, 8, 14, Math.PI), darkSteel);
+    bowFender.rotation.x = Math.PI / 2;
+    bowFender.rotation.z = Math.PI;
+    bowFender.position.set(0, 2.2, -5.7);
+    g.add(bowFender);
+
+    const wheelhouse = new THREE.Mesh(new THREE.BoxGeometry(3.2, 2.4, 3.6), whiteSteel);
+    wheelhouse.position.set(0, 3.9, -0.4);
+    g.add(wheelhouse);
+    const tugWin = new THREE.Mesh(new THREE.BoxGeometry(3.32, 0.85, 2.6), glassMat);
+    tugWin.position.set(0, 4.35, -0.8);
+    g.add(tugWin);
+    for (const sx of [-0.95, 0.95]) {
+      const stack = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.34, 2.4, 8), darkSteel);
+      stack.position.set(sx, 4.6, 1.8);
+      g.add(stack);
+    }
+    const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.12, 3.2, 6), craneOchre);
+    mast.position.set(0, 6.4, -0.6);
+    g.add(mast);
+  } else if (vesselType === 'wtiv_jackup') {
+    const tealHull = new THREE.MeshStandardMaterial({ color: 0x1e5c57, roughness: 0.48, metalness: 0.24 });
+    addCurvedMarineHull(g, {
+      halfBeam: 7.0,
+      parallelHalfLen: 15.5,
+      bowLen: 6.8,
+      sternLen: 4.0,
+      freeboardH: 3.1,
+      hullMat: tealHull,
+      bootMat: hullRed,
+      deckMat: deckSlate,
+      railMat: whiteSteel,
+      includeBulbousBow: false,
+    });
+    for (const [lx, lz] of [[-5.8, -11.0], [5.8, -11.0], [-5.8, 12.0], [5.8, 12.0]]) {
+      const jh = new THREE.Mesh(new THREE.BoxGeometry(2.8, 3.4, 2.8), darkSteel);
+      jh.position.set(lx, 5.8, lz);
       g.add(jh);
-      const leg = new THREE.Mesh(new THREE.CylinderGeometry(1.15, 1.15, 21.0, 6), legMat);
-      leg.position.set(lx, 12.5, lz);
+      const leg = new THREE.Mesh(new THREE.CylinderGeometry(1.05, 1.05, 20.5, 6), craneOchre);
+      leg.position.set(lx, 12.8, lz);
       g.add(leg);
     }
-
-    // Wind Turbine Tower Sections & Blades Stowed on Main Work Deck
-    for (const bx of [-2.4, 0, 2.4]) {
-      const towerSeg = new THREE.Mesh(new THREE.CylinderGeometry(0.72, 0.85, 6.2, 12), whiteSteel);
-      towerSeg.position.set(bx, 6.8, 2.0);
-      g.add(towerSeg);
+    for (const bx of [-2.2, 0, 2.2]) {
+      const seg = new THREE.Mesh(new THREE.CylinderGeometry(0.68, 0.8, 5.8, 12), whiteSteel);
+      seg.position.set(bx, 7.2, 2.0);
+      g.add(seg);
     }
-    for (const bz of [-4.5, -2.5, -0.5]) {
-      const blade = new THREE.Mesh(new THREE.ConeGeometry(0.48, 12.0, 6), whiteSteel);
-      blade.rotation.z = Math.PI / 2;
-      blade.position.set(0, 4.4, bz);
-      g.add(blade);
-    }
-
-    // Giant Heavy-Lift Offshore Crane on Starboard Aft
-    const cBase = new THREE.Mesh(new THREE.CylinderGeometry(1.4, 1.7, 6.0, 12), safetyOrange);
-    cBase.position.set(4.5, 6.6, 8.5);
+    const cBase = new THREE.Mesh(new THREE.CylinderGeometry(1.3, 1.6, 5.8, 12), lifeboatOrange);
+    cBase.position.set(4.3, 7.0, 8.2);
     g.add(cBase);
-    const cBoom = new THREE.Mesh(new THREE.BoxGeometry(1.1, 1.1, 18.5), safetyOrange);
-    cBoom.position.set(3.4, 14.8, 1.5);
-    cBoom.rotation.x = 0.62;
+    const cBoom = new THREE.Mesh(new THREE.BoxGeometry(1.0, 1.0, 17.5), lifeboatOrange);
+    cBoom.position.set(3.2, 14.8, 1.6);
+    cBoom.rotation.x = 0.6;
     g.add(cBoom);
 
-    // Forward Accommodation & Cantilevered Octagonal Helideck
-    const bridge = new THREE.Mesh(new THREE.BoxGeometry(12.4, 5.8, 6.4), whiteSteel);
-    bridge.position.set(0, 6.6, -15.0);
+    const bridge = new THREE.Mesh(new THREE.BoxGeometry(11.6, 5.4, 5.8), whiteSteel);
+    bridge.position.set(0, 7.0, -14.5);
     g.add(bridge);
-    const win = new THREE.Mesh(new THREE.BoxGeometry(11.6, 0.85, 1.8), glassMat);
-    win.position.set(0, 8.5, -17.6);
-    g.add(win);
-    const heliMat = new THREE.MeshStandardMaterial({ color: 0x16a34a, roughness: 0.55 });
-    const heli = new THREE.Mesh(new THREE.CylinderGeometry(3.8, 3.8, 0.35, 8), heliMat);
-    heli.position.set(0, 9.8, -20.5);
-    g.add(heli);
-  } else if (vesselType === 'fpso_offshore') {
-    // 6. Offshore Production Plant FPSO — Bow Turret, Multi-Deck Process Plant Modules & Angled Flare Tower!
-    const fpsoHull = new THREE.MeshStandardMaterial({ color: 0x1e3a5f, roughness: 0.48, metalness: 0.22 });
-    const hull = new THREE.Mesh(new THREE.BoxGeometry(14.5, 4.8, 42.0), fpsoHull);
-    hull.position.set(0, 2.2, 0);
-    g.add(hull);
-    const hullDeck = new THREE.Mesh(new THREE.BoxGeometry(14.4, 0.2, 41.8), deckSlate);
-    hullDeck.position.set(0, 4.62, 0);
-    g.add(hullDeck);
-    const bow = makeHullBow(14.5, 4.7, 8.0, fpsoHull);
-    bow.position.set(0, 4.55, -21.0);
-    g.add(bow);
-
-    // External Yellow Bow Turret Mooring System
-    const turret = new THREE.Mesh(new THREE.CylinderGeometry(2.2, 2.6, 8.8, 14), craneYellow);
-    turret.position.set(0, 5.4, -24.5);
-    g.add(turret);
-
-    // Dense Multi-Tier Topside Oil & Gas Process Modules (Separators, Compressors, Pipe Racks)
-    const modPalette = [0x0284c7, 0x475569, 0xd97706, 0x0f766e];
-    for (let i = 0; i < 4; i++) {
-      const mz = -12.0 + i * 7.2;
-      const modMat = new THREE.MeshStandardMaterial({ color: modPalette[i % modPalette.length], roughness: 0.5, metalness: 0.22 });
-      const proc = new THREE.Mesh(new THREE.BoxGeometry(11.6, 4.6 + (i % 2) * 1.4, 5.6), modMat);
-      proc.position.set(0, 6.8 + (i % 2) * 0.6, mz);
-      g.add(proc);
-      const tank = new THREE.Mesh(new THREE.CylinderGeometry(1.1, 1.1, 4.6, 12), silverMetal);
-      tank.rotation.z = Math.PI / 2;
-      tank.position.set(0, 10.2, mz);
-      g.add(tank);
-    }
-
-    // Tall Angled Flare Tower with Glowing Flame Tip at Forward Port Bow
-    const flareBoom = new THREE.Mesh(new THREE.CylinderGeometry(0.45, 0.95, 19.0, 6), safetyOrange);
-    flareBoom.position.set(-5.5, 13.5, -18.5);
-    flareBoom.rotation.x = -0.38;
-    flareBoom.rotation.z = 0.22;
-    g.add(flareBoom);
-    const flame = new THREE.Mesh(
-      new THREE.ConeGeometry(0.95, 2.4, 8),
-      new THREE.MeshStandardMaterial({ color: 0xfef08a, emissive: 0xf97316, emissiveIntensity: 2.0 }),
-    );
-    flame.position.set(-7.6, 22.8, -22.2);
-    g.add(flame);
-
-    // Stern Living Quarters + Helideck
-    const lq = new THREE.Mesh(new THREE.BoxGeometry(12.2, 8.0, 7.2), whiteSteel);
-    lq.position.set(0, 8.6, 16.5);
-    g.add(lq);
-    const win = new THREE.Mesh(new THREE.BoxGeometry(11.4, 0.85, 2.0), glassMat);
-    win.position.set(0, 11.4, 13.2);
+    const win = new THREE.Mesh(new THREE.BoxGeometry(10.8, 0.8, 1.8), glassMat);
+    win.position.set(0, 8.8, -16.9);
     g.add(win);
     const heli = new THREE.Mesh(
-      new THREE.CylinderGeometry(4.2, 4.2, 0.35, 8),
-      new THREE.MeshStandardMaterial({ color: 0x15803d, roughness: 0.55 }),
+      new THREE.CylinderGeometry(3.6, 3.6, 0.35, 8),
+      new THREE.MeshStandardMaterial({ color: 0x266b43, roughness: 0.56 }),
     );
-    heli.position.set(0, 12.9, 17.5);
+    heli.position.set(0, 10.0, -19.8);
     g.add(heli);
+  } else if (vesselType === 'fpso_offshore') {
+    addCurvedMarineHull(g, {
+      halfBeam: 6.9,
+      parallelHalfLen: 17.2,
+      bowLen: 7.4,
+      sternLen: 4.2,
+      freeboardH: 3.7,
+      hullMat: hullNavy,
+      bootMat: hullRed,
+      deckMat: deckSlate,
+      railMat: whiteSteel,
+    });
+    const turret = new THREE.Mesh(new THREE.CylinderGeometry(2.1, 2.4, 8.4, 14), craneOchre);
+    turret.position.set(0, 5.6, -23.5);
+    g.add(turret);
+    const modColors = [0x265b80, 0x45566b, 0xa86e28, 0x26655c];
+    for (let i = 0; i < 4; i += 1) {
+      const mz = -11.5 + i * 7.0;
+      const proc = new THREE.Mesh(
+        new THREE.BoxGeometry(11.0, 4.4 + (i % 2) * 1.2, 5.4),
+        new THREE.MeshStandardMaterial({ color: modColors[i], roughness: 0.52, metalness: 0.28 }),
+      );
+      proc.position.set(0, 7.1 + (i % 2) * 0.5, mz);
+      g.add(proc);
+      const tank = new THREE.Mesh(new THREE.CylinderGeometry(1.0, 1.0, 4.4, 12), silverMetal);
+      tank.rotation.z = Math.PI / 2;
+      tank.position.set(0, 10.3, mz);
+      g.add(tank);
+    }
+    const flareBoom = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.85, 18.0, 6), lifeboatOrange);
+    flareBoom.position.set(-5.2, 13.5, -18.0);
+    flareBoom.rotation.x = -0.36;
+    flareBoom.rotation.z = 0.22;
+    g.add(flareBoom);
+    addCommercialSuperstructure(g, {
+      zCenter: 16.5,
+      deckY: 4.95,
+      width: 11.2,
+      levels: 3,
+      whiteMat: whiteSteel,
+      glassMat,
+      funnelMat: marineBlue,
+      lifeboatMat: lifeboatOrange,
+      darkSteelMat: darkSteel,
+    });
   } else if (vesselType === 'cruise_liner') {
-    // 7. Mega Cruise Liner — Sleek White Multi-Tiered Terraced Decks, Panoramic Blue Glass, Pools & Twin Funnels
-    const hull = new THREE.Mesh(new THREE.BoxGeometry(11.8, 4.0, 38.0), whiteSteel);
-    hull.position.set(0, 1.9, 0);
-    g.add(hull);
-    const hullDeck = new THREE.Mesh(new THREE.BoxGeometry(11.7, 0.2, 37.8), deckSlate);
-    hullDeck.position.set(0, 3.92, 0);
-    g.add(hullDeck);
-    const stripe = new THREE.Mesh(new THREE.BoxGeometry(12.0, 0.9, 38.4), accentBlue);
-    stripe.position.set(0, 1.4, 0);
-    g.add(stripe);
-    const bow = makeHullBow(11.8, 3.9, 10.5, whiteSteel);
-    bow.position.set(0, 3.85, -19.0);
-    g.add(bow);
-
-    // 4 Terraced Balcony Superstructure Tiers
+    addCurvedMarineHull(g, {
+      halfBeam: 5.8,
+      parallelHalfLen: 15.8,
+      bowLen: 10.2,
+      sternLen: 4.8,
+      freeboardH: 3.3,
+      hullMat: whiteSteel,
+      bootMat: marineBlue,
+      deckMat: deckSlate,
+      railMat: whiteSteel,
+    });
     const tiers = [
-      { w: 11.4, h: 2.4, l: 34.0, y: 5.0, z: 0.8 },
-      { w: 10.6, h: 2.3, l: 30.0, y: 7.3, z: 1.4 },
-      { w: 9.8, h: 2.2, l: 25.0, y: 9.5, z: 1.8 },
-      { w: 8.6, h: 1.8, l: 19.0, y: 11.4, z: 1.0 },
+      { w: 10.8, h: 2.2, l: 31.0, y: 5.5, z: 0.8 },
+      { w: 10.0, h: 2.1, l: 27.0, y: 7.7, z: 1.4 },
+      { w: 9.2, h: 2.0, l: 22.0, y: 9.8, z: 1.8 },
+      { w: 8.0, h: 1.7, l: 16.0, y: 11.6, z: 1.2 },
     ];
     for (const t of tiers) {
       const block = new THREE.Mesh(new THREE.BoxGeometry(t.w, t.h, t.l), whiteSteel);
       block.position.set(0, t.y, t.z);
       g.add(block);
-      const band = new THREE.Mesh(new THREE.BoxGeometry(t.w + 0.14, 0.72, t.l - 1.2), glassMat);
-      band.position.set(0, t.y + 0.25, t.z);
+      const band = new THREE.Mesh(new THREE.BoxGeometry(t.w + 0.14, 0.68, t.l - 1.2), glassMat);
+      band.position.set(0, t.y + 0.2, t.z);
       g.add(band);
     }
-
-    // Lido Top-Deck Blue Swimming Pool + Twin Swept Funnels
-    const pool = new THREE.Mesh(
-      new THREE.BoxGeometry(4.2, 0.2, 7.0),
-      new THREE.MeshStandardMaterial({ color: 0x38bdf8, emissive: 0x0284c7, emissiveIntensity: 0.55 }),
-    );
-    pool.position.set(0, 12.4, -2.0);
-    g.add(pool);
-
     for (const fz of [5.5, 9.8]) {
-      const fun = new THREE.Mesh(new THREE.BoxGeometry(2.4, 3.8, 3.2), safetyOrange);
-      fun.position.set(0, 13.8, fz);
-      fun.rotation.x = -0.22;
+      const fun = new THREE.Mesh(new THREE.CylinderGeometry(1.1, 1.5, 3.8, 8), marineBlue);
+      fun.position.set(0, 14.0, fz);
+      fun.rotation.x = -0.18;
       g.add(fun);
     }
   } else if (vesselType === 'roro_car_carrier') {
-    // 8. Pure Car & Truck Carrier (PCTC Ro-Ro) — Iconic High-Freeboard Slab Garage Hull & Stern Quarter Ramp
-    const pctcBlue = new THREE.MeshStandardMaterial({ color: 0x1d4ed8, roughness: 0.44, metalness: 0.18 });
-    const lowerHull = new THREE.Mesh(new THREE.BoxGeometry(12.0, 2.2, 38.0), hullRed);
-    lowerHull.position.set(0, 0.9, 0);
-    g.add(lowerHull);
-
-    // Tall enclosed 12-deck vehicle garage box
-    const garageLower = new THREE.Mesh(new THREE.BoxGeometry(12.2, 6.2, 38.5), pctcBlue);
-    garageLower.position.set(0, 5.0, 0);
-    g.add(garageLower);
-    const garageUpper = new THREE.Mesh(new THREE.BoxGeometry(12.2, 4.4, 37.8), whiteSteel);
-    garageUpper.position.set(0, 10.3, 0.2);
-    g.add(garageUpper);
-
-    // Sculpted tall bow block
-    const bow = makeHullBow(12.2, 10.4, 8.8, pctcBlue);
-    bow.position.set(0, 12.3, -19.2);
-    g.add(bow);
-
-    // High Forward Panoramic Wheelhouse
-    const wheelhouse = new THREE.Mesh(new THREE.BoxGeometry(12.8, 1.9, 4.6), whiteSteel);
-    wheelhouse.position.set(0, 13.4, -14.2);
+    addCurvedMarineHull(g, {
+      halfBeam: 6.0,
+      parallelHalfLen: 15.8,
+      bowLen: 8.6,
+      sternLen: 4.4,
+      freeboardH: 8.2,
+      hullMat: marineBlue,
+      bootMat: hullRed,
+      deckMat: whiteSteel,
+      railMat: whiteSteel,
+    });
+    const wheelhouse = new THREE.Mesh(new THREE.BoxGeometry(11.6, 1.8, 4.4), whiteSteel);
+    wheelhouse.position.set(0, 10.4, -14.2);
     g.add(wheelhouse);
-    const win = new THREE.Mesh(new THREE.BoxGeometry(12.2, 0.82, 4.75), glassMat);
-    win.position.set(0, 13.55, -14.25);
+    const win = new THREE.Mesh(new THREE.BoxGeometry(11.0, 0.78, 4.55), glassMat);
+    win.position.set(0, 10.55, -14.25);
     g.add(win);
-
-    // Iconic Folded Stern Quarter Loading Ramp
-    const ramp = new THREE.Mesh(new THREE.BoxGeometry(4.2, 8.5, 0.65), craneYellow);
-    ramp.position.set(3.2, 5.2, 20.8);
+    const ramp = new THREE.Mesh(new THREE.BoxGeometry(4.0, 7.6, 0.55), craneOchre);
+    ramp.position.set(3.2, 4.8, 20.6);
     ramp.rotation.x = 0.28;
-    ramp.rotation.y = 0.22;
+    ramp.rotation.y = 0.2;
     g.add(ramp);
   } else if (vesselType === 'icebreaker_research') {
-    // 9. Polar Icebreaker & Oceanographic Research Vessel — High-Vis Polar Red/Orange Hull, A-Frame Gantry & Helideck
-    const polarRed = new THREE.MeshStandardMaterial({ color: 0xdc2626, roughness: 0.44, metalness: 0.16 });
-    const hull = new THREE.Mesh(new THREE.BoxGeometry(11.6, 4.4, 34.0), polarRed);
-    hull.position.set(0, 2.0, 0);
-    g.add(hull);
-    const hullDeck = new THREE.Mesh(new THREE.BoxGeometry(11.5, 0.2, 33.8), deckSlate);
-    hullDeck.position.set(0, 4.22, 0);
-    g.add(hullDeck);
-    const bow = makeHullBow(11.6, 4.3, 10.2, polarRed);
-    bow.position.set(0, 4.15, -17.0);
-    g.add(bow);
-
-    // Forward Polar Ice-Navigation Bridge & Mast
-    const labHouse = new THREE.Mesh(new THREE.BoxGeometry(9.6, 6.2, 12.0), whiteSteel);
-    labHouse.position.set(0, 7.2, -5.5);
-    g.add(labHouse);
-    const bridgeWing = new THREE.Mesh(new THREE.BoxGeometry(12.6, 1.5, 2.4), polarRed);
-    bridgeWing.position.set(0, 10.5, -8.5);
-    g.add(bridgeWing);
-    const win = new THREE.Mesh(new THREE.BoxGeometry(11.6, 0.8, 2.5), glassMat);
-    win.position.set(0, 10.6, -8.55);
-    g.add(win);
-    const radarMast = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.7, 6.0, 8), safetyOrange);
-    radarMast.position.set(0, 13.8, -7.2);
-    g.add(radarMast);
-
-    // Aft Helideck Pad + Oceanographic Stern A-Frame Gantry
+    const polarRed = new THREE.MeshStandardMaterial({ color: 0xa62c2c, roughness: 0.46, metalness: 0.2 });
+    addCurvedMarineHull(g, {
+      halfBeam: 5.6,
+      parallelHalfLen: 13.8,
+      bowLen: 9.8,
+      sternLen: 4.6,
+      freeboardH: 3.4,
+      hullMat: polarRed,
+      bootMat: darkSteel,
+      deckMat: deckSlate,
+      railMat: whiteSteel,
+    });
+    addCommercialSuperstructure(g, {
+      zCenter: -4.8,
+      deckY: 4.65,
+      width: 9.0,
+      levels: 2,
+      whiteMat: whiteSteel,
+      glassMat,
+      funnelMat: polarRed,
+      lifeboatMat: lifeboatOrange,
+      darkSteelMat: darkSteel,
+    });
     const heliPad = new THREE.Mesh(
-      new THREE.CylinderGeometry(4.2, 4.2, 0.4, 16),
-      new THREE.MeshStandardMaterial({ color: 0xf97316, roughness: 0.48 }),
+      new THREE.CylinderGeometry(4.0, 4.0, 0.36, 16),
+      new THREE.MeshStandardMaterial({ color: 0xc25d27, roughness: 0.52 }),
     );
-    heliPad.position.set(0, 4.6, 8.2);
+    heliPad.position.set(0, 4.9, 9.2);
     g.add(heliPad);
-
-    for (const sx of [-3.6, 3.6]) {
-      const leg = new THREE.Mesh(new THREE.BoxGeometry(0.6, 6.6, 0.6), craneYellow);
-      leg.position.set(sx, 7.2, 15.8);
+    for (const sx of [-3.4, 3.4]) {
+      const leg = new THREE.Mesh(new THREE.BoxGeometry(0.55, 6.2, 0.55), craneOchre);
+      leg.position.set(sx, 7.6, 16.0);
       leg.rotation.x = 0.22;
       g.add(leg);
     }
-    const cross = new THREE.Mesh(new THREE.BoxGeometry(8.0, 0.65, 0.65), craneYellow);
-    cross.position.set(0, 10.3, 16.5);
+    const cross = new THREE.Mesh(new THREE.BoxGeometry(7.5, 0.6, 0.6), craneOchre);
+    cross.position.set(0, 10.5, 16.6);
     g.add(cross);
   } else {
-    // 10. Next-Gen Aegis Stealth Destroyer (Special Naval Vessel) — Naval Grey Stealth Hull, SPY Radar, Turret & Helo Deck
-    const navalGrey = new THREE.MeshStandardMaterial({ color: 0x64748b, roughness: 0.48, metalness: 0.24 });
-    const darkDeck = new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.62, metalness: 0.16 });
-    const radarPanel = new THREE.MeshStandardMaterial({ color: 0x94a3b8, roughness: 0.34, metalness: 0.34 });
-
-    const hull = new THREE.Mesh(new THREE.BoxGeometry(8.8, 3.8, 36.0), navalGrey);
-    hull.position.set(0, 1.8, 0);
-    g.add(hull);
-    const hullDeck = new THREE.Mesh(new THREE.BoxGeometry(8.7, 0.2, 35.8), darkDeck);
-    hullDeck.position.set(0, 3.72, 0);
-    g.add(hullDeck);
-    const bow = makeHullBow(8.8, 3.7, 11.5, navalGrey);
-    bow.position.set(0, 3.65, -18.0);
-    g.add(bow);
-
-    // Forward Naval Turret & VLS Missile Cells
-    const turret = new THREE.Mesh(new THREE.BoxGeometry(1.9, 1.3, 2.2), navalGrey);
-    turret.position.set(0, 4.3, -17.0);
-    g.add(turret);
-    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.16, 4.0, 8), darkDeck);
-    barrel.rotation.x = Math.PI / 2 - 0.18;
-    barrel.position.set(0, 4.7, -19.5);
-    g.add(barrel);
-
-    const vls = new THREE.Mesh(new THREE.BoxGeometry(3.8, 0.35, 4.6), darkDeck);
-    vls.position.set(0, 3.9, -12.0);
-    g.add(vls);
-
-    // Octagonal Stealth Aegis Deckhouse with SPY Phased-Array Radar Panels
-    const deckhouse = new THREE.Mesh(new THREE.CylinderGeometry(4.2, 4.8, 5.4, 8), navalGrey);
-    deckhouse.position.set(0, 6.2, -4.5);
+    // Naval / Coast Guard Patrol Vessel
+    const navalGrey = new THREE.MeshStandardMaterial({ color: 0x5c6b7a, roughness: 0.5, metalness: 0.28 });
+    addCurvedMarineHull(g, {
+      halfBeam: 4.4,
+      parallelHalfLen: 14.5,
+      bowLen: 11.0,
+      sternLen: 4.4,
+      freeboardH: 3.0,
+      hullMat: navalGrey,
+      bootMat: darkSteel,
+      deckMat: darkSteel,
+      railMat: navalGrey,
+    });
+    const deckhouse = new THREE.Mesh(new THREE.CylinderGeometry(3.8, 4.3, 4.8, 8), navalGrey);
+    deckhouse.position.set(0, 6.4, -4.5);
     g.add(deckhouse);
-    const bridgeWin = new THREE.Mesh(new THREE.BoxGeometry(5.8, 0.68, 1.6), glassMat);
-    bridgeWin.position.set(0, 7.6, -7.8);
+    const bridgeWin = new THREE.Mesh(new THREE.BoxGeometry(5.2, 0.65, 1.5), glassMat);
+    bridgeWin.position.set(0, 7.7, -7.6);
     g.add(bridgeWin);
-    for (const ang of [-0.6, 0.6]) {
-      const spy = new THREE.Mesh(new THREE.BoxGeometry(2.2, 2.2, 0.24), radarPanel);
-      spy.position.set(Math.sin(ang) * 4.35, 6.4, -4.5 - Math.cos(ang) * 4.35);
-      spy.rotation.y = ang;
-      g.add(spy);
-    }
-
-    // Twin Stealth Pyramidal Masts & Exhaust Stacks
-    const mast = new THREE.Mesh(new THREE.ConeGeometry(1.6, 8.8, 4), navalGrey);
-    mast.position.set(0, 12.8, -3.5);
+    const mast = new THREE.Mesh(new THREE.ConeGeometry(1.4, 8.0, 4), navalGrey);
+    mast.position.set(0, 12.6, -3.5);
     g.add(mast);
-    const stack = new THREE.Mesh(new THREE.BoxGeometry(5.6, 4.0, 9.5), navalGrey);
-    stack.position.set(0, 5.8, 4.5);
-    g.add(stack);
-
-    // Aft Helo Hangar & Flight Deck with Landing Circle
-    const flightRing = new THREE.Mesh(
-      new THREE.RingGeometry(2.2, 2.55, 24),
-      new THREE.MeshBasicMaterial({ color: 0xfacc15, side: THREE.DoubleSide }),
-    );
-    flightRing.rotation.x = -Math.PI / 2;
-    flightRing.position.set(0, 3.76, 13.8);
-    g.add(flightRing);
   }
 
   mergeSolidSubtreeToVertexColors(g, {
     lowSpec,
     roughness: 0.46,
-    metalness: 0.22,
+    metalness: 0.24,
     castShadow: !lowSpec,
     receiveShadow: !lowSpec,
   });
@@ -644,4 +943,47 @@ export function buildProjectVessel3D(
   });
 
   return g;
+}
+
+/**
+ * Builds a sleek 3D LiDAR / point-cloud scan shell around any vessel group (Requirement #10)
+ * toggled on vessel selection for an authentic digital-twin inspection feel.
+ */
+export function buildVesselScanPointCloud(vesselRoot: THREE.Object3D, colorHex = 0x38bdf8): THREE.Points {
+  vesselRoot.updateMatrixWorld(true);
+  const invRoot = vesselRoot.matrixWorld.clone().invert();
+  const relMat = new THREE.Matrix4();
+  const v = new THREE.Vector3();
+  const pts: number[] = [];
+
+  vesselRoot.traverse((obj) => {
+    const mesh = obj as THREE.Mesh;
+    if (!mesh.isMesh || !mesh.visible || !mesh.geometry) return;
+    const posAttr = mesh.geometry.getAttribute('position');
+    if (!posAttr) return;
+    relMat.multiplyMatrices(invRoot, mesh.matrixWorld);
+
+    // Subsample evenly so scan point-cloud stays crisp & fast (~900–1400 glowing scan points)
+    const stride = Math.max(1, Math.floor(posAttr.count / 650));
+    for (let i = 0; i < posAttr.count; i += stride) {
+      v.fromBufferAttribute(posAttr, i).applyMatrix4(relMat);
+      pts.push(v.x, v.y + 0.12, v.z);
+    }
+  });
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+  const mat = new THREE.PointsMaterial({
+    color: colorHex,
+    size: 0.42,
+    transparent: true,
+    opacity: 0.78,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+
+  const cloud = new THREE.Points(geo, mat);
+  cloud.visible = false;
+  cloud.renderOrder = 4;
+  return cloud;
 }

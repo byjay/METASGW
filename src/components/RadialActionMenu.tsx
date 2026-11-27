@@ -1,11 +1,17 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AlertTriangle,
   Anchor,
   Building2,
+  Compass,
   FolderKanban,
   Mail,
   MessageSquare,
+  Pencil,
+  RotateCcw,
+  RotateCw,
   Ship,
+  Sparkles,
   User,
   Wifi,
   WifiOff,
@@ -20,12 +26,15 @@ import {
 } from '../deepLink';
 import type { HarborPerson, HarborShip } from '../mapping';
 import type { RuntimeEnv } from '../runtimeEnv';
+import type { ClickedDecorativeShip } from '../scene/harborSceneTypes';
+import { MAX_SHIP_NAME_LENGTH } from '../shipDisplayPrefs';
 
 export type RadialDirection = 'north' | 'east' | 'south' | 'west';
 
 export type RadialTarget =
   | { kind: 'person'; person: HarborPerson; anchor: { x: number; y: number } }
-  | { kind: 'ship'; ship: HarborShip; anchor: { x: number; y: number } };
+  | { kind: 'ship'; ship: HarborShip; anchor: { x: number; y: number } }
+  | { kind: 'decorative-ship'; ship: ClickedDecorativeShip; anchor: { x: number; y: number } };
 
 export interface RadialMenuItem {
   direction: RadialDirection;
@@ -40,7 +49,15 @@ export interface RadialActionMenuProps {
   target: RadialTarget | null;
   runtimeEnv: RuntimeEnv;
   viewportSize?: { width: number; height: number };
+  customShipName?: string;
+  currentYawDeg?: number;
+  rotationWarning?: string | null;
   onBoardShip?: (shipId: string) => void;
+  onFocusPerson3D?: (sub: string) => void;
+  onRenameShip?: (shipId: string, rawName: string) => { ok: boolean; reason?: string };
+  onRotateShipStep?: (shipId: string, deltaSteps: number) => void;
+  onRotateShipAbsolute?: (shipId: string, nextYawDeg: number) => void;
+  onSnapShipParallel?: (shipId: string) => void;
   onPreviewLinkBlocked: (featureLabel: string) => void;
   onClose: () => void;
 }
@@ -49,9 +66,13 @@ export const RADIAL_DIRECTIONS: readonly RadialDirection[] = ['north', 'east', '
 
 /**
  * Pure builder for the 4 cardinal radial menu deep-link items (12시 대화, 3시 NAS, 6시 SEDMS, 9시 메일).
- * Uses ONLY existing SGW / SEDMS / bmail deep-link contracts.
+ * Decorative ships return an empty list (strict separation: zero SEDMS/SGW links on scenery!).
  */
 export function buildRadialMenuActions(target: RadialTarget): RadialMenuItem[] {
+  if (target.kind === 'decorative-ship') {
+    return [];
+  }
+
   if (target.kind === 'person') {
     const { person } = target;
     const rawDm = buildTalkDmUrl(person.sub);
@@ -139,7 +160,7 @@ export function buildRadialMenuActions(target: RadialTarget): RadialMenuItem[] {
 }
 
 /**
- * Pure keyboard direction resolver for the 4-way radial menu.
+ * Pure keyboard direction resolver for the 4-way quick action menu.
  */
 export function resolveRadialDirectionFromKey(
   key: string,
@@ -157,7 +178,7 @@ export function resolveRadialDirectionFromKey(
 }
 
 /**
- * Clamps radial menu center inside viewport bounds so buttons never clip off-screen (even at 375px).
+ * Clamps popup center inside viewport bounds so buttons never clip off-screen (even at 375px).
  */
 export function clampRadialCenter(
   anchor: { x: number; y: number },
@@ -174,13 +195,6 @@ export function clampRadialCenter(
   };
 }
 
-const DIRECTION_OFFSET_CLASS: Record<RadialDirection, string> = {
-  north: 'left-1/2 top-0 -translate-x-1/2',
-  east: 'right-0 top-1/2 -translate-y-1/2',
-  south: 'left-1/2 bottom-0 -translate-x-1/2',
-  west: 'left-0 top-1/2 -translate-y-1/2',
-};
-
 const DIRECTION_ICON: Record<RadialDirection, React.ReactNode> = {
   north: <MessageSquare className="h-4 w-4 text-sky-300 shrink-0" aria-hidden="true" />,
   east: <Building2 className="h-4 w-4 text-teal-300 shrink-0" aria-hidden="true" />,
@@ -188,28 +202,63 @@ const DIRECTION_ICON: Record<RadialDirection, React.ReactNode> = {
   west: <Mail className="h-4 w-4 text-indigo-300 shrink-0" aria-hidden="true" />,
 };
 
+/**
+ * Unified Single Entity Action Popup (Requirements #6, #15, #18, #19):
+ *   - Only ONE popup opens at a time; outside click & Esc dismiss cleanly.
+ *   - Consolidates all ship/person actions (대화·NAS·SEDMS·메일·승선·이름 바꾸기·방향 바꾸기·닫기).
+ *   - Decorative vessels (씨스타호, FD-01, scenery) support rename + collision-safe rotation ONLY (no SEDMS links).
+ */
 export const RadialActionMenu: React.FC<RadialActionMenuProps> = ({
   target,
   runtimeEnv,
   viewportSize,
+  customShipName,
+  currentYawDeg = 90,
+  rotationWarning = null,
   onBoardShip,
+  onFocusPerson3D,
+  onRenameShip,
+  onRotateShipStep,
+  onRotateShipAbsolute,
+  onSnapShipParallel,
   onPreviewLinkBlocked,
   onClose,
 }) => {
   const [activeDir, setActiveDir] = useState<RadialDirection>('north');
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [rotateOpen, setRotateOpen] = useState(false);
+  const [nameDraft, setNameDraft] = useState('');
+  const [nameError, setNameError] = useState<string | null>(null);
   const itemRefs = useRef<Partial<Record<RadialDirection, HTMLAnchorElement | null>>>({});
 
   const items = useMemo(() => (target ? buildRadialMenuActions(target) : []), [target]);
   const isPreview = runtimeEnv === 'preview';
 
+  const targetKey =
+    target?.kind === 'person'
+      ? `person:${target.person.sub}`
+      : target?.kind === 'ship'
+        ? `ship:${target.ship.id}`
+        : target?.kind === 'decorative-ship'
+          ? `deco:${target.ship.id}`
+          : '';
+
   useEffect(() => {
     if (!target) return;
     setActiveDir('north');
+    setRenameOpen(false);
+    setRotateOpen(false);
+    setNameError(null);
+    if (target.kind === 'ship') {
+      setNameDraft(customShipName ?? target.ship.name);
+    } else if (target.kind === 'decorative-ship') {
+      setNameDraft(customShipName ?? target.ship.defaultName);
+    }
     const raf = window.requestAnimationFrame(() => {
       itemRefs.current.north?.focus();
     });
     return () => window.cancelAnimationFrame(raf);
-  }, [target]);
+  }, [targetKey]);
 
   if (!target) return null;
 
@@ -217,9 +266,15 @@ export const RadialActionMenu: React.FC<RadialActionMenuProps> = ({
     width: typeof window !== 'undefined' ? window.innerWidth : 1280,
     height: typeof window !== 'undefined' ? window.innerHeight : 800,
   };
-  const center = clampRadialCenter(target.anchor, vp, 132);
+  const isShipLike = target.kind === 'ship' || target.kind === 'decorative-ship';
+  const shipId = target.kind === 'ship' ? target.ship.id : target.kind === 'decorative-ship' ? target.ship.id : '';
+
+  const center = clampRadialCenter(target.anchor, vp, 168);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const el = e.target as HTMLElement | null;
+    const typingInInput = el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA');
+
     if (e.key === 'Escape') {
       e.preventDefault();
       e.stopPropagation();
@@ -227,133 +282,381 @@ export const RadialActionMenu: React.FC<RadialActionMenuProps> = ({
       return;
     }
 
-    const nextDir = resolveRadialDirectionFromKey(e.key, activeDir);
-    if (nextDir) {
+    if (typingInInput) return;
+
+    // Q / E keyboard rotation in 15° steps when a ship popup is open (Req #19)
+    if (isShipLike && onRotateShipStep && (e.key === 'q' || e.key === 'Q')) {
       e.preventDefault();
-      setActiveDir(nextDir);
-      itemRefs.current[nextDir]?.focus();
+      setRotateOpen(true);
+      onRotateShipStep(shipId, -1);
+      return;
+    }
+    if (isShipLike && onRotateShipStep && (e.key === 'e' || e.key === 'E')) {
+      e.preventDefault();
+      setRotateOpen(true);
+      onRotateShipStep(shipId, 1);
       return;
     }
 
-    if (e.key === 'Enter' || e.key === ' ') {
-      const focusedItem = items.find((item) => item.direction === activeDir);
-      if (focusedItem && isPreview) {
+    if (items.length > 0) {
+      const nextDir = resolveRadialDirectionFromKey(e.key, activeDir);
+      if (nextDir) {
         e.preventDefault();
-        onPreviewLinkBlocked(focusedItem.previewFeatureLabel);
+        setActiveDir(nextDir);
+        itemRefs.current[nextDir]?.focus();
+        return;
+      }
+
+      if (e.key === 'Enter' || e.key === ' ') {
+        const focusedItem = items.find((item) => item.direction === activeDir);
+        if (focusedItem && isPreview && el?.tagName === 'A') {
+          e.preventDefault();
+          onPreviewLinkBlocked(focusedItem.previewFeatureLabel);
+        }
       }
     }
   };
 
-  const title = target.kind === 'person' ? target.person.name : target.ship.name;
+  const originalShipName =
+    target.kind === 'ship'
+      ? target.ship.name
+      : target.kind === 'decorative-ship'
+        ? target.ship.defaultName
+        : '';
+
+  const displayTitle =
+    target.kind === 'person'
+      ? target.person.name
+      : customShipName || originalShipName;
+
   const subLabel =
     target.kind === 'person'
       ? `${target.person.dept} · ${target.person.online ? '접속 중' : '오프라인'}`
-      : `${target.ship.code} · ${target.ship.appearance.statusLabelKo}`;
+      : target.kind === 'ship'
+        ? `${target.ship.code} · ${target.ship.appearance.statusLabelKo}`
+        : target.ship.subtitle;
+
+  const submitRename = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!onRenameShip || !shipId) return;
+    const res = onRenameShip(shipId, nameDraft);
+    if (!res.ok) {
+      setNameError(res.reason ?? '이름을 저장할 수 없습니다.');
+    } else {
+      setNameError(null);
+      setRenameOpen(false);
+    }
+  };
+
+  const resetRename = () => {
+    if (!onRenameShip || !shipId) return;
+    onRenameShip(shipId, '');
+    setNameDraft(originalShipName);
+    setNameError(null);
+    setRenameOpen(false);
+  };
 
   return (
     <div
       className="fixed inset-0 z-40 bg-slate-950/45"
       role="dialog"
       aria-modal="true"
-      aria-label={`${title} 4방향 빠른 메뉴`}
+      aria-label={`${displayTitle} 작업 팝업`}
       data-testid="radial-action-menu"
       onClick={onClose}
       onKeyDown={handleKeyDown}
     >
       <div
-        className="fixed h-64 w-64 -translate-x-1/2 -translate-y-1/2"
+        className="fixed w-[328px] max-w-[calc(100vw-1.25rem)] max-h-[calc(100vh-5.5rem)] overflow-y-auto -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-slate-600/90 bg-slate-950/96 p-3.5 text-slate-100 shadow-2xl space-y-3"
         style={{ left: `${center.x}px`, top: `${center.y}px` }}
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Subtle compass ring backdrop */}
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-6 rounded-full border border-sky-400/35 bg-slate-950/70 shadow-2xl"
-        />
-
-        {/* Center target hub */}
-        <div className="absolute left-1/2 top-1/2 z-10 flex w-28 -translate-x-1/2 -translate-y-1/2 flex-col items-center rounded-2xl border border-slate-600 bg-slate-900 px-2 py-2 text-center shadow-xl">
-          <div className="flex items-center justify-center gap-1 text-xs font-bold text-white max-w-full">
-            {target.kind === 'person' ? (
-              target.person.online ? (
-                <Wifi className="h-3.5 w-3.5 text-emerald-400 shrink-0" aria-hidden="true" />
+        {/* Header */}
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5">
+              {target.kind === 'person' ? (
+                target.person.online ? (
+                  <Wifi className="h-4 w-4 text-emerald-400 shrink-0" aria-hidden="true" />
+                ) : (
+                  <WifiOff className="h-4 w-4 text-slate-400 shrink-0" aria-hidden="true" />
+                )
+              ) : target.kind === 'decorative-ship' ? (
+                <Sparkles className="h-4 w-4 text-amber-400 shrink-0" aria-hidden="true" />
               ) : (
-                <WifiOff className="h-3.5 w-3.5 text-slate-400 shrink-0" aria-hidden="true" />
-              )
-            ) : (
-              <Ship className="h-3.5 w-3.5 text-sky-400 shrink-0" aria-hidden="true" />
-            )}
-            <span className="truncate">{title}</span>
-          </div>
-          <p className="mt-0.5 truncate text-[10px] text-slate-300 max-w-full">{subLabel}</p>
+                <Ship className="h-4 w-4 text-sky-400 shrink-0" aria-hidden="true" />
+              )}
+              <h3 className="truncate text-sm font-bold text-white">{displayTitle}</h3>
+            </div>
 
-          <div className="mt-1.5 flex items-center gap-1">
-            {target.kind === 'ship' && onBoardShip && (
-              <button
-                type="button"
-                onClick={() => {
-                  onClose();
-                  onBoardShip(target.ship.id);
-                }}
-                aria-label={`${target.ship.name} 승선 패널 열기`}
-                className="inline-flex min-h-[28px] items-center gap-1 rounded-md bg-sky-700 px-2 py-0.5 text-[11px] font-semibold text-white hover:bg-sky-600 focus-visible:outline-2 focus-visible:outline-sky-300"
-              >
-                <Anchor className="h-3 w-3" aria-hidden="true" />
-                승선
-              </button>
+            {isShipLike && customShipName && customShipName !== originalShipName && (
+              <p className="mt-0.5 truncate text-[11px] text-sky-300">
+                {target.kind === 'ship'
+                  ? `내 화면 표시 이름 · 원래 이름: ${originalShipName}`
+                  : `원래 이름: ${originalShipName}`}
+              </p>
             )}
-            <button
-              type="button"
-              onClick={onClose}
-              aria-label="래디얼 메뉴 닫기"
-              className="inline-flex min-h-[28px] min-w-[28px] items-center justify-center rounded-md border border-slate-700 bg-slate-800 p-1 text-slate-200 hover:bg-slate-700 hover:text-white focus-visible:outline-2 focus-visible:outline-sky-300"
-            >
-              <X className="h-3.5 w-3.5" aria-hidden="true" />
-            </button>
+            <p className="mt-0.5 truncate text-[11px] text-slate-300">{subLabel}</p>
+            {target.kind === 'decorative-ship' && (
+              <span className="mt-1 inline-flex items-center rounded border border-amber-400/50 bg-amber-950/70 px-1.5 py-0.5 text-[10px] font-semibold text-amber-200">
+                장식 선박 · 업무 데이터 아님
+              </span>
+            )}
           </div>
+
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="팝업 닫기"
+            className="inline-flex min-h-[32px] min-w-[32px] shrink-0 items-center justify-center rounded-lg border border-slate-700 bg-slate-900 p-1.5 text-slate-200 hover:bg-slate-800 hover:text-white focus-visible:outline-2 focus-visible:outline-sky-300"
+          >
+            <X className="h-4 w-4" aria-hidden="true" />
+          </button>
         </div>
 
-        {/* 4 Cardinal Action Nodes: 12시 대화 / 3시 NAS / 6시 SEDMS / 9시 메일 */}
-        {items.map((item) => {
-          const isFocused = activeDir === item.direction;
-          return (
-            <a
-              key={item.direction}
-              ref={(el) => {
-                itemRefs.current[item.direction] = el;
+        {/* 4 Cardinal SGW Deep-Link Actions (Business Ships & People ONLY — NEVER decorative ships) */}
+        {items.length > 0 && (
+          <div className="grid grid-cols-2 gap-1.5" role="group" aria-label="4방향 빠른 이동">
+            {items.map((item) => {
+              const isFocused = activeDir === item.direction;
+              return (
+                <a
+                  key={item.direction}
+                  ref={(el) => {
+                    itemRefs.current[item.direction] = el;
+                  }}
+                  href={item.href}
+                  data-testid={`radial-item-${item.direction}`}
+                  aria-label={`${item.clockLabel} ${item.label} — ${item.description}`}
+                  onFocus={() => setActiveDir(item.direction)}
+                  onClick={(e) => {
+                    if (isPreview) {
+                      e.preventDefault();
+                      onPreviewLinkBlocked(item.previewFeatureLabel);
+                      onClose();
+                    }
+                  }}
+                  className={`flex min-h-[44px] items-center justify-between gap-1.5 rounded-xl border px-3 py-2 text-xs font-bold transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-300 ${
+                    isFocused
+                      ? 'border-sky-400 bg-sky-900/90 text-white'
+                      : 'border-slate-700 bg-slate-900 text-slate-100 hover:border-sky-400 hover:bg-slate-800'
+                  }`}
+                >
+                  <span className="inline-flex items-center gap-1.5">
+                    {DIRECTION_ICON[item.direction]}
+                    <span>{item.label}</span>
+                  </span>
+                  <span className="text-[10px] font-medium text-slate-300">{item.clockLabel}</span>
+                </a>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Primary Action Row: 승선 (Business Ship) / 3D 위치 (Person) / 이름 바꾸기 / 방향 바꾸기 */}
+        <div className="flex flex-wrap items-center gap-1.5">
+          {target.kind === 'ship' && onBoardShip && (
+            <button
+              type="button"
+              onClick={() => {
+                onClose();
+                onBoardShip(target.ship.id);
               }}
-              href={item.href}
-              data-testid={`radial-item-${item.direction}`}
-              aria-label={`${item.clockLabel} ${item.label} — ${item.description}`}
-              onFocus={() => setActiveDir(item.direction)}
-              onClick={(e) => {
-                if (isPreview) {
-                  e.preventDefault();
-                  onPreviewLinkBlocked(item.previewFeatureLabel);
-                  onClose();
-                }
+              aria-label={`${displayTitle} 승선 패널 열기`}
+              className="inline-flex flex-1 min-h-[38px] items-center justify-center gap-1.5 rounded-xl bg-sky-700 px-3 py-1.5 text-xs font-bold text-white hover:bg-sky-600 focus-visible:outline-2 focus-visible:outline-sky-300"
+            >
+              <Anchor className="h-3.5 w-3.5" aria-hidden="true" />
+              승선
+            </button>
+          )}
+
+          {target.kind === 'person' && onFocusPerson3D && (
+            <button
+              type="button"
+              onClick={() => {
+                onFocusPerson3D(target.person.sub);
+                onClose();
               }}
-              className={`absolute ${DIRECTION_OFFSET_CLASS[item.direction]} z-20 flex min-h-[48px] min-w-[74px] flex-col items-center justify-center rounded-xl border px-2.5 py-1.5 text-center shadow-lg transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-300 ${
-                isFocused
-                  ? 'border-sky-400 bg-sky-900 text-white scale-105'
-                  : 'border-slate-600 bg-slate-900 text-slate-100 hover:border-sky-400 hover:bg-slate-800'
+              aria-label={`${target.person.name} 3D 항구 위치로 이동`}
+              className="inline-flex flex-1 min-h-[38px] items-center justify-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-100 hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-sky-300"
+            >
+              <Compass className="h-3.5 w-3.5 text-sky-400" aria-hidden="true" />
+              항구 위치 보기
+            </button>
+          )}
+
+          {isShipLike && onRenameShip && (
+            <button
+              type="button"
+              data-testid="ship-rename-toggle"
+              aria-label="선박 이름 바꾸기"
+              aria-expanded={renameOpen}
+              onClick={() => {
+                setRenameOpen((v) => !v);
+                setRotateOpen(false);
+              }}
+              className={`inline-flex flex-1 min-h-[38px] items-center justify-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-xs font-semibold transition focus-visible:outline-2 focus-visible:outline-sky-300 ${
+                renameOpen
+                  ? 'border-sky-400 bg-sky-950 text-sky-100'
+                  : 'border-slate-700 bg-slate-900 text-slate-100 hover:bg-slate-800'
               }`}
             >
-              <div className="flex items-center gap-1 text-xs font-bold whitespace-nowrap">
-                {DIRECTION_ICON[item.direction]}
-                <span>{item.label}</span>
-              </div>
-              <span className="mt-0.5 text-[10px] font-medium text-slate-300">
-                {item.clockLabel}
-              </span>
-            </a>
-          );
-        })}
+              <Pencil className="h-3.5 w-3.5 text-sky-300" aria-hidden="true" />
+              이름 바꾸기
+            </button>
+          )}
 
-        {/* Screen-reader / keyboard helper hint */}
+          {isShipLike && onRotateShipStep && (
+            <button
+              type="button"
+              data-testid="ship-rotate-toggle"
+              aria-label="선박 방향 바꾸기"
+              aria-expanded={rotateOpen}
+              onClick={() => {
+                setRotateOpen((v) => !v);
+                setRenameOpen(false);
+              }}
+              className={`inline-flex flex-1 min-h-[38px] items-center justify-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-xs font-semibold transition focus-visible:outline-2 focus-visible:outline-sky-300 ${
+                rotateOpen
+                  ? 'border-amber-400 bg-amber-950/70 text-amber-100'
+                  : 'border-slate-700 bg-slate-900 text-slate-100 hover:bg-slate-800'
+              }`}
+            >
+              <RotateCw className="h-3.5 w-3.5 text-amber-300" aria-hidden="true" />
+              방향 바꾸기
+            </button>
+          )}
+        </div>
+
+        {/* Inline Ship Rename Panel (Requirement #15) */}
+        {isShipLike && renameOpen && onRenameShip && (
+          <form
+            onSubmit={submitRename}
+            className="rounded-xl border border-slate-700 bg-slate-900/95 p-2.5 space-y-2"
+            data-testid="ship-rename-form"
+          >
+            <label
+              htmlFor="ship-rename-input"
+              className="block text-[11px] font-semibold text-slate-200"
+            >
+              {target.kind === 'ship'
+                ? '내 화면 표시 이름 (최대 30자 · SEDMS 원본 유지)'
+                : '장식 선박 이름 (최대 30자 · 비우면 원래 이름)'}
+            </label>
+            <input
+              id="ship-rename-input"
+              data-testid="ship-rename-input"
+              type="text"
+              maxLength={MAX_SHIP_NAME_LENGTH}
+              value={nameDraft}
+              onChange={(e) => {
+                setNameDraft(e.target.value);
+                setNameError(null);
+              }}
+              placeholder={originalShipName}
+              className="w-full rounded-lg border border-slate-600 bg-slate-950 px-2.5 py-1.5 text-xs text-white placeholder:text-slate-500 focus:border-sky-400 focus:outline-none"
+            />
+            {nameError && (
+              <p className="text-[11px] font-medium text-rose-300" role="alert">
+                {nameError}
+              </p>
+            )}
+            <div className="flex items-center justify-end gap-1.5">
+              <button
+                type="button"
+                onClick={resetRename}
+                aria-label="원래 선박 이름으로 복원"
+                className="rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1 text-[11px] font-semibold text-slate-200 hover:bg-slate-700"
+              >
+                원래 이름
+              </button>
+              <button
+                type="submit"
+                aria-label="변경한 선박 이름 저장"
+                className="rounded-lg bg-sky-700 px-3 py-1 text-[11px] font-bold text-white hover:bg-sky-600"
+              >
+                저장
+              </button>
+            </div>
+          </form>
+        )}
+
+        {/* Inline Ship Rotation Panel (Requirement #19 — 15° Q/E + slider + quay snap + collision rollback) */}
+        {isShipLike && rotateOpen && onRotateShipStep && (
+          <div
+            className="rounded-xl border border-slate-700 bg-slate-900/95 p-2.5 space-y-2"
+            data-testid="ship-rotate-panel"
+          >
+            <div className="flex items-center justify-between text-[11px]">
+              <span className="font-semibold text-slate-200">선박 정박 방향 (Q / E · 15° 단위)</span>
+              <span className="font-mono font-bold text-amber-300" data-testid="ship-yaw-readout">
+                {Math.round(currentYawDeg)}°
+              </span>
+            </div>
+
+            {onRotateShipAbsolute && (
+              <input
+                type="range"
+                min={0}
+                max={345}
+                step={15}
+                value={Math.round(currentYawDeg) % 360}
+                aria-label="선박 방향 각도 조절 슬라이더"
+                onChange={(e) => onRotateShipAbsolute(shipId, Number(e.target.value))}
+                className="w-full accent-sky-400 cursor-pointer"
+              />
+            )}
+
+            <div className="grid grid-cols-3 gap-1.5">
+              <button
+                type="button"
+                data-testid="ship-rotate-ccw"
+                aria-label="선박 왼쪽으로 15도 회전 (Q)"
+                onClick={() => onRotateShipStep(shipId, -1)}
+                className="inline-flex min-h-[34px] items-center justify-center gap-1 rounded-lg border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] font-semibold text-slate-100 hover:bg-slate-700"
+              >
+                <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+                -15° (Q)
+              </button>
+              <button
+                type="button"
+                data-testid="ship-rotate-cw"
+                aria-label="선박 오른쪽으로 15도 회전 (E)"
+                onClick={() => onRotateShipStep(shipId, 1)}
+                className="inline-flex min-h-[34px] items-center justify-center gap-1 rounded-lg border border-slate-700 bg-slate-800 px-2 py-1 text-[11px] font-semibold text-slate-100 hover:bg-slate-700"
+              >
+                <RotateCw className="h-3.5 w-3.5" aria-hidden="true" />
+                +15° (E)
+              </button>
+              {onSnapShipParallel && (
+                <button
+                  type="button"
+                  data-testid="ship-snap-quay"
+                  aria-label="정박 방향 맞추기 (가장 가까운 안벽 평행 정렬)"
+                  onClick={() => onSnapShipParallel(shipId)}
+                  className="inline-flex min-h-[34px] items-center justify-center rounded-lg bg-sky-700 px-2 py-1 text-[11px] font-bold text-white hover:bg-sky-600"
+                >
+                  정박 방향 맞추기
+                </button>
+              )}
+            </div>
+
+            {rotationWarning && (
+              <div
+                role="alert"
+                data-testid="ship-rotation-warning"
+                className="flex items-start gap-1.5 rounded-lg border border-rose-500/60 bg-rose-950/75 px-2.5 py-1.5 text-[11px] font-medium text-rose-200"
+              >
+                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-rose-400" aria-hidden="true" />
+                <span>{rotationWarning}</span>
+              </div>
+            )}
+          </div>
+        )}
+
         <div className="sr-only">
           <User aria-hidden="true" />
-          방향키로 12시 대화, 3시 NAS, 6시 SEDMS, 9시 메일을 선택하고 Enter로 실행, Esc로 닫기
+          방향키로 12시 대화, 3시 NAS, 6시 SEDMS, 9시 메일 선택, Q/E로 선박 회전, Esc로 닫기
         </div>
       </div>
     </div>

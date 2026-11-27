@@ -74,16 +74,30 @@ describe('Accessibility: WCAG 2.1 AA contrast, aria-labels, keyboard 2D navigati
         nowMs: now,
         showDebugMetrics: false,
         renderMetrics: {
-          drawCalls: 92,
+          drawCalls: 48,
+          peakDrawCalls: 54,
           triangles: 48200,
           geometries: 54,
           textures: 8,
           fps: 60,
+          frameTimeMs: 4.2,
           lowSpec: false,
+          qualityTier: 'high',
+          canvasWidth: 1440,
+          canvasHeight: 900,
+          activeChunks: 9,
+          batching: {
+            instancedMeshCount: 9,
+            totalInstances: 142,
+            mergedMeshCount: 12,
+            mergedSourceMeshes: 96,
+            savedDrawCalls: 217,
+          },
         },
         onRetrySync: noop,
         onToggleViewMode: noop,
         onToggleLowSpec: noop,
+        onSelectQualityTier: noop,
         onToggleTheme: noop,
         onCycleCamera: noop,
         onZoom: noop,
@@ -94,6 +108,9 @@ describe('Accessibility: WCAG 2.1 AA contrast, aria-labels, keyboard 2D navigati
     assertEveryButtonHasAriaLabel(hudHtmlProd, 'HudTopBar');
     assert.ok(hudHtmlProd.includes('3D 맵'), 'HudTopBar must show 3D 맵 toggle');
     assert.ok(hudHtmlProd.includes('빠른 레이더'), 'HudTopBar must show 빠른 레이더 toggle');
+    assert.ok(hudHtmlProd.includes('data-testid="quality-tier-high"'), 'HudTopBar must show high quality tier button');
+    assert.ok(hudHtmlProd.includes('data-testid="quality-tier-medium"'), 'HudTopBar must show medium quality tier button');
+    assert.ok(hudHtmlProd.includes('data-testid="quality-tier-low"'), 'HudTopBar must show low quality tier button');
     assert.equal(
       hudHtmlProd.includes('data-testid="hud-debug-metrics"'),
       false,
@@ -107,6 +124,7 @@ describe('Accessibility: WCAG 2.1 AA contrast, aria-labels, keyboard 2D navigati
         viewMode: '3d',
         webglSupported: true,
         lowSpecMode: false,
+        qualityTier: 'high',
         darkTheme: false,
         cameraPreset: 'harbor',
         onlineCount: 4,
@@ -116,16 +134,30 @@ describe('Accessibility: WCAG 2.1 AA contrast, aria-labels, keyboard 2D navigati
         nowMs: now,
         showDebugMetrics: true,
         renderMetrics: {
-          drawCalls: 92,
+          drawCalls: 48,
+          peakDrawCalls: 54,
           triangles: 48200,
           geometries: 54,
           textures: 8,
           fps: 60,
+          frameTimeMs: 4.2,
           lowSpec: false,
+          qualityTier: 'high',
+          canvasWidth: 1440,
+          canvasHeight: 900,
+          activeChunks: 9,
+          batching: {
+            instancedMeshCount: 9,
+            totalInstances: 142,
+            mergedMeshCount: 12,
+            mergedSourceMeshes: 96,
+            savedDrawCalls: 217,
+          },
         },
         onRetrySync: noop,
         onToggleViewMode: noop,
         onToggleLowSpec: noop,
+        onSelectQualityTier: noop,
         onToggleTheme: noop,
         onCycleCamera: noop,
         onZoom: noop,
@@ -137,7 +169,9 @@ describe('Accessibility: WCAG 2.1 AA contrast, aria-labels, keyboard 2D navigati
       hudHtmlDev.includes('data-testid="hud-debug-metrics"'),
       'HUD debug metrics must render when showDebugMetrics is true',
     );
-    assert.ok(hudHtmlDev.includes('DC 92'));
+    assert.ok(hudHtmlDev.includes('DC 48'));
+    assert.ok(hudHtmlDev.includes('1440×900'));
+    assert.ok(hudHtmlDev.includes('9ch'));
 
     const dockHtml = renderToStaticMarkup(
       React.createElement(BottomControlDock, {
@@ -186,12 +220,51 @@ describe('Accessibility: WCAG 2.1 AA contrast, aria-labels, keyboard 2D navigati
         target: { kind: 'ship', ship: ships[0], anchor: { x: 640, y: 400 } },
         runtimeEnv: 'preview',
         viewportSize: { width: 1280, height: 800 },
+        currentYawDeg: 90,
         onBoardShip: noop,
+        onRenameShip: () => ({ ok: true }),
+        onRotateShipStep: noop,
+        onRotateShipAbsolute: noop,
+        onSnapShipParallel: noop,
         onPreviewLinkBlocked: noop,
         onClose: noop,
       }),
     );
     assertEveryButtonHasAriaLabel(radialShipHtml, 'RadialActionMenu(ship)');
+
+    const radialDecoHtml = renderToStaticMarkup(
+      React.createElement(RadialActionMenu, {
+        target: {
+          kind: 'decorative-ship',
+          ship: {
+            id: 'deco-seastar-hero',
+            defaultName: '씨스타호',
+            subtitle: '대표 LNG 운반선 · 장식 선박',
+            x: -118,
+            z: 20,
+            defaultYawDeg: 0,
+            halfLength: 27,
+            halfBeam: 8.5,
+          },
+          anchor: { x: 640, y: 400 },
+        },
+        runtimeEnv: 'preview',
+        viewportSize: { width: 1280, height: 800 },
+        currentYawDeg: 0,
+        onRenameShip: () => ({ ok: true }),
+        onRotateShipStep: noop,
+        onRotateShipAbsolute: noop,
+        onSnapShipParallel: noop,
+        onPreviewLinkBlocked: noop,
+        onClose: noop,
+      }),
+    );
+    assertEveryButtonHasAriaLabel(radialDecoHtml, 'RadialActionMenu(decorative-ship)');
+    assert.equal(
+      radialDecoHtml.includes('/api/sedms-sso'),
+      false,
+      'Decorative ships must never expose SEDMS business links',
+    );
 
     const radialPersonHtml = renderToStaticMarkup(
       React.createElement(RadialActionMenu, {
@@ -223,13 +296,20 @@ describe('Accessibility: WCAG 2.1 AA contrast, aria-labels, keyboard 2D navigati
         ships,
         people,
         playerPose: { x: 0, z: -8, heading: 0 },
+        cameraWorldTarget: { x: 240, z: 12 },
         activeShipId: ships[0].id,
         onSelectShip: noop,
         onWalkToQuay: noop,
+        onPanToWorld: noop,
+        onReturnHome: noop,
         onClose: noop,
       }),
     );
     assertEveryButtonHasAriaLabel(minimapHtml, 'HarborMiniMap');
+    assert.ok(
+      minimapHtml.includes('data-testid="minimap-return-home"'),
+      'HarborMiniMap must provide return-to-home-harbor button',
+    );
 
     const onboardHtml = renderToStaticMarkup(
       React.createElement(OnboardPanel, {

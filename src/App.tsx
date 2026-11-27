@@ -40,12 +40,16 @@ import {
   detectRuntimeEnv,
   PREVIEW_SGW_ONLY_TOAST,
 } from './runtimeEnv';
-import {
-  HarborSceneController,
-  type CameraPreset,
-  type ProjectedLabel,
-  type RenderMetrics,
-} from './scene/HarborScene';
+import { loadHarborSceneModule } from './scene/harborSceneLoader';
+import type {
+  CameraPreset,
+  ClickedDecorativeShip,
+  HarborSceneHandle,
+  ProjectedLabel,
+  QualityTier,
+  RenderMetrics,
+} from './scene/harborSceneTypes';
+import { HOME_HARBOR_DECORATIVE_VESSELS } from './scene/sceneryCatalog';
 import {
   fetchAuthMe,
   fetchEmployees,
@@ -58,6 +62,17 @@ import {
   type SgwPresenceEntry,
   type SgwUser,
 } from './sgwAdapter';
+import {
+  applyShipCustomName,
+  applyShipCustomYaw,
+  checkShipRotationCollision,
+  computeQuayParallelSnapYawDeg,
+  loadShipDisplayPrefs,
+  saveShipDisplayPrefs,
+  stepShipYawDegrees,
+  type ShipDisplayPrefsMap,
+  type ShipFootprintCollider,
+} from './shipDisplayPrefs';
 import {
   createInitialWebGLViewState,
   transitionWebGLViewState,
@@ -90,6 +105,23 @@ function isDesktopViewport(): boolean {
   return window.innerWidth >= 768;
 }
 
+function buildDecorativeShipMap(): Map<string, ClickedDecorativeShip> {
+  const map = new Map<string, ClickedDecorativeShip>();
+  for (const spec of HOME_HARBOR_DECORATIVE_VESSELS) {
+    map.set(spec.id, {
+      id: spec.id,
+      defaultName: spec.defaultName,
+      subtitle: spec.subtitle,
+      x: spec.x,
+      z: spec.z,
+      defaultYawDeg: spec.defaultYawDeg,
+      halfLength: spec.halfLength,
+      halfBeam: spec.halfBeam,
+    });
+  }
+  return map;
+}
+
 export function App() {
   const runtimeEnv = useMemo(() => detectRuntimeEnv(), []);
   const isPreviewMode = runtimeEnv === 'preview';
@@ -101,10 +133,21 @@ export function App() {
   );
   const viewMode = webglState.viewMode;
   const webglContextLost = webglState.contextHealth === 'lost';
-  const [lowSpecMode, setLowSpecMode] = useState<boolean>(() => deviceProfile.recommendLowSpec);
+
+  // 3-tier graphics quality (default 'high' per Requirement #1)
+  const [qualityTier, setQualityTier] = useState<QualityTier>(() => deviceProfile.initialQualityTier);
+  const [userSelectedQuality, setUserSelectedQuality] = useState<boolean>(false);
+  const lowSpecMode = qualityTier === 'low';
+
   const [reducedMotion, setReducedMotion] = useState<boolean>(() => deviceProfile.reducedMotion);
   const [darkTheme, setDarkTheme] = useState<boolean>(false);
   const [cameraPreset, setCameraPreset] = useState<CameraPreset>('harbor');
+
+  // Local UI display preferences for ship names & rotations (non-PII, isolated in shipDisplayPrefs.ts)
+  const [shipDisplayPrefs, setShipDisplayPrefs] = useState<ShipDisplayPrefsMap>(() =>
+    loadShipDisplayPrefs(),
+  );
+  const [rotationWarning, setRotationWarning] = useState<string | null>(null);
 
   const [authStatus, setAuthStatus] = useState<AuthGateStatus>('loading');
   const [authErrorCode, setAuthErrorCode] = useState<AppErrorCode | null>(null);
@@ -130,26 +173,49 @@ export function App() {
     z: -10.5,
     heading: 0,
   });
+  const [cameraWorldTarget, setCameraWorldTarget] = useState<{ x: number; z: number }>({
+    x: 0,
+    z: 6,
+  });
   const [projectSession, setProjectSession] = useState<HarborProjectSessionState>(
     createInitialProjectSessionState,
   );
   const [renderMetrics, setRenderMetrics] = useState<RenderMetrics | null>(null);
+  const [sceneReady3D, setSceneReady3D] = useState<boolean>(false);
+  const [sceneLoading3D, setSceneLoading3D] = useState<boolean>(false);
   const [peopleDrawerOpen, setPeopleDrawerOpen] = useState<boolean>(false);
   const [minimapOpen, setMinimapOpen] = useState<boolean>(() => isDesktopViewport());
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   const canvasContainerRef = useRef<HTMLDivElement | null>(null);
-  const sceneRef = useRef<HarborSceneController | null>(null);
+  const sceneRef = useRef<HarborSceneHandle | null>(null);
   const toastTimerRef = useRef<number | null>(null);
   const boardingTimerRef = useRef<number | null>(null);
   const reducedMotionRef = useRef<boolean>(reducedMotion);
+  const qualityTierRef = useRef<QualityTier>(qualityTier);
+  const userSelectedQualityRef = useRef<boolean>(userSelectedQuality);
+  const shipDisplayPrefsRef = useRef<ShipDisplayPrefsMap>(shipDisplayPrefs);
+
+  const decorativeById = useMemo(() => buildDecorativeShipMap(), []);
 
   useEffect(() => {
     reducedMotionRef.current = reducedMotion;
   }, [reducedMotion]);
 
-  const showPreviewBlockedToast = useCallback((featureLabel: string) => {
-    setToastMessage(`${PREVIEW_SGW_ONLY_TOAST} — ${featureLabel}`);
+  useEffect(() => {
+    qualityTierRef.current = qualityTier;
+  }, [qualityTier]);
+
+  useEffect(() => {
+    userSelectedQualityRef.current = userSelectedQuality;
+  }, [userSelectedQuality]);
+
+  useEffect(() => {
+    shipDisplayPrefsRef.current = shipDisplayPrefs;
+  }, [shipDisplayPrefs]);
+
+  const showToast = useCallback((message: string) => {
+    setToastMessage(message);
     if (toastTimerRef.current !== null) {
       window.clearTimeout(toastTimerRef.current);
     }
@@ -158,6 +224,13 @@ export function App() {
       toastTimerRef.current = null;
     }, TOAST_DURATION_MS);
   }, []);
+
+  const showPreviewBlockedToast = useCallback(
+    (featureLabel: string) => {
+      showToast(`${PREVIEW_SGW_ONLY_TOAST} — ${featureLabel}`);
+    },
+    [showToast],
+  );
 
   useEffect(() => {
     return () => {
@@ -169,10 +242,17 @@ export function App() {
   useEffect(() => {
     return subscribeReducedMotion((nextReduced) => {
       setReducedMotion(nextReduced);
-      if (nextReduced) {
-        setLowSpecMode(true);
-      }
     });
+  }, []);
+
+  useEffect(() => {
+    const onResize = () => {
+      if (!isDesktopViewport()) {
+        setMinimapOpen(false);
+      }
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
   }, []);
 
   // Refresh relative "n분 전" clock while disconnected
@@ -227,6 +307,117 @@ export function App() {
     );
   }, [mappedShips, shipsById]);
 
+  // Build OBB collision footprints for ALL business ships + decorative vessels
+  const buildAllShipColliders = useCallback(
+    (prefs: ShipDisplayPrefsMap): ShipFootprintCollider[] => {
+      const colliders: ShipFootprintCollider[] = [];
+      for (const ship of shipsByIdRef.current.values()) {
+        const defaultYawDeg = 90;
+        const yawDeg = prefs[ship.id]?.yawDeg ?? defaultYawDeg;
+        colliders.push({
+          id: ship.id,
+          centerX: ship.berthX,
+          centerZ: ship.berthZ,
+          halfLength: 14.2,
+          halfBeam: 5.4,
+          yawDeg,
+        });
+      }
+      for (const spec of HOME_HARBOR_DECORATIVE_VESSELS) {
+        const yawDeg = prefs[spec.id]?.yawDeg ?? spec.defaultYawDeg;
+        colliders.push({
+          id: spec.id,
+          centerX: spec.x,
+          centerZ: spec.z,
+          halfLength: spec.halfLength,
+          halfBeam: spec.halfBeam,
+          yawDeg,
+        });
+      }
+      return colliders;
+    },
+    [],
+  );
+
+  const handleRenameShip = useCallback(
+    (shipId: string, rawName: string): { ok: boolean; reason?: string } => {
+      const res = applyShipCustomName(shipDisplayPrefsRef.current, shipId, rawName);
+      if (!res.ok) {
+        return { ok: false, reason: res.reason };
+      }
+      setShipDisplayPrefs(res.next);
+      saveShipDisplayPrefs(res.next);
+      showToast(res.cleared ? '선박 이름을 원래 이름으로 되돌렸습니다.' : '선박 표시 이름을 저장했습니다.');
+      return { ok: true };
+    },
+    [showToast],
+  );
+
+  const tryApplyShipRotation = useCallback(
+    (shipId: string, nextYawDeg: number) => {
+      const prefs = shipDisplayPrefsRef.current;
+      const allColliders = buildAllShipColliders(prefs);
+      const targetCollider = allColliders.find((c) => c.id === shipId);
+      if (!targetCollider) return;
+
+      const others = allColliders.filter((c) => c.id !== shipId);
+      const check = checkShipRotationCollision(targetCollider, nextYawDeg, others);
+      if (!check.ok) {
+        setRotationWarning(check.reason);
+        showToast(check.reason);
+        return;
+      }
+
+      setRotationWarning(null);
+      const next = applyShipCustomYaw(prefs, shipId, nextYawDeg);
+      setShipDisplayPrefs(next);
+      saveShipDisplayPrefs(next);
+    },
+    [buildAllShipColliders, showToast],
+  );
+
+  const getShipCurrentYawDeg = useCallback(
+    (shipId: string, prefs: ShipDisplayPrefsMap): number => {
+      const saved = prefs[shipId]?.yawDeg;
+      if (typeof saved === 'number' && Number.isFinite(saved)) return saved;
+      const biz = shipsByIdRef.current.get(shipId);
+      if (biz) return 90;
+      const deco = decorativeById.get(shipId);
+      if (deco) return deco.defaultYawDeg;
+      return 0;
+    },
+    [decorativeById],
+  );
+
+  const handleRotateShipStep = useCallback(
+    (shipId: string, deltaSteps: number) => {
+      const currentDeg = getShipCurrentYawDeg(shipId, shipDisplayPrefsRef.current);
+      const nextDeg = stepShipYawDegrees(currentDeg, deltaSteps);
+      tryApplyShipRotation(shipId, nextDeg);
+    },
+    [getShipCurrentYawDeg, tryApplyShipRotation],
+  );
+
+  const handleRotateShipAbsolute = useCallback(
+    (shipId: string, nextYawDeg: number) => {
+      tryApplyShipRotation(shipId, nextYawDeg);
+    },
+    [tryApplyShipRotation],
+  );
+
+  const handleSnapShipParallel = useCallback(
+    (shipId: string) => {
+      const currentDeg = getShipCurrentYawDeg(shipId, shipDisplayPrefsRef.current);
+      const biz = shipsByIdRef.current.get(shipId);
+      const deco = decorativeById.get(shipId);
+      const cx = biz ? biz.berthX : deco ? deco.x : 0;
+      const cz = biz ? biz.berthZ : deco ? deco.z : 20;
+      const snappedDeg = computeQuayParallelSnapYawDeg(cx, cz, currentDeg);
+      tryApplyShipRotation(shipId, snappedDeg);
+    },
+    [decorativeById, getShipCurrentYawDeg, tryApplyShipRotation],
+  );
+
   // Atomic project boarding / switching flow (clears previous project cache in 1 transition)
   const startBoardingShip = useCallback((shipId: string) => {
     const ship = shipsByIdRef.current.get(shipId);
@@ -238,6 +429,7 @@ export function App() {
 
     const isReduced = reducedMotionRef.current;
     setPeopleDrawerOpen(false);
+    setRotationWarning(null);
     setProjectSession((prev) =>
       transitionProjectSessionState(prev, {
         type: 'BOARD_OR_SWITCH_SHIP',
@@ -266,6 +458,7 @@ export function App() {
       window.clearTimeout(boardingTimerRef.current);
       boardingTimerRef.current = null;
     }
+    setRotationWarning(null);
     setProjectSession((prev) =>
       transitionProjectSessionState(prev, { type: 'DISEMBARK' }),
     );
@@ -297,9 +490,30 @@ export function App() {
       const ship = shipsById.get(snap.targetId);
       return ship ? { kind: 'ship', ship, anchor: snap.anchor } : null;
     }
+    if (snap.kind === 'decorative-ship') {
+      const deco = decorativeById.get(snap.targetId);
+      return deco ? { kind: 'decorative-ship', ship: deco, anchor: snap.anchor } : null;
+    }
     const person = peopleBySub.get(snap.targetId);
     return person ? { kind: 'person', person, anchor: snap.anchor } : null;
-  }, [projectSession.radialTarget, shipsById, peopleBySub]);
+  }, [projectSession.radialTarget, shipsById, decorativeById, peopleBySub]);
+
+  // Clear rotation warning when popup closes or target switches
+  useEffect(() => {
+    setRotationWarning(null);
+  }, [projectSession.radialTarget?.targetId, projectSession.radialTarget?.kind]);
+
+  // Highlight selected/boarded ship with glowing 3D LiDAR point-cloud scan effect (#10)
+  const activeBoardedShip = projectSession.panelShipSnapshot;
+  useEffect(() => {
+    const selectedId =
+      radialTarget?.kind === 'ship'
+        ? radialTarget.ship.id
+        : radialTarget?.kind === 'decorative-ship'
+          ? radialTarget.ship.id
+          : activeBoardedShip?.id ?? null;
+    sceneRef.current?.setSelectedShipId(selectedId);
+  }, [radialTarget, activeBoardedShip]);
 
   // Keyboard shortcuts: E / Enter to board nearby ship; Escape to disembark or close overlays
   useEffect(() => {
@@ -325,7 +539,6 @@ export function App() {
 
       if (inInput) return;
 
-      // Ignore Enter when focused on a button/link/minimap so native activation runs cleanly
       const isInteractiveFocus =
         target &&
         (target.tagName === 'BUTTON' ||
@@ -345,7 +558,13 @@ export function App() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [boardingState, projectSession.selectedPersonSub, projectSession.radialTarget, startBoardingShip, handleDisembark]);
+  }, [
+    boardingState,
+    projectSession.selectedPersonSub,
+    projectSession.radialTarget,
+    startBoardingShip,
+    handleDisembark,
+  ]);
 
   const loadProjects = useCallback(
     async (forceRefresh = false) => {
@@ -519,11 +738,13 @@ export function App() {
   );
 
   // Keep 3D canvas mounted while in 3D mode OR while waiting for `webglcontextrestored`.
-  // Bumping `webglState.retryNonce` ("3D 를 다시 시도") cleanly disposes and recreates the renderer.
+  // Dynamically imports Three.js + HarborSceneController in the background so the initial screen
+  // (auth gate, HUD, 2D list) renders immediately with zero Three.js in the entry bundle.
   const shouldKeep3DMounted =
     authStatus === 'authenticated' &&
     webglSupported &&
-    (webglState.viewMode === '3d' || webglState.contextHealth === 'lost');
+    (webglState.viewMode === '3d' ||
+      (webglState.contextHealth === 'lost' && webglState.fallbackReason === 'context_lost'));
 
   useEffect(() => {
     if (!shouldKeep3DMounted) {
@@ -531,83 +752,134 @@ export function App() {
         sceneRef.current.dispose();
         sceneRef.current = null;
       }
+      setSceneReady3D(false);
+      setSceneLoading3D(false);
       setLabels([]);
       return;
     }
 
-    const container = canvasContainerRef.current;
-    if (!container) return;
+    let cancelled = false;
+    let mountedController: HarborSceneHandle | null = null;
+    setSceneLoading3D(true);
+    setSceneReady3D(false);
 
-    const controller = new HarborSceneController(
-      container,
-      {
-        onShipClicked: (projectId, screenPos) => {
-          if (shipsByIdRef.current.has(projectId)) {
-            setProjectSession((prev) =>
-              transitionProjectSessionState(prev, {
-                type: 'OPEN_RADIAL',
-                target: { kind: 'ship', targetId: projectId, anchor: screenPos },
-              }),
-            );
-          }
-        },
-        onPersonClicked: (sub, screenPos) => {
-          if (peopleBySubRef.current.has(sub)) {
-            setProjectSession((prev) =>
-              transitionProjectSessionState(prev, {
-                type: 'OPEN_RADIAL',
-                target: { kind: 'person', targetId: sub, anchor: screenPos },
-              }),
-            );
-          }
-        },
-        onPortalClicked: (portalId) => {
-          handlePortalNavigate(portalId);
-        },
-        onLabelsUpdated: (nextLabels) => {
-          setLabels(nextLabels);
-        },
-        onPlayerPoseUpdated: (pose) => {
-          setPlayerPose((prev) => {
-            if (Math.hypot(prev.x - pose.x, prev.z - pose.z) < 0.08) return prev;
-            return pose;
-          });
-        },
-        onRenderMetricsUpdated: (metrics) => {
-          if (import.meta.env.DEV) {
-            setRenderMetrics(metrics);
-          }
-        },
-        onContextLost: () => {
-          setProjectSession((prev) =>
-            transitionProjectSessionState(prev, { type: 'CLOSE_RADIAL' }),
-          );
-          setWebglState((prev) =>
-            transitionWebGLViewState(prev, { type: 'CONTEXT_LOST' }),
-          );
-        },
-        onContextRestored: () => {
-          setWebglState((prev) =>
-            transitionWebGLViewState(prev, { type: 'CONTEXT_RESTORED' }),
-          );
-        },
-      },
-      { lowSpec: lowSpecMode, reducedMotion, darkTheme },
-    );
+    void loadHarborSceneModule()
+      .then(({ HarborSceneController }) => {
+        if (cancelled) return;
+        const container = canvasContainerRef.current;
+        if (!container) return;
 
-    sceneRef.current = controller;
-    controller.setProjects(Array.from(shipsByIdRef.current.values()));
-    controller.setPeople(Array.from(peopleBySubRef.current.values()));
+        const controller = new HarborSceneController(
+          container,
+          {
+            onShipClicked: (projectId, screenPos) => {
+              if (shipsByIdRef.current.has(projectId)) {
+                setProjectSession((prev) =>
+                  transitionProjectSessionState(prev, {
+                    type: 'OPEN_RADIAL',
+                    target: { kind: 'ship', targetId: projectId, anchor: screenPos },
+                  }),
+                );
+              }
+            },
+            onDecorativeShipClicked: (ship, screenPos) => {
+              setProjectSession((prev) =>
+                transitionProjectSessionState(prev, {
+                  type: 'OPEN_RADIAL',
+                  target: { kind: 'decorative-ship', targetId: ship.id, anchor: screenPos },
+                }),
+              );
+            },
+            onPersonClicked: (sub, screenPos) => {
+              if (peopleBySubRef.current.has(sub)) {
+                setProjectSession((prev) =>
+                  transitionProjectSessionState(prev, {
+                    type: 'OPEN_RADIAL',
+                    target: { kind: 'person', targetId: sub, anchor: screenPos },
+                  }),
+                );
+              }
+            },
+            onPortalClicked: (portalId) => {
+              handlePortalNavigate(portalId);
+            },
+            onLabelsUpdated: (nextLabels) => {
+              setLabels(nextLabels);
+            },
+            onPlayerPoseUpdated: (pose) => {
+              setPlayerPose((prev) => {
+                if (Math.hypot(prev.x - pose.x, prev.z - pose.z) < 0.08) return prev;
+                return pose;
+              });
+            },
+            onCameraTargetUpdated: (target) => {
+              setCameraWorldTarget((prev) => {
+                if (Math.hypot(prev.x - target.x, prev.z - target.z) < 0.25) return prev;
+                return target;
+              });
+            },
+            onRenderMetricsUpdated: (metrics) => {
+              if (import.meta.env.DEV) {
+                setRenderMetrics(metrics);
+              }
+            },
+            onQualityAutoDowngraded: (nextTier) => {
+              setQualityTier(nextTier);
+              showToast('프레임 안정화를 위해 3D 그래픽 품질을 보통(중)으로 조정했습니다.');
+            },
+            onContextLost: () => {
+              setProjectSession((prev) =>
+                transitionProjectSessionState(prev, { type: 'CLOSE_RADIAL' }),
+              );
+              setWebglState((prev) =>
+                transitionWebGLViewState(prev, { type: 'CONTEXT_LOST' }),
+              );
+            },
+            onContextRestored: () => {
+              setWebglState((prev) =>
+                transitionWebGLViewState(prev, { type: 'CONTEXT_RESTORED' }),
+              );
+            },
+          },
+          {
+            qualityTier: qualityTierRef.current,
+            userSelectedQuality: userSelectedQualityRef.current,
+            lowSpec: qualityTierRef.current === 'low',
+            reducedMotion: reducedMotionRef.current,
+            darkTheme,
+            shipDisplayPrefs: shipDisplayPrefsRef.current,
+          },
+        );
+
+        mountedController = controller;
+        sceneRef.current = controller;
+        controller.setProjects(Array.from(shipsByIdRef.current.values()));
+        controller.setPeople(Array.from(peopleBySubRef.current.values()));
+        controller.setShipDisplayPrefs(shipDisplayPrefsRef.current);
+        setSceneLoading3D(false);
+        setSceneReady3D(true);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setSceneLoading3D(false);
+        setSceneReady3D(false);
+        setWebglState((prev) => transitionWebGLViewState(prev, { type: 'LOAD_FAILED' }));
+      });
 
     return () => {
-      controller.dispose();
-      if (sceneRef.current === controller) {
-        sceneRef.current = null;
+      cancelled = true;
+      if (mountedController) {
+        mountedController.dispose();
+        if (sceneRef.current === mountedController) {
+          sceneRef.current = null;
+        }
       }
+      setSceneReady3D(false);
+      setSceneLoading3D(false);
     };
-  }, [shouldKeep3DMounted, webglState.retryNonce, handlePortalNavigate]);
+  }, [shouldKeep3DMounted, webglState.retryNonce, handlePortalNavigate, showToast]);
 
-  // Sync dynamic ships & people into 3D scene
+  // Sync dynamic ships, people, quality tier, display prefs, reduced motion, theme into 3D scene
   useEffect(() => {
     sceneRef.current?.setProjects(mappedShips);
   }, [mappedShips]);
@@ -617,8 +889,12 @@ export function App() {
   }, [mappedPeople]);
 
   useEffect(() => {
-    sceneRef.current?.setLowSpecMode(lowSpecMode);
-  }, [lowSpecMode]);
+    sceneRef.current?.setQualityTier(qualityTier, userSelectedQuality);
+  }, [qualityTier, userSelectedQuality]);
+
+  useEffect(() => {
+    sceneRef.current?.setShipDisplayPrefs(shipDisplayPrefs);
+  }, [shipDisplayPrefs]);
 
   useEffect(() => {
     sceneRef.current?.setReducedMotion(reducedMotion);
@@ -627,6 +903,73 @@ export function App() {
   useEffect(() => {
     sceneRef.current?.setThemeMode(darkTheme);
   }, [darkTheme]);
+
+  // Dev-only inspection hook for automated visual & performance QA (stripped in prod build)
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const win = window as unknown as Record<string, unknown>;
+    win.__METASGW_QA__ = {
+      getMetrics: () => sceneRef.current?.getRenderMetrics() ?? null,
+      setQualityTier: (tier: QualityTier) => {
+        setUserSelectedQuality(true);
+        setQualityTier(tier);
+        sceneRef.current?.setQualityTier(tier, true);
+      },
+      setThemeMode: (dark: boolean) => {
+        setDarkTheme(dark);
+        sceneRef.current?.setThemeMode(dark);
+      },
+      panTo: (x: number, z: number) => {
+        sceneRef.current?.panCameraToWorld(x, z);
+      },
+      returnHome: () => {
+        sceneRef.current?.returnToHomeHarbor();
+      },
+      openShipPopup: (shipId: string) => {
+        if (shipsByIdRef.current.has(shipId)) {
+          setProjectSession((prev) =>
+            transitionProjectSessionState(prev, {
+              type: 'OPEN_RADIAL',
+              target: { kind: 'ship', targetId: shipId, anchor: { x: 640, y: 400 } },
+            }),
+          );
+        } else if (decorativeById.has(shipId)) {
+          setProjectSession((prev) =>
+            transitionProjectSessionState(prev, {
+              type: 'OPEN_RADIAL',
+              target: { kind: 'decorative-ship', targetId: shipId, anchor: { x: 640, y: 400 } },
+            }),
+          );
+        }
+      },
+      closePopup: () => {
+        setProjectSession((prev) =>
+          transitionProjectSessionState(prev, { type: 'CLOSE_RADIAL' }),
+        );
+      },
+      renameShip: (shipId: string, name: string) => handleRenameShip(shipId, name),
+      rotateShipStep: (shipId: string, steps: number) => handleRotateShipStep(shipId, steps),
+      snapShipParallel: (shipId: string) => handleSnapShipParallel(shipId),
+    };
+    return () => {
+      delete win.__METASGW_QA__;
+    };
+  }, [decorativeById, handleRenameShip, handleRotateShipStep, handleSnapShipParallel]);
+
+  const handleSelectQualityTier = useCallback((nextTier: QualityTier) => {
+    setUserSelectedQuality(true);
+    setQualityTier(nextTier);
+    sceneRef.current?.setQualityTier(nextTier, true);
+  }, []);
+
+  const handleToggleLowSpec = useCallback(() => {
+    setUserSelectedQuality(true);
+    setQualityTier((prev) => {
+      const next: QualityTier = prev === 'low' ? 'high' : 'low';
+      sceneRef.current?.setQualityTier(next, true);
+      return next;
+    });
+  }, []);
 
   const handleCycleCamera = useCallback(() => {
     setCameraPreset((prev) => {
@@ -654,6 +997,23 @@ export function App() {
 
   const handleFocusPerson3D = useCallback((sub: string) => {
     sceneRef.current?.focusPerson(sub);
+  }, []);
+
+  const handleSelectPersonFromDrawer = useCallback((person: HarborPerson) => {
+    setPeopleDrawerOpen(false);
+    setProjectSession((prev) =>
+      transitionProjectSessionState(prev, {
+        type: 'OPEN_RADIAL',
+        target: {
+          kind: 'person',
+          targetId: person.sub,
+          anchor: {
+            x: typeof window !== 'undefined' ? Math.round(window.innerWidth * 0.5) : 640,
+            y: typeof window !== 'undefined' ? Math.round(window.innerHeight * 0.45) : 360,
+          },
+        },
+      }),
+    );
   }, []);
 
   const handleRetry3D = useCallback(() => {
@@ -684,6 +1044,16 @@ export function App() {
             }),
           );
         }
+      } else if (label.id.startsWith('deco-ship:')) {
+        const id = label.id.slice(10);
+        if (decorativeById.has(id)) {
+          setProjectSession((prev) =>
+            transitionProjectSessionState(prev, {
+              type: 'OPEN_RADIAL',
+              target: { kind: 'decorative-ship', targetId: id, anchor: { x: label.x, y: label.y } },
+            }),
+          );
+        }
       } else if (label.id.startsWith('person:')) {
         const sub = label.id.slice(7);
         if (peopleBySubRef.current.has(sub)) {
@@ -699,7 +1069,7 @@ export function App() {
         handlePortalNavigate(portalId);
       }
     },
-    [handlePortalNavigate],
+    [decorativeById, handlePortalNavigate],
   );
 
   const handleTogglePeopleDrawer = useCallback(() => {
@@ -727,12 +1097,23 @@ export function App() {
     [mappedPeople],
   );
 
-  const activeBoardedShip = projectSession.panelShipSnapshot;
-
   const nearbyBoardableShip = useMemo(() => {
     if (boardingState.phase !== 'harbor' || !boardingState.nearbyShipId) return null;
     return shipsById.get(boardingState.nearbyShipId) ?? null;
   }, [boardingState, shipsById]);
+
+  const activeRadialShipId =
+    radialTarget?.kind === 'ship'
+      ? radialTarget.ship.id
+      : radialTarget?.kind === 'decorative-ship'
+        ? radialTarget.ship.id
+        : null;
+  const activeRadialCustomName = activeRadialShipId
+    ? shipDisplayPrefs[activeRadialShipId]?.customName
+    : undefined;
+  const activeRadialYawDeg = activeRadialShipId
+    ? getShipCurrentYawDeg(activeRadialShipId, shipDisplayPrefs)
+    : undefined;
 
   if (authStatus !== 'authenticated' || !currentUser) {
     return (
@@ -756,6 +1137,7 @@ export function App() {
         webglSupported={webglSupported}
         webglContextLost={webglContextLost}
         lowSpecMode={lowSpecMode}
+        qualityTier={qualityTier}
         darkTheme={darkTheme}
         cameraPreset={cameraPreset}
         onlineCount={onlineCount}
@@ -771,7 +1153,8 @@ export function App() {
         }}
         onRetry3D={handleRetry3D}
         onToggleViewMode={handleToggleViewMode}
-        onToggleLowSpec={() => setLowSpecMode((v) => !v)}
+        onToggleLowSpec={handleToggleLowSpec}
+        onSelectQualityTier={handleSelectQualityTier}
         onToggleTheme={() => setDarkTheme((v) => !v)}
         onCycleCamera={handleCycleCamera}
         onZoom={(factor) => sceneRef.current?.zoomBy(factor)}
@@ -783,8 +1166,12 @@ export function App() {
 
       {shouldKeep3DMounted && (
         <div
-          className={viewMode === '3d' ? 'relative h-screen w-screen overflow-hidden' : 'hidden'}
-          aria-hidden={viewMode !== '3d'}
+          className={
+            viewMode === '3d' && sceneReady3D
+              ? 'relative h-screen w-screen overflow-hidden'
+              : 'hidden'
+          }
+          aria-hidden={viewMode !== '3d' || !sceneReady3D}
         >
           <div
             ref={canvasContainerRef}
@@ -792,12 +1179,43 @@ export function App() {
             aria-label="메타SGW 3D 항구 캔버스"
           />
 
-          {/* Projected interactive 3D labels (hidden while onboard dialog is open) */}
-          {viewMode === '3d' && boardingState.phase === 'harbor' && (
+          {/* Clean minimal 3D markers: tiny dot by default, short tooltip ONLY on hover (Requirements #6 & #18) */}
+          {viewMode === '3d' && sceneReady3D && boardingState.phase === 'harbor' && (
             <div className="pointer-events-none fixed inset-0 z-20 overflow-hidden">
               {labels.map((label) => {
                 if (!label.visible) return null;
-                if (label.y < 84 || label.y > window.innerHeight - 96) return null;
+                if (!label.showText) {
+                  const dotColor =
+                    label.kind === 'ship'
+                      ? label.accentHex ?? '#38bdf8'
+                      : label.kind === 'deco-ship'
+                        ? '#fbbf24'
+                        : label.kind === 'person-online'
+                          ? '#34d399'
+                          : label.kind === 'person-partner'
+                            ? '#f59e0b'
+                            : '#94a3b8';
+                  return (
+                    <button
+                      key={label.id}
+                      type="button"
+                      onClick={() => handleLabelClick(label)}
+                      aria-label={label.subText ? `${label.text} (${label.subText})` : label.text}
+                      title={label.text}
+                      style={{
+                        transform: `translate3d(${Math.round(label.x)}px, ${Math.round(label.y)}px, 0) translate(-50%, -50%)`,
+                      }}
+                      className="pointer-events-auto absolute left-0 top-0 flex h-5 w-5 items-center justify-center rounded-full transition hover:scale-125 focus-visible:outline-2 focus-visible:outline-sky-400"
+                    >
+                      <span
+                        className="h-2.5 w-2.5 rounded-full border border-white/90 shadow-md"
+                        style={{ backgroundColor: dotColor }}
+                        aria-hidden="true"
+                      />
+                    </button>
+                  );
+                }
+
                 return (
                   <button
                     key={label.id}
@@ -807,35 +1225,33 @@ export function App() {
                     style={{
                       transform: `translate3d(${Math.round(label.x)}px, ${Math.round(label.y)}px, 0) translate(-50%, -100%)`,
                     }}
-                    className={`pointer-events-auto absolute left-0 top-0 rounded-lg border px-2 py-1 text-left shadow-lg transition hover:scale-105 focus-visible:outline-2 focus-visible:outline-sky-400 ${
+                    className={`pointer-events-auto absolute left-0 top-0 inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px] font-semibold leading-tight shadow-md transition hover:scale-105 focus-visible:outline-2 focus-visible:outline-sky-400 whitespace-nowrap ${
                       label.kind === 'ship'
-                        ? 'border-sky-400/70 bg-slate-950/94 text-white'
-                        : label.kind === 'portal'
-                          ? 'border-slate-500/70 bg-slate-950/92 text-slate-100'
-                          : label.kind === 'person-partner'
-                            ? 'border-amber-400/70 bg-slate-950/92 text-amber-100'
-                            : label.kind === 'person-online'
-                              ? 'border-emerald-400/70 bg-slate-950/92 text-emerald-100'
-                              : 'border-slate-600/70 bg-slate-950/88 text-slate-200'
+                        ? 'border-sky-400/70 bg-slate-950/90 text-white'
+                        : label.kind === 'deco-ship'
+                          ? 'border-amber-400/70 bg-slate-950/90 text-amber-100'
+                          : label.kind === 'portal'
+                            ? 'border-slate-500/70 bg-slate-950/88 text-slate-100'
+                            : label.kind === 'person-partner'
+                              ? 'border-amber-400/70 bg-slate-950/90 text-amber-100'
+                              : label.kind === 'person-online'
+                                ? 'border-emerald-400/70 bg-slate-950/90 text-emerald-100'
+                                : 'border-slate-600/70 bg-slate-950/85 text-slate-200'
                     }`}
                   >
-                    <div className="flex items-center gap-1.5 text-xs font-bold leading-tight whitespace-nowrap">
-                      {label.kind === 'person-online' && (
-                        <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" aria-hidden="true" />
-                      )}
-                      {label.kind === 'ship' && label.accentHex && (
-                        <span
-                          className="h-2 w-2 rounded-full"
-                          style={{ backgroundColor: label.accentHex }}
-                          aria-hidden="true"
-                        />
-                      )}
-                      <span>{label.text}</span>
-                    </div>
+                    {label.kind === 'person-online' && (
+                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shrink-0" aria-hidden="true" />
+                    )}
+                    {(label.kind === 'ship' || label.kind === 'deco-ship') && label.accentHex && (
+                      <span
+                        className="h-2 w-2 rounded-full shrink-0"
+                        style={{ backgroundColor: label.accentHex }}
+                        aria-hidden="true"
+                      />
+                    )}
+                    <span>{label.text}</span>
                     {label.subText && (
-                      <div className="text-[10px] text-slate-300 whitespace-nowrap">
-                        {label.subText}
-                      </div>
+                      <span className="text-[10px] font-normal text-slate-300">{label.subText}</span>
                     )}
                   </button>
                 );
@@ -845,36 +1261,44 @@ export function App() {
 
           {/* Proximity Boarding Prompt: E: 승선 / Enter */}
           {viewMode === '3d' &&
+            sceneReady3D &&
             nearbyBoardableShip &&
             boardingState.phase === 'harbor' &&
             !selectedPerson &&
+            !radialTarget &&
             !peopleDrawerOpen && (
               <div className="pointer-events-none fixed inset-x-0 bottom-28 sm:bottom-20 z-30 flex justify-center px-3">
                 <button
                   type="button"
                   data-testid="boarding-proximity-prompt"
                   onClick={() => startBoardingShip(nearbyBoardableShip.id)}
-                  aria-label={`${nearbyBoardableShip.name} (${nearbyBoardableShip.code}) 승선하기 (단축키 E 또는 Enter)`}
+                  aria-label={`${shipDisplayPrefs[nearbyBoardableShip.id]?.customName ?? nearbyBoardableShip.name} (${nearbyBoardableShip.code}) 승선하기 (단축키 E 또는 Enter)`}
                   className="pointer-events-auto inline-flex items-center gap-2 rounded-xl border border-sky-400/70 bg-sky-700 px-4 py-2 text-xs sm:text-sm font-bold text-white shadow-2xl hover:bg-sky-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-300"
                 >
                   <Anchor className="h-4 w-4 shrink-0" aria-hidden="true" />
                   <span>
-                    E: 승선 / Enter — {nearbyBoardableShip.name} ({nearbyBoardableShip.code})
+                    E: 승선 / Enter —{' '}
+                    {shipDisplayPrefs[nearbyBoardableShip.id]?.customName ?? nearbyBoardableShip.name} (
+                    {nearbyBoardableShip.code})
                   </span>
                 </button>
               </div>
             )}
 
-          {viewMode === '3d' && (
+          {viewMode === '3d' && sceneReady3D && (
             <>
               <HarborMiniMap
                 open={minimapOpen && boardingState.phase === 'harbor'}
                 ships={mappedShips}
                 people={mappedPeople}
                 playerPose={playerPose}
+                cameraWorldTarget={cameraWorldTarget}
+                shipDisplayPrefs={shipDisplayPrefs}
                 activeShipId={projectSession.minimapSelectedShipId ?? nearbyBoardableShip?.id ?? null}
                 onSelectShip={handleSelectShipFromUi}
                 onWalkToQuay={(x, z) => sceneRef.current?.walkToPoint(x, z)}
+                onPanToWorld={(x, z) => sceneRef.current?.panCameraToWorld(x, z)}
+                onReturnHome={() => sceneRef.current?.returnToHomeHarbor()}
                 onClose={() => setMinimapOpen(false)}
               />
 
@@ -884,11 +1308,7 @@ export function App() {
                 people={mappedPeople}
                 onClose={() => setPeopleDrawerOpen(false)}
                 onFocusPerson={handleFocusPerson3D}
-                onSelectPerson={(p) =>
-                  setProjectSession((prev) =>
-                    transitionProjectSessionState(prev, { type: 'SELECT_PERSON', sub: p.sub }),
-                  )
-                }
+                onSelectPerson={handleSelectPersonFromDrawer}
                 onPreviewLinkBlocked={showPreviewBlockedToast}
               />
 
@@ -919,7 +1339,7 @@ export function App() {
         </div>
       )}
 
-      {(viewMode === '2d' || !webglSupported) && (
+      {(viewMode === '2d' || !webglSupported || !sceneReady3D) && (
         <AccessibleListView
           user={currentUser}
           runtimeEnv={runtimeEnv}
@@ -930,6 +1350,8 @@ export function App() {
           people={mappedPeople}
           webglSupported={webglSupported}
           webglContextLost={webglContextLost}
+          webglFallbackReason={webglState.fallbackReason}
+          sceneLoading3D={sceneLoading3D}
           onRetry3D={handleRetry3D}
           onRefreshProjects={() => {
             if (isPreviewMode) {
@@ -948,10 +1370,19 @@ export function App() {
         />
       )}
 
+      {/* Single Unified Entity Action Popup (Ship / Decorative Ship / Person — Requirements #6, #15, #18, #19) */}
       <RadialActionMenu
         target={radialTarget}
         runtimeEnv={runtimeEnv}
+        customShipName={activeRadialCustomName}
+        currentYawDeg={activeRadialYawDeg}
+        rotationWarning={rotationWarning}
         onBoardShip={startBoardingShip}
+        onFocusPerson3D={viewMode === '3d' ? handleFocusPerson3D : undefined}
+        onRenameShip={handleRenameShip}
+        onRotateShipStep={handleRotateShipStep}
+        onRotateShipAbsolute={handleRotateShipAbsolute}
+        onSnapShipParallel={handleSnapShipParallel}
         onPreviewLinkBlocked={showPreviewBlockedToast}
         onClose={() =>
           setProjectSession((prev) =>
@@ -963,16 +1394,20 @@ export function App() {
       <OnboardPanel
         key={activeBoardedShip ? `${activeBoardedShip.id}:${projectSession.projectSessionEpoch}` : 'harbor'}
         ship={activeBoardedShip}
+        customDisplayName={
+          activeBoardedShip ? shipDisplayPrefs[activeBoardedShip.id]?.customName : undefined
+        }
         phase={boardingState.phase}
         runtimeEnv={runtimeEnv}
         onPreviewLinkBlocked={showPreviewBlockedToast}
         onDisembark={handleDisembark}
       />
 
+      {/* PersonActionModal only used from 2D list view so 3D never stacks 2 overlapping popups */}
       <PersonActionModal
-        person={selectedPerson}
+        person={viewMode === '2d' ? selectedPerson : null}
         runtimeEnv={runtimeEnv}
-        canFocus3D={viewMode === '3d' && webglSupported && !webglContextLost}
+        canFocus3D={false}
         onFocus3D={handleFocusPerson3D}
         onPreviewLinkBlocked={showPreviewBlockedToast}
         onClose={() =>

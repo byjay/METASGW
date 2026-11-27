@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import type { RenderBatchMetrics } from './harborSceneTypes';
 
 function prepareBakedGeometry(
   sourceGeo: THREE.BufferGeometry,
@@ -66,6 +67,7 @@ export function mergeSolidSubtreeToVertexColors(
     if ((obj as THREE.InstancedMesh).isInstancedMesh) return;
     const mesh = obj as THREE.Mesh;
     if (!mesh.isMesh || !mesh.visible) return;
+    if (mesh.userData.isMergedBatch) return;
     if (Array.isArray(mesh.material)) return;
     if (!isMergeableSolidStandardMaterial(mesh.material)) return;
     candidates.push({ mesh, mat: mesh.material });
@@ -101,6 +103,8 @@ export function mergeSolidSubtreeToVertexColors(
   const mergedMesh = new THREE.Mesh(mergedGeo, mergedMat);
   mergedMesh.castShadow = options?.castShadow ?? !options?.lowSpec;
   mergedMesh.receiveShadow = options?.receiveShadow ?? !options?.lowSpec;
+  mergedMesh.userData.isMergedBatch = true;
+  mergedMesh.userData.mergedSourceCount = candidates.length;
   root.add(mergedMesh);
 
   // Clean up unreferenced per-part geometries
@@ -139,5 +143,156 @@ export function mergeColoredParts(
     throw new Error('Failed to merge avatar part geometries');
   }
   merged.computeBoundingSphere();
+  merged.userData.mergedSourceCount = parts.length;
   return merged;
+}
+
+export interface InstancedRingSpec {
+  x: number;
+  y: number;
+  z: number;
+  colorHex: number;
+  scale?: number;
+}
+
+/**
+ * Batches multiple ground/water status rings (presence rings, ship rings, boarding markers)
+ * into a single InstancedMesh with per-instance color so N rings render in 1 Draw Call.
+ */
+export function createInstancedRingBatch(
+  specs: readonly InstancedRingSpec[],
+  options: {
+    innerRadius: number;
+    outerRadius: number;
+    segments?: number;
+    opacity?: number;
+    polygonOffset?: boolean;
+  },
+): THREE.InstancedMesh | null {
+  if (specs.length === 0) return null;
+
+  const geo = new THREE.RingGeometry(
+    options.innerRadius,
+    options.outerRadius,
+    options.segments ?? 24,
+  );
+  geo.rotateX(-Math.PI / 2);
+
+  const mat = new THREE.MeshBasicMaterial({
+    color: 0xffffff,
+    transparent: true,
+    opacity: options.opacity ?? 0.82,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+    ...(options.polygonOffset
+      ? {
+          polygonOffset: true,
+          polygonOffsetFactor: -3,
+          polygonOffsetUnits: -3,
+        }
+      : {}),
+  });
+
+  const inst = new THREE.InstancedMesh(geo, mat, specs.length);
+  const dummy = new THREE.Object3D();
+  const tmpColor = new THREE.Color();
+
+  specs.forEach((spec, idx) => {
+    const sc = spec.scale ?? 1;
+    dummy.position.set(spec.x, spec.y, spec.z);
+    dummy.rotation.set(0, 0, 0);
+    dummy.scale.set(sc, 1, sc);
+    dummy.updateMatrix();
+    inst.setMatrixAt(idx, dummy.matrix);
+    tmpColor.setHex(spec.colorHex);
+    inst.setColorAt(idx, tmpColor);
+  });
+
+  inst.instanceMatrix.needsUpdate = true;
+  if (inst.instanceColor) inst.instanceColor.needsUpdate = true;
+  inst.computeBoundingSphere();
+  return inst;
+}
+
+/**
+ * Batches multiple NPC contact shadow quads into a single InstancedMesh (N shadows -> 1 Draw Call).
+ */
+export function createInstancedContactShadowBatch(
+  positions: ReadonlyArray<{ x: number; y: number; z: number; scale?: number }>,
+  contactShadowTex: THREE.CanvasTexture,
+): THREE.InstancedMesh | null {
+  if (positions.length === 0) return null;
+
+  const geo = new THREE.PlaneGeometry(1.6, 1.6);
+  geo.rotateX(-Math.PI / 2);
+
+  const mat = new THREE.MeshBasicMaterial({
+    map: contactShadowTex,
+    transparent: true,
+    opacity: 0.68,
+    depthWrite: false,
+  });
+
+  const inst = new THREE.InstancedMesh(geo, mat, positions.length);
+  const dummy = new THREE.Object3D();
+
+  positions.forEach((pos, idx) => {
+    const sc = pos.scale ?? 1.22;
+    dummy.position.set(pos.x, pos.y + 0.03, pos.z);
+    dummy.rotation.set(0, 0, 0);
+    dummy.scale.set(sc, 1, sc);
+    dummy.updateMatrix();
+    inst.setMatrixAt(idx, dummy.matrix);
+  });
+
+  inst.instanceMatrix.needsUpdate = true;
+  inst.computeBoundingSphere();
+  return inst;
+}
+
+/**
+ * Collects live Draw Call batching statistics across a Three.js scene graph
+ * (InstancedMesh counts/instances + merged static vertex-color meshes + saved draw calls).
+ */
+export function collectSceneBatchStats(root: THREE.Object3D): RenderBatchMetrics {
+  let instancedMeshCount = 0;
+  let totalInstances = 0;
+  let mergedMeshCount = 0;
+  let mergedSourceMeshes = 0;
+  let savedDrawCalls = 0;
+
+  root.traverse((obj) => {
+    if (!obj.visible) return;
+    if ((obj as THREE.InstancedMesh).isInstancedMesh) {
+      const inst = obj as THREE.InstancedMesh;
+      if (inst.count > 0) {
+        instancedMeshCount += 1;
+        totalInstances += inst.count;
+        savedDrawCalls += Math.max(0, inst.count - 1);
+      }
+      return;
+    }
+
+    const mesh = obj as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    const sourceCount =
+      typeof mesh.userData.mergedSourceCount === 'number'
+        ? mesh.userData.mergedSourceCount
+        : typeof mesh.geometry?.userData?.mergedSourceCount === 'number'
+          ? (mesh.geometry.userData.mergedSourceCount as number)
+          : 0;
+    if (sourceCount > 1) {
+      mergedMeshCount += 1;
+      mergedSourceMeshes += sourceCount;
+      savedDrawCalls += sourceCount - 1;
+    }
+  });
+
+  return {
+    instancedMeshCount,
+    totalInstances,
+    mergedMeshCount,
+    mergedSourceMeshes,
+    savedDrawCalls,
+  };
 }

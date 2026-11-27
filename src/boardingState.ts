@@ -101,7 +101,7 @@ export function findNearestBoardableShip(
  * cross-project data can NEVER mix for even a single frame.
  */
 export interface ProjectRadialSnapshot {
-  kind: 'person' | 'ship';
+  kind: 'person' | 'ship' | 'decorative-ship';
   targetId: string;
   anchor: { x: number; y: number };
 }

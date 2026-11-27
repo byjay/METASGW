@@ -141,7 +141,114 @@ describe('webglContextState: automatic 2D fallback on webglcontextlost and recov
     );
     assert.ok(sceneSrc.includes("addEventListener('webglcontextlost'"));
     assert.ok(sceneSrc.includes("addEventListener('webglcontextrestored'"));
-    assert.ok(sceneSrc.includes('removeEventListener(\'webglcontextlost\''));
-    assert.ok(sceneSrc.includes('removeEventListener(\'webglcontextrestored\''));
+    assert.ok(sceneSrc.includes("removeEventListener('webglcontextlost'"));
+    assert.ok(sceneSrc.includes("removeEventListener('webglcontextrestored'"));
+  });
+
+  it('stays in 2D mode on LOAD_FAILED (3D dynamic import error) and allows explicit RETRY_3D', () => {
+    const initial = createInitialWebGLViewState(true, '3d');
+    const failed = transitionWebGLViewState(initial, { type: 'LOAD_FAILED' });
+    assert.equal(failed.viewMode, '2d');
+    assert.equal(failed.contextHealth, 'lost');
+    assert.equal(failed.fallbackReason, 'load_failed');
+    assert.equal(failed.autoRestoreTo3D, false);
+
+    // Context restored should not flip back when failure was chunk load error
+    const stillIn2D = transitionWebGLViewState(failed, { type: 'CONTEXT_RESTORED' });
+    assert.equal(stillIn2D.viewMode, '2d');
+
+    // Explicit user retry bumps retryNonce and returns to 3D mode
+    const retried = transitionWebGLViewState(failed, { type: 'RETRY_3D' });
+    assert.equal(retried.viewMode, '3d');
+    assert.equal(retried.contextHealth, 'active');
+    assert.equal(retried.fallbackReason, null);
+    assert.equal(retried.retryNonce, 1);
+  });
+
+  it('renders load_failed fallback notice and 3D background-loading banner in AccessibleListView', () => {
+    const user = getPreviewDemoUser();
+    const noop = () => {};
+
+    const loadFailedHtml = renderToStaticMarkup(
+      React.createElement(AccessibleListView, {
+        user,
+        runtimeEnv: 'preview',
+        ships: [],
+        projectsState: 'ready',
+        projectsMessage: '',
+        people: [],
+        webglSupported: true,
+        webglContextLost: true,
+        webglFallbackReason: 'load_failed',
+        onRetry3D: noop,
+        onRefreshProjects: noop,
+        onSelectShip: noop,
+        onSelectPerson: noop,
+        onPreviewLinkBlocked: noop,
+      }),
+    );
+    assert.ok(loadFailedHtml.includes('data-testid="webgl-context-lost-banner"'));
+    assert.ok(loadFailedHtml.includes('3D 항구 모듈을 불러오지 못해 2D 목록 모드를 유지합니다.'));
+    assert.ok(loadFailedHtml.includes(WEBGL_RETRY_BUTTON_LABEL));
+
+    const loadingHtml = renderToStaticMarkup(
+      React.createElement(AccessibleListView, {
+        user,
+        runtimeEnv: 'preview',
+        ships: [],
+        projectsState: 'ready',
+        projectsMessage: '',
+        people: [],
+        webglSupported: true,
+        sceneLoading3D: true,
+        onRefreshProjects: noop,
+        onSelectShip: noop,
+        onSelectPerson: noop,
+        onPreviewLinkBlocked: noop,
+      }),
+    );
+    assert.ok(loadingHtml.includes('data-testid="scene-3d-loading-banner"'));
+  });
+
+  it('recovers cleanly on retry when dynamic 3D chunk loader fails first', async () => {
+    const { loadHarborSceneModule, resetHarborSceneModuleCache } = await import(
+      './scene/harborSceneLoader'
+    );
+    resetHarborSceneModuleCache();
+    let attempts = 0;
+    const flakyImporter = async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        throw new Error('simulated chunk load failure');
+      }
+      return { HarborSceneController: class {} } as unknown as Awaited<
+        ReturnType<typeof loadHarborSceneModule>
+      >;
+    };
+
+    await assert.rejects(() => loadHarborSceneModule(flakyImporter), /simulated chunk load failure/);
+    const mod = await loadHarborSceneModule(flakyImporter);
+    assert.equal(attempts, 2);
+    assert.ok(mod.HarborSceneController);
+  });
+
+  it('keeps initial entry chunk (App.tsx & HudTopBar.tsx) free of static three/HarborScene imports', () => {
+    const appSrc = readFileSync(resolve(process.cwd(), 'src', 'App.tsx'), 'utf8');
+    const hudSrc = readFileSync(resolve(process.cwd(), 'src', 'components', 'HudTopBar.tsx'), 'utf8');
+
+    assert.equal(/from\s+['"]three['"]/.test(appSrc), false, 'App.tsx must not statically import three');
+    assert.equal(
+      /from\s+['"]\.\/scene\/HarborScene['"]/.test(appSrc),
+      false,
+      'App.tsx must load HarborScene dynamically via harborSceneLoader',
+    );
+    assert.ok(appSrc.includes('loadHarborSceneModule'), 'App.tsx must use loadHarborSceneModule');
+    assert.equal(/from\s+['"]three['"]/.test(hudSrc), false, 'HudTopBar.tsx must not import three');
+    assert.equal(
+      /from\s+['"]\.\.\/scene\/HarborScene['"]/.test(hudSrc),
+      false,
+      'HudTopBar.tsx must import types from harborSceneTypes instead of HarborScene',
+    );
   });
 });
+

@@ -6,15 +6,14 @@ import {
   ExternalLink,
   Eye,
   FolderKanban,
-  Gauge,
   LogOut,
   Mail,
   MessageSquare,
-  Moon,
   Radar,
   RefreshCw,
   Shield,
   Sun,
+  Sunset,
   WifiOff,
   ZoomIn,
   ZoomOut,
@@ -24,7 +23,7 @@ import { getErrorDescriptor, type AppErrorCode } from '../errorCatalog';
 import { formatDisconnectedBanner } from '../mapping';
 import { PREVIEW_DEMO_BANNER_TEXT, type RuntimeEnv } from '../runtimeEnv';
 import type { SgwUser } from '../sgwAdapter';
-import type { CameraPreset, RenderMetrics } from '../scene/HarborScene';
+import type { CameraPreset, QualityTier, RenderMetrics } from '../scene/harborSceneTypes';
 import { WEBGL_RETRY_BUTTON_LABEL } from '../webglContextState';
 
 export interface HudTopBarProps {
@@ -34,6 +33,7 @@ export interface HudTopBarProps {
   webglSupported: boolean;
   webglContextLost?: boolean;
   lowSpecMode: boolean;
+  qualityTier?: QualityTier;
   darkTheme: boolean;
   cameraPreset: CameraPreset;
   onlineCount: number;
@@ -48,6 +48,7 @@ export interface HudTopBarProps {
   onRetry3D?: () => void;
   onToggleViewMode: (next: '3d' | '2d') => void;
   onToggleLowSpec: () => void;
+  onSelectQualityTier?: (tier: QualityTier) => void;
   onToggleTheme: () => void;
   onCycleCamera: () => void;
   onZoom: (factor: number) => void;
@@ -61,6 +62,12 @@ const CAMERA_LABEL: Record<CameraPreset, string> = {
   quay: '안벽 근접',
 };
 
+const QUALITY_OPTIONS: ReadonlyArray<{ tier: QualityTier; label: string; aria: string }> = [
+  { tier: 'high', label: '고', aria: '3D 그래픽 품질 높음(고)으로 설정' },
+  { tier: 'medium', label: '중', aria: '3D 그래픽 품질 보통(중)으로 설정' },
+  { tier: 'low', label: '저', aria: '3D 그래픽 품질 낮음(저)으로 설정' },
+];
+
 export const HudTopBar: React.FC<HudTopBarProps> = ({
   user,
   runtimeEnv,
@@ -68,6 +75,7 @@ export const HudTopBar: React.FC<HudTopBarProps> = ({
   webglSupported,
   webglContextLost = false,
   lowSpecMode,
+  qualityTier,
   darkTheme,
   cameraPreset,
   onlineCount,
@@ -82,6 +90,7 @@ export const HudTopBar: React.FC<HudTopBarProps> = ({
   onRetry3D,
   onToggleViewMode,
   onToggleLowSpec,
+  onSelectQualityTier,
   onToggleTheme,
   onCycleCamera,
   onZoom,
@@ -89,6 +98,7 @@ export const HudTopBar: React.FC<HudTopBarProps> = ({
   onPreviewLinkBlocked,
 }) => {
   const isPreview = runtimeEnv === 'preview';
+  const effectiveTier: QualityTier = qualityTier ?? (lowSpecMode ? 'low' : 'high');
   const safeHref = (url: string) => (isSafeNavigationUrl(url) ? url : '/');
   const disconnectedText = syncDisconnected
     ? formatDisconnectedBanner(lastSyncedAtMs, nowMs ?? Date.now())
@@ -101,6 +111,14 @@ export const HudTopBar: React.FC<HudTopBarProps> = ({
     if (isPreview) {
       e.preventDefault();
       onPreviewLinkBlocked(label);
+    }
+  };
+
+  const handleTierSelect = (tier: QualityTier) => {
+    if (onSelectQualityTier) {
+      onSelectQualityTier(tier);
+    } else if ((tier === 'low') !== lowSpecMode) {
+      onToggleLowSpec();
     }
   };
 
@@ -161,16 +179,16 @@ export const HudTopBar: React.FC<HudTopBarProps> = ({
             </span>
           )}
 
-          {/* Dev-only renderer.info performance telemetry */}
+          {/* Dev-only renderer.info & resolution/chunk telemetry */}
           {showDebugMetrics && renderMetrics && viewMode === '3d' && (
             <span
               data-testid="hud-debug-metrics"
-              className="hidden md:inline-flex items-center gap-1 rounded-md border border-slate-700 bg-slate-900 px-2 py-0.5 font-mono text-[10px] font-semibold text-slate-200 whitespace-nowrap tabular-nums"
-              title={`Draw Calls: ${renderMetrics.drawCalls} / Triangles: ${renderMetrics.triangles} / Geometries: ${renderMetrics.geometries} / Textures: ${renderMetrics.textures}`}
+              className="hidden lg:inline-flex items-center gap-1 rounded-md border border-slate-700 bg-slate-900 px-2 py-0.5 font-mono text-[10px] font-semibold text-slate-200 whitespace-nowrap tabular-nums"
+              title={`Quality: ${renderMetrics.qualityTier} / Canvas: ${renderMetrics.canvasWidth}x${renderMetrics.canvasHeight} / Chunks: ${renderMetrics.activeChunks} / DC: ${renderMetrics.drawCalls} (Peak ${renderMetrics.peakDrawCalls}) / Frame: ${renderMetrics.frameTimeMs}ms`}
             >
               <Activity className="h-3 w-3 text-sky-400 shrink-0" aria-hidden="true" />
               <span>
-                DC {renderMetrics.drawCalls} · {renderMetrics.fps}fps
+                {renderMetrics.canvasWidth}×{renderMetrics.canvasHeight} · DC {renderMetrics.drawCalls} · {renderMetrics.activeChunks}ch · {renderMetrics.fps}fps
               </span>
             </span>
           )}
@@ -225,7 +243,6 @@ export const HudTopBar: React.FC<HudTopBarProps> = ({
             <Mail className="h-3.5 w-3.5 text-indigo-400" aria-hidden="true" />
             bmail
           </a>
-          {/* 표시용 분기 — 실제 접근 제어는 SGW 서버 응답(401/403)이 판정 */}
           {!user.isPartner && (
             <a
               href={safeHref(SGW_PORTAL_LINKS.admin)}
@@ -238,7 +255,7 @@ export const HudTopBar: React.FC<HudTopBarProps> = ({
           )}
         </nav>
 
-        {/* Right: Hybrid Toggle [3D 맵 | 빠른 레이더], Low-Spec, Camera, Theme, Logout */}
+        {/* Right: Hybrid Toggle [3D 맵 | 빠른 레이더], 3-Tier Quality [고|중|저], Camera, Day/Sunset, Logout */}
         <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
           <div
             className="inline-flex rounded-lg border border-slate-700 bg-slate-900 p-0.5"
@@ -293,21 +310,34 @@ export const HudTopBar: React.FC<HudTopBarProps> = ({
 
           {viewMode === '3d' && (
             <>
-              <button
-                type="button"
-                onClick={onToggleLowSpec}
-                aria-label={lowSpecMode ? '저사양 모드 끄기' : '저사양 모드 켜기'}
-                aria-pressed={lowSpecMode}
-                className={`hidden sm:inline-flex items-center gap-1 rounded-lg border px-2 py-1.5 text-xs font-semibold transition focus-visible:outline-2 focus-visible:outline-sky-400 ${
-                  lowSpecMode
-                    ? 'border-emerald-400/60 bg-emerald-950/70 text-emerald-100'
-                    : 'border-slate-700 bg-slate-900 text-slate-200 hover:bg-slate-800'
-                }`}
-                title="저사양 모드: 단순 재질·그림자·물결 셰이더 비활성화"
+              {/* 3-Tier Quality Switcher [고 | 중 | 저] (Requirement #1) */}
+              <div
+                className="hidden sm:inline-flex items-center rounded-lg border border-slate-700 bg-slate-900 p-0.5"
+                role="group"
+                aria-label="3D 그래픽 품질 등급 (고·중·저)"
+                data-testid="quality-tier-group"
               >
-                <Gauge className="h-3.5 w-3.5" aria-hidden="true" />
-                <span className="hidden lg:inline">{lowSpecMode ? '저사양 ON' : '저사양'}</span>
-              </button>
+                {QUALITY_OPTIONS.map((opt) => {
+                  const active = effectiveTier === opt.tier;
+                  return (
+                    <button
+                      key={opt.tier}
+                      type="button"
+                      data-testid={`quality-tier-${opt.tier}`}
+                      aria-label={opt.aria}
+                      aria-pressed={active}
+                      onClick={() => handleTierSelect(opt.tier)}
+                      className={`min-h-[28px] rounded-md px-2 py-0.5 text-[11px] font-bold transition focus-visible:outline-2 focus-visible:outline-sky-400 ${
+                        active
+                          ? 'bg-sky-700 text-white'
+                          : 'text-slate-300 hover:bg-slate-800 hover:text-white'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  );
+                })}
+              </div>
 
               <button
                 type="button"
@@ -340,16 +370,23 @@ export const HudTopBar: React.FC<HudTopBarProps> = ({
             </>
           )}
 
+          {/* Day (낮) / Sunset (해질녘) Atmosphere Toggle */}
           <button
             type="button"
             onClick={onToggleTheme}
-            aria-label={darkTheme ? '주간 테마로 전환' : '야간 테마로 전환'}
-            className="hidden sm:inline-flex rounded-lg border border-slate-700 bg-slate-900 p-1.5 text-slate-200 hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-sky-400"
+            aria-label={darkTheme ? '낮 조명으로 전환' : '해질녘 조명으로 전환'}
+            className="hidden sm:inline-flex items-center gap-1 rounded-lg border border-slate-700 bg-slate-900 px-2 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-sky-400"
           >
             {darkTheme ? (
-              <Sun className="h-3.5 w-3.5 text-amber-300" aria-hidden="true" />
+              <>
+                <Sun className="h-3.5 w-3.5 text-amber-300" aria-hidden="true" />
+                <span className="hidden xl:inline">낮</span>
+              </>
             ) : (
-              <Moon className="h-3.5 w-3.5 text-sky-300" aria-hidden="true" />
+              <>
+                <Sunset className="h-3.5 w-3.5 text-amber-400" aria-hidden="true" />
+                <span className="hidden xl:inline">해질녘</span>
+              </>
             )}
           </button>
 

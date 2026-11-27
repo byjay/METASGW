@@ -1,22 +1,11 @@
 import * as THREE from 'three';
-
-export interface OceanUniforms {
-  [uniform: string]: THREE.IUniform<unknown>;
-  uTime: THREE.IUniform<number>;
-  uSunDir: THREE.IUniform<THREE.Vector3>;
-  uSunColor: THREE.IUniform<THREE.Color>;
-  uDeepColor: THREE.IUniform<THREE.Color>;
-  uShallowColor: THREE.IUniform<THREE.Color>;
-  uSkyHorizonColor: THREE.IUniform<THREE.Color>;
-  uFogColor: THREE.IUniform<THREE.Color>;
-  uFogDensity: THREE.IUniform<number>;
-  uWaveHeight: THREE.IUniform<number>;
-}
+import { Water } from 'three/addons/objects/Water.js';
+import type { QualityTier } from './harborSceneTypes';
 
 export interface OceanWaterSystem {
-  mesh: THREE.Mesh;
-  uniforms: OceanUniforms;
-  update: (elapsed: number) => void;
+  group: THREE.Group;
+  update: (elapsed: number, cameraTargetX?: number, cameraTargetZ?: number) => void;
+  setQualityTier: (tier: QualityTier, reducedMotion: boolean) => void;
   setLowSpec: (lowSpec: boolean) => void;
   isLowSpec: () => boolean;
   setAtmosphere: (opts: {
@@ -44,23 +33,17 @@ const OCEAN_VERTEX_SHADER = /* glsl */ `
     float dHx = 0.0;
     float dHz = 0.0;
 
-    float p1 = dot(p, vec2(0.11, 0.08)) + t * 1.15;
-    float a1 = 0.15 * uWaveHeight;
+    float p1 = dot(p, vec2(0.09, 0.07)) + t * 1.1;
+    float a1 = 0.14 * uWaveHeight;
     h += sin(p1) * a1;
-    dHx += cos(p1) * a1 * 0.11;
-    dHz += cos(p1) * a1 * 0.08;
+    dHx += cos(p1) * a1 * 0.09;
+    dHz += cos(p1) * a1 * 0.07;
 
-    float p2 = dot(p, vec2(-0.17, 0.14)) + t * 1.52;
-    float a2 = 0.09 * uWaveHeight;
+    float p2 = dot(p, vec2(-0.15, 0.12)) + t * 1.45;
+    float a2 = 0.08 * uWaveHeight;
     h += sin(p2) * a2;
-    dHx += cos(p2) * a2 * (-0.17);
-    dHz += cos(p2) * a2 * 0.14;
-
-    float p3 = dot(p, vec2(0.28, -0.24)) + t * 2.15;
-    float a3 = 0.05 * uWaveHeight;
-    h += sin(p3) * a3;
-    dHx += cos(p3) * a3 * 0.28;
-    dHz += cos(p3) * a3 * (-0.24);
+    dHx += cos(p2) * a2 * (-0.15);
+    dHz += cos(p2) * a2 * 0.12;
 
     return vec3(h, dHx, dHz);
   }
@@ -124,54 +107,34 @@ const OCEAN_FRAGMENT_SHADER = /* glsl */ `
     vec3 V = normalize(cameraPosition - vWorldPos);
     vec3 L = normalize(uSunDir);
 
-    // Animated micro-capillary ripple normals
-    vec2 uvA = vWorldPos.xz * 0.22 + vec2(uTime * 0.14, uTime * 0.09);
-    vec2 uvB = vWorldPos.xz * 0.44 - vec2(uTime * 0.18, -uTime * 0.12);
+    vec2 uvA = vWorldPos.xz * 0.2 + vec2(uTime * 0.14, uTime * 0.09);
+    vec2 uvB = vWorldPos.xz * 0.4 - vec2(uTime * 0.18, -uTime * 0.12);
     float n1 = fbm(uvA);
     float n2 = fbm(uvB);
     float nx = (n1 - 0.5) * 0.14 + (n2 - 0.5) * 0.09;
     float nz = (fbm(uvA + vec2(4.2, 1.9)) - 0.5) * 0.14 + (fbm(uvB + vec2(2.7, 6.1)) - 0.5) * 0.09;
     vec3 N = normalize(vWorldNormal + vec3(nx, 0.0, nz));
 
-    // Bathymetric depth gradient near North quay (z ~ -2.5), piers (x ~ +/-75.5), & breakwaters (x ~ +/-96)
+    // Shoreline depth gradient & animated foam along infinite coastline (z ~ -2.5)
     float quayDist = abs(vWorldPos.z + 2.5);
-    float pierDist = min(abs(vWorldPos.x + 75.5), abs(vWorldPos.x - 75.5));
-    float bwDist = min(abs(vWorldPos.x + 96.5), abs(vWorldPos.x - 96.5));
-    float shallowQuay = smoothstep(46.0, 1.2, quayDist) * step(-102.0, vWorldPos.x) * step(vWorldPos.x, 102.0);
-    float shallowPier = smoothstep(24.0, 1.2, pierDist) * step(-4.0, vWorldPos.z) * step(vWorldPos.z, 42.0) * 0.88;
-    float shallowBw = smoothstep(18.0, 1.0, bwDist) * step(-6.0, vWorldPos.z) * step(vWorldPos.z, 46.0) * 0.72;
-    float shallowFactor = max(max(shallowQuay, shallowPier), shallowBw);
-    vec3 baseWater = mix(uDeepColor, uShallowColor, shallowFactor * 0.82);
+    float shallowFactor = smoothstep(42.0, 1.0, quayDist);
+    vec3 baseWater = mix(uDeepColor, uShallowColor, shallowFactor * 0.78);
 
-    // Subsurface turquoise crest scatter
-    float sss = pow(clamp(dot(V, -L + N * 0.35), 0.0, 1.0), 3.0) * vWaveCrest;
-    baseWater += vec3(0.05, 0.27, 0.31) * sss * 0.65;
-
-    // Schlick Fresnel sky reflection
     float cosTheta = clamp(dot(N, V), 0.0, 1.0);
-    float fresnel = 0.02 + 0.98 * pow(1.0 - cosTheta, 4.6);
-    vec3 reflectedSky = mix(uSkyHorizonColor * 0.84, uSkyHorizonColor * 1.12, clamp(1.0 - N.y, 0.0, 1.0));
+    float fresnel = 0.02 + 0.98 * pow(1.0 - cosTheta, 4.4);
+    vec3 reflectedSky = mix(uSkyHorizonColor * 0.85, uSkyHorizonColor * 1.12, clamp(1.0 - N.y, 0.0, 1.0));
     vec3 color = mix(baseWater, reflectedSky, fresnel * 0.74);
 
-    // Sun specular path & sparkle
     vec3 H = normalize(L + V);
     float ndh = max(dot(N, H), 0.0);
-    color += uSunColor * (pow(ndh, 52.0) * 0.22 + pow(ndh, 360.0) * 1.15);
+    color += uSunColor * (pow(ndh, 52.0) * 0.22 + pow(ndh, 320.0) * 1.05);
 
-    // Animated quay wall, pier, and breakwater foam lapping line
-    float surge = sin(uTime * 1.65 + vWorldPos.x * 0.16) * 0.45;
-    float foamNoise = fbm(vWorldPos.xz * 0.72 + vec2(uTime * 0.28, -uTime * 0.2));
-    float quayFoamLine = smoothstep(3.2 + surge, 0.0, abs(vWorldPos.z + 2.5)) * step(-94.0, vWorldPos.x) * step(vWorldPos.x, 94.0);
-    float westPierFoam = smoothstep(2.8 + surge * 0.7, 0.0, abs(vWorldPos.x + 75.5)) * step(-3.0, vWorldPos.z) * step(vWorldPos.z, 39.0);
-    float eastPierFoam = smoothstep(2.8 + surge * 0.7, 0.0, abs(vWorldPos.x - 75.5)) * step(-3.0, vWorldPos.z) * step(vWorldPos.z, 39.0);
-    float bwFoam = smoothstep(3.4, 0.0, bwDist) * step(-4.0, vWorldPos.z) * step(vWorldPos.z, 44.0) * 0.8;
-    float shoreline = clamp(quayFoamLine + westPierFoam * 0.88 + eastPierFoam * 0.88 + bwFoam, 0.0, 1.0);
-    float foamMask = clamp(shoreline * smoothstep(0.24, 0.66, foamNoise + 0.28), 0.0, 0.9);
+    float surge = sin(uTime * 1.55 + vWorldPos.x * 0.14) * 0.4;
+    float foamNoise = fbm(vWorldPos.xz * 0.7 + vec2(uTime * 0.25, -uTime * 0.18));
+    float quayFoamLine = smoothstep(3.0 + surge, 0.0, quayDist);
+    float foamMask = clamp(quayFoamLine * smoothstep(0.24, 0.66, foamNoise + 0.26), 0.0, 0.85);
     color = mix(color, vec3(0.95, 0.98, 1.0), foamMask);
 
-    color *= (0.95 + 0.09 * n1);
-
-    // Horizon exponential fog blend
     float dist = length(cameraPosition - vWorldPos);
     float fogFactor = 1.0 - exp(-pow(dist * uFogDensity, 2.0));
     color = mix(color, uFogColor, clamp(fogFactor, 0.0, 1.0));
@@ -180,20 +143,71 @@ const OCEAN_FRAGMENT_SHADER = /* glsl */ `
   }
 `;
 
-export function createMaritimeOcean(initialLowSpec: boolean): OceanWaterSystem {
-  const segs = initialLowSpec ? 32 : 76;
-  const geo = new THREE.PlaneGeometry(820, 820, segs, segs);
-  geo.rotateX(-Math.PI / 2);
+/**
+ * Creates a 3-tier infinite ocean system:
+ *   - 'high': Three.js `Water` planar mirror reflections + procedural normal-map waves (zero external CDN)
+ *   - 'medium': Custom GLSL Fresnel + depth gradient + coastline foam shader
+ *   - 'low': Lightweight Lambert ocean plane
+ * Automatically follows camera focus in 200m snapped increments for an endless horizon.
+ */
+export function createMaritimeOcean(
+  initialTier: QualityTier,
+  waterNormals: THREE.CanvasTexture,
+  initialReducedMotion = false,
+): OceanWaterSystem {
+  const group = new THREE.Group();
 
-  const uniforms: OceanUniforms = {
+  // 1) High-tier reflective Three.js Water (bundled locally, zero CDN!)
+  const waterGeo = new THREE.PlaneGeometry(3600, 3600);
+  const reflectiveWater = new Water(waterGeo, {
+    textureWidth: 512,
+    textureHeight: 512,
+    waterNormals,
+    sunDirection: new THREE.Vector3(0.55, 0.65, 0.5).normalize(),
+    sunColor: 0xffe8c4,
+    waterColor: 0x063052,
+    distortionScale: 1.15,
+    fog: true,
+  });
+  reflectiveWater.material.uniforms['size'].value = 18.0;
+  // Soften Fresnel sky glare so daylight ocean retains rich maritime blue while preserving real reflections
+  reflectiveWater.material.fragmentShader = reflectiveWater.material.fragmentShader.replace(
+    'vec3 scatter = max( 0.0, dot( surfaceNormal, eyeDirection ) ) * waterColor;',
+    'vec3 scatter = (0.35 + 0.65 * max( 0.0, dot( surfaceNormal, eyeDirection ) )) * waterColor * 1.45;',
+  ).replace(
+    'vec3 albedo = mix( ( sunColor * diffuseLight * 0.3 + scatter ) * getShadowMask(), ( vec3( 0.1 ) + reflectionSample * 0.9 + reflectionSample * specularLight ), reflectance);',
+    'vec3 albedo = mix( ( sunColor * diffuseLight * 0.32 + scatter ) * getShadowMask(), ( waterColor * 0.55 + reflectionSample * 0.58 + reflectionSample * specularLight * 0.65 ), clamp(reflectance * 0.72, 0.08, 0.62));',
+  );
+  reflectiveWater.rotation.x = -Math.PI / 2;
+  reflectiveWater.position.y = -0.04;
+  group.add(reflectiveWater);
+
+  // Subtle shoreline foam ribbon along the quay edge in High tier
+  const foamGeo = new THREE.PlaneGeometry(220, 4.2);
+  foamGeo.rotateX(-Math.PI / 2);
+  const foamMat = new THREE.MeshBasicMaterial({
+    color: 0xe6f4fb,
+    transparent: true,
+    opacity: 0.22,
+    depthWrite: false,
+  });
+  const shoreFoamMesh = new THREE.Mesh(foamGeo, foamMat);
+  shoreFoamMesh.position.set(0, 0.04, -0.5);
+  group.add(shoreFoamMesh);
+
+  // 2) Medium/Low fallback plane with custom GLSL shader or Lambert
+  const fallbackGeo = new THREE.PlaneGeometry(3200, 3200, 64, 64);
+  fallbackGeo.rotateX(-Math.PI / 2);
+
+  const uniforms = {
     uTime: { value: 0 },
-    uSunDir: { value: new THREE.Vector3(0.55, 0.36, -0.75).normalize() },
-    uSunColor: { value: new THREE.Color(0xfff0d4) },
+    uSunDir: { value: new THREE.Vector3(0.55, 0.65, 0.5).normalize() },
+    uSunColor: { value: new THREE.Color(0xfff8e7) },
     uDeepColor: { value: new THREE.Color(0x0c4a6e) },
-    uShallowColor: { value: new THREE.Color(0x117a96) },
-    uSkyHorizonColor: { value: new THREE.Color(0x9ec9e6) },
-    uFogColor: { value: new THREE.Color(0xc2d8ea) },
-    uFogDensity: { value: 0.002 },
+    uShallowColor: { value: new THREE.Color(0x137b96) },
+    uSkyHorizonColor: { value: new THREE.Color(0xa9d2ee) },
+    uFogColor: { value: new THREE.Color(0xc8dff2) },
+    uFogDensity: { value: 0.0012 },
     uWaveHeight: { value: 1.0 },
   };
 
@@ -205,29 +219,61 @@ export function createMaritimeOcean(initialLowSpec: boolean): OceanWaterSystem {
   });
 
   const lowSpecMat = new THREE.MeshLambertMaterial({
-    color: 0x0e5e8c,
+    color: 0x0e547c,
     side: THREE.FrontSide,
   });
 
-  const mesh = new THREE.Mesh(geo, initialLowSpec ? lowSpecMat : shaderMat);
-  mesh.position.y = -0.05;
-  mesh.renderOrder = 0;
+  const fallbackMesh: THREE.Mesh<THREE.PlaneGeometry, THREE.Material> = new THREE.Mesh(
+    fallbackGeo,
+    shaderMat,
+  );
+  fallbackMesh.position.y = -0.05;
+  group.add(fallbackMesh);
 
-  let lowSpecActive = initialLowSpec;
+  let currentTier: QualityTier = initialTier;
+  let reducedMotion = initialReducedMotion;
+
+  const syncVisibility = () => {
+    const useReflective = currentTier === 'high' && !reducedMotion;
+    reflectiveWater.visible = useReflective;
+    shoreFoamMesh.visible = useReflective;
+    fallbackMesh.visible = !useReflective;
+    if (!useReflective) {
+      fallbackMesh.material = currentTier === 'low' || reducedMotion ? lowSpecMat : shaderMat;
+    }
+  };
+  syncVisibility();
 
   return {
-    mesh,
-    uniforms,
-    update: (elapsed: number) => {
-      if (!lowSpecActive) {
+    group,
+    update: (elapsed: number, cameraTargetX = 0, cameraTargetZ = 0) => {
+      // Snap ocean center to 200m chunk grid around camera so water extends infinitely without jitter
+      const snapX = Math.round(cameraTargetX / 200) * 200;
+      const snapZ = Math.round(cameraTargetZ / 200) * 200;
+      reflectiveWater.position.x = snapX;
+      reflectiveWater.position.z = snapZ;
+      fallbackMesh.position.x = snapX;
+      fallbackMesh.position.z = snapZ;
+      shoreFoamMesh.position.x = snapX;
+
+      if (reducedMotion || currentTier === 'low') return;
+      if (reflectiveWater.visible) {
+        reflectiveWater.material.uniforms['time'].value = elapsed * 0.55;
+        shoreFoamMesh.position.z = -0.5 + Math.sin(elapsed * 1.4) * 0.35;
+      } else {
         uniforms.uTime.value = elapsed;
       }
     },
-    setLowSpec: (lowSpec: boolean) => {
-      lowSpecActive = lowSpec;
-      mesh.material = lowSpec ? lowSpecMat : shaderMat;
+    setQualityTier: (tier: QualityTier, nextReducedMotion: boolean) => {
+      currentTier = tier;
+      reducedMotion = nextReducedMotion;
+      syncVisibility();
     },
-    isLowSpec: () => lowSpecActive,
+    setLowSpec: (lowSpec: boolean) => {
+      currentTier = lowSpec ? 'low' : 'high';
+      syncVisibility();
+    },
+    isLowSpec: () => currentTier === 'low' || reducedMotion,
     setAtmosphere: (opts) => {
       uniforms.uSunDir.value.copy(opts.sunDir).normalize();
       uniforms.uSunColor.value.setHex(opts.sunColor);
@@ -237,9 +283,24 @@ export function createMaritimeOcean(initialLowSpec: boolean): OceanWaterSystem {
       uniforms.uFogColor.value.setHex(opts.fogColor);
       uniforms.uFogDensity.value = opts.fogDensity;
       lowSpecMat.color.setHex(opts.deepColor);
+
+      const wUniforms = reflectiveWater.material.uniforms;
+      if (wUniforms['sunDirection']) {
+        (wUniforms['sunDirection'].value as THREE.Vector3).copy(opts.sunDir).normalize();
+      }
+      if (wUniforms['sunColor']) {
+        (wUniforms['sunColor'].value as THREE.Color).setHex(opts.sunColor);
+      }
+      if (wUniforms['waterColor']) {
+        (wUniforms['waterColor'].value as THREE.Color).setHex(opts.deepColor);
+      }
     },
     dispose: () => {
-      geo.dispose();
+      waterGeo.dispose();
+      reflectiveWater.material.dispose();
+      foamGeo.dispose();
+      foamMat.dispose();
+      fallbackGeo.dispose();
       shaderMat.dispose();
       lowSpecMat.dispose();
     },

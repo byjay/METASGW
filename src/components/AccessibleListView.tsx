@@ -32,7 +32,7 @@ import { getErrorDescriptor, type AppErrorCode } from '../errorCatalog';
 import type { HarborPerson, HarborShip } from '../mapping';
 import type { RuntimeEnv } from '../runtimeEnv';
 import type { SgwUser } from '../sgwAdapter';
-import { WEBGL_RETRY_BUTTON_LABEL } from '../webglContextState';
+import { WEBGL_RETRY_BUTTON_LABEL, type WebGLFallbackReason } from '../webglContextState';
 
 export interface AccessibleListViewProps {
   user: SgwUser;
@@ -44,6 +44,8 @@ export interface AccessibleListViewProps {
   people: HarborPerson[];
   webglSupported: boolean;
   webglContextLost?: boolean;
+  webglFallbackReason?: WebGLFallbackReason;
+  sceneLoading3D?: boolean;
   onRetry3D?: () => void;
   onRefreshProjects: () => void;
   onSelectShip: (ship: HarborShip) => void;
@@ -90,6 +92,8 @@ export const AccessibleListView: React.FC<AccessibleListViewProps> = ({
   people,
   webglSupported,
   webglContextLost = false,
+  webglFallbackReason = null,
+  sceneLoading3D = false,
   onRetry3D,
   onRefreshProjects,
   onSelectShip,
@@ -175,6 +179,16 @@ export const AccessibleListView: React.FC<AccessibleListViewProps> = ({
       </a>
 
       <div className="mx-auto max-w-6xl space-y-5">
+        {sceneLoading3D && webglSupported && !webglContextLost && (
+          <div
+            role="status"
+            data-testid="scene-3d-loading-banner"
+            className="flex items-center justify-between gap-3 rounded-xl border border-sky-500/40 bg-sky-950/60 px-4 py-2.5 text-xs text-sky-100"
+          >
+            <span>3D 항구 화면을 백그라운드에서 불러오는 중입니다. 준비되기 전에도 2D 목록에서 모든 기능을 바로 사용할 수 있습니다.</span>
+          </div>
+        )}
+
         {webglContextLost && webglSupported && (
           <div
             role="alert"
@@ -184,9 +198,15 @@ export const AccessibleListView: React.FC<AccessibleListViewProps> = ({
             <div className="flex items-start gap-2.5 min-w-0">
               <AlertTriangle className="h-5 w-5 text-amber-300 shrink-0 mt-0.5" aria-hidden="true" />
               <div className="min-w-0">
-                <p className="font-bold text-white">3D 그래픽 연결이 일시 중단되어 2D 목록 모드로 전환되었습니다.</p>
+                <p className="font-bold text-white">
+                  {webglFallbackReason === 'load_failed'
+                    ? '3D 항구 모듈을 불러오지 못해 2D 목록 모드를 유지합니다.'
+                    : '3D 그래픽 연결이 일시 중단되어 2D 목록 모드로 전환되었습니다.'}
+                </p>
                 <p className="mt-0.5 text-xs text-amber-100">
-                  그래픽 장치가 복구되면 자동으로 3D 항구로 돌아가며, 아래 버튼으로 즉시 다시 시도할 수 있습니다.
+                  {webglFallbackReason === 'load_failed'
+                    ? '네트워크 또는 그래픽 초기화 오류로 3D 로딩에 실패했습니다. 2D 목록에서 모든 업무를 계속 이용할 수 있습니다.'
+                    : '그래픽 장치가 복구되면 자동으로 3D 항구로 돌아가며, 아래 버튼으로 즉시 다시 시도할 수 있습니다.'}
                 </p>
               </div>
             </div>

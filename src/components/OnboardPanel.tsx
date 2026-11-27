@@ -21,6 +21,7 @@ import type { RuntimeEnv } from '../runtimeEnv';
 
 export interface OnboardPanelProps {
   ship: HarborShip | null;
+  customDisplayName?: string;
   phase: 'harbor' | 'boarding' | 'onboard';
   runtimeEnv: RuntimeEnv;
   onPreviewLinkBlocked: (featureLabel: string) => void;
@@ -37,6 +38,7 @@ const STATUS_CHIP_CLASS: Record<HarborShip['statusTone'], string> = {
 
 export const OnboardPanel: React.FC<OnboardPanelProps> = ({
   ship,
+  customDisplayName,
   phase,
   runtimeEnv,
   onPreviewLinkBlocked,
@@ -45,6 +47,7 @@ export const OnboardPanel: React.FC<OnboardPanelProps> = ({
   if (!ship || phase === 'harbor') return null;
 
   const isPreview = runtimeEnv === 'preview';
+  const displayTitle = customDisplayName || ship.name;
 
   let sedmsHref = '/api/sedms-sso?return=%2Fprojects';
   try {
@@ -67,7 +70,7 @@ export const OnboardPanel: React.FC<OnboardPanelProps> = ({
       >
         <div className="inline-flex items-center gap-2.5 rounded-xl border border-sky-400/60 bg-slate-950/95 px-4 py-2.5 text-sm font-semibold text-white shadow-2xl">
           <Anchor className="h-4 w-4 text-sky-400" aria-hidden="true" />
-          <span>{ship.name} ({ship.code}) 승선 중...</span>
+          <span>{displayTitle} ({ship.code}) 승선 중...</span>
         </div>
       </div>
     );
@@ -110,8 +113,13 @@ export const OnboardPanel: React.FC<OnboardPanelProps> = ({
                 id="onboard-panel-title"
                 className="truncate text-base font-bold text-white"
               >
-                {ship.name}
+                {displayTitle}
               </h2>
+              {customDisplayName && customDisplayName !== ship.name && (
+                <p className="truncate text-[11px] text-sky-300">
+                  내 화면 표시 이름 · 원래 이름: {ship.name}
+                </p>
+              )}
             </div>
           </div>
 

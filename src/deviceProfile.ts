@@ -26,13 +26,48 @@ export interface DeviceCapabilitySignals {
   webgl: WebGLProbeResult;
 }
 
+export type QualityTier = 'high' | 'medium' | 'low';
+
 export interface DeviceProfileResult {
   recommendLowSpec: boolean;
+  initialQualityTier: QualityTier;
   reducedMotion: boolean;
   webglSupported: boolean;
   isSoftwareWebGL: boolean;
   initialViewMode: '3d' | '2d';
   reasons: LowSpecReason[];
+}
+
+/**
+ * Computes effective renderer pixel ratio strictly per 3-tier quality policy:
+ *   - 'high': full native DPR up to 2.0 (at dpr=1, canvas === 1:1 CSS size!)
+ *   - 'medium': native DPR up to 1.5 (never below 1.0)
+ *   - 'low': 0.75 resolution scale (ONLY tier that downscales canvas)
+ */
+export function resolvePixelRatioForQuality(tier: QualityTier, devicePixelRatio = 1): number {
+  const safeDpr = Number.isFinite(devicePixelRatio) && devicePixelRatio > 0 ? devicePixelRatio : 1;
+  if (tier === 'low') return 0.75;
+  if (tier === 'medium') return Math.max(1, Math.min(safeDpr, 1.5));
+  return Math.max(1, Math.min(safeDpr, 2));
+}
+
+/**
+ * Pure runtime auto-downgrade evaluator (Requirement #1):
+ * - Only runs if the user has NOT manually locked a quality tier.
+ * - After measuring the first 3 seconds of actual frame times, if avgFrameMs > 33ms
+ *   while on 'high', steps down ONE tier to 'medium' (never jumps straight to 'low').
+ */
+export function evaluateAutoQualityDowngrade(params: {
+  currentTier: QualityTier;
+  userLockedTier: boolean;
+  measuredElapsedMs: number;
+  avgFrameTimeMs: number;
+}): QualityTier {
+  if (params.userLockedTier) return params.currentTier;
+  if (params.currentTier !== 'high') return params.currentTier;
+  if (params.measuredElapsedMs < 3000) return params.currentTier;
+  if (params.avgFrameTimeMs > 33) return 'medium';
+  return 'high';
 }
 
 const SOFTWARE_RENDERER_RE =
@@ -91,7 +126,9 @@ export function readBrowserDeviceSignals(): DeviceCapabilitySignals {
 }
 
 /**
- * Pure decision function for default low-spec & 2D fallback modes.
+ * Pure decision function for default quality profile & 2D fallback modes.
+ * Per Requirement #1: default 3D graphics quality ALWAYS starts at 'high' (full 1:1+ resolution)
+ * and only steps down one notch to 'medium' if real 3-second frame timing exceeds 33ms.
  */
 export function detectDeviceProfile(signals?: DeviceCapabilitySignals): DeviceProfileResult {
   const s = signals ?? readBrowserDeviceSignals();
@@ -119,6 +156,7 @@ export function detectDeviceProfile(signals?: DeviceCapabilitySignals): DevicePr
 
   return {
     recommendLowSpec: reasons.length > 0,
+    initialQualityTier: 'high',
     reducedMotion: s.prefersReducedMotion,
     webglSupported: s.webgl.supported,
     isSoftwareWebGL: s.webgl.isSoftwareRenderer,

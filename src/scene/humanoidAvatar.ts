@@ -1,12 +1,29 @@
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
+import { VRMLoaderPlugin, type VRM } from '@pixiv/three-vrm';
 import { mergeColoredParts } from './meshBatching';
 
-export type AvatarActionState = 'idle' | 'run';
+export type AvatarActionState = 'idle' | 'run' | 'wave';
+export type AvatarLodLevel = 'detailed' | 'simple' | 'billboard';
 
 export interface BuiltHumanoidRig {
   group: THREE.Group;
   updateAnimation: (dt: number, elapsed: number, action: AvatarActionState, reducedMotion: boolean) => void;
+  updateLod: (cameraDistance: number) => AvatarLodLevel;
   dispose: () => void;
+}
+
+/**
+ * Pure distance-based LOD classifier for 3D avatars:
+ *   - Near (< 145m): detailed CC0 VRM / GLB / articulated 3D humanoid (realistic 1.75m height)
+ *   - Mid  (145m .. 220m): simplified low-poly silhouette
+ *   - Far  (>= 220m): tiny unobtrusive 2D billboard icon sprite (never blocks harbor scenery)
+ */
+export function resolveAvatarLodLevel(cameraDistance: number): AvatarLodLevel {
+  if (!Number.isFinite(cameraDistance) || cameraDistance < 145) return 'detailed';
+  if (cameraDistance < 220) return 'simple';
+  return 'billboard';
 }
 
 interface SharedAvatarGeos {
@@ -28,30 +45,34 @@ interface SharedAvatarGeos {
   thigh: THREE.CapsuleGeometry;
   shin: THREE.CapsuleGeometry;
   boot: THREE.BoxGeometry;
+  simpleBody: THREE.CapsuleGeometry;
+  simpleHead: THREE.SphereGeometry;
 }
 
 let _sharedGeo: SharedAvatarGeos | null = null;
 function getSharedGeos(): SharedAvatarGeos {
   if (_sharedGeo) return _sharedGeo;
   _sharedGeo = {
-    shadow: new THREE.PlaneGeometry(1.6, 1.6),
-    pelvis: new THREE.CylinderGeometry(0.21, 0.2, 0.22, 10),
-    belt: new THREE.CylinderGeometry(0.22, 0.22, 0.06, 10),
-    torsoUpper: new THREE.CylinderGeometry(0.24, 0.2, 0.44, 12),
-    vestOverlay: new THREE.BoxGeometry(0.46, 0.4, 0.3),
-    vestStripe: new THREE.BoxGeometry(0.48, 0.05, 0.31),
-    neck: new THREE.CylinderGeometry(0.068, 0.08, 0.12, 8),
-    head: new THREE.SphereGeometry(0.185, 14, 12),
-    eyeIris: new THREE.SphereGeometry(0.02, 6, 6),
-    hairCap: new THREE.SphereGeometry(0.194, 12, 10, 0, Math.PI * 2, 0, Math.PI * 0.6),
-    helmetDome: new THREE.SphereGeometry(0.212, 12, 10, 0, Math.PI * 2, 0, Math.PI * 0.56),
-    helmetBrim: new THREE.CylinderGeometry(0.228, 0.24, 0.024, 12),
-    upperArm: new THREE.CapsuleGeometry(0.06, 0.22, 4, 8),
-    forearm: new THREE.CapsuleGeometry(0.052, 0.2, 4, 8),
-    palm: new THREE.BoxGeometry(0.07, 0.08, 0.036),
-    thigh: new THREE.CapsuleGeometry(0.084, 0.3, 4, 8),
-    shin: new THREE.CapsuleGeometry(0.068, 0.29, 4, 8),
-    boot: new THREE.BoxGeometry(0.13, 0.12, 0.23),
+    shadow: new THREE.PlaneGeometry(1.3, 1.3),
+    pelvis: new THREE.CylinderGeometry(0.18, 0.17, 0.2, 10),
+    belt: new THREE.CylinderGeometry(0.19, 0.19, 0.05, 10),
+    torsoUpper: new THREE.CylinderGeometry(0.21, 0.17, 0.42, 12),
+    vestOverlay: new THREE.BoxGeometry(0.42, 0.36, 0.27),
+    vestStripe: new THREE.BoxGeometry(0.44, 0.045, 0.28),
+    neck: new THREE.CylinderGeometry(0.06, 0.072, 0.1, 8),
+    head: new THREE.SphereGeometry(0.16, 14, 12),
+    eyeIris: new THREE.SphereGeometry(0.018, 6, 6),
+    hairCap: new THREE.SphereGeometry(0.168, 12, 10, 0, Math.PI * 2, 0, Math.PI * 0.6),
+    helmetDome: new THREE.SphereGeometry(0.184, 12, 10, 0, Math.PI * 2, 0, Math.PI * 0.56),
+    helmetBrim: new THREE.CylinderGeometry(0.196, 0.208, 0.02, 12),
+    upperArm: new THREE.CapsuleGeometry(0.052, 0.2, 4, 8),
+    forearm: new THREE.CapsuleGeometry(0.045, 0.18, 4, 8),
+    palm: new THREE.BoxGeometry(0.06, 0.07, 0.032),
+    thigh: new THREE.CapsuleGeometry(0.074, 0.27, 4, 8),
+    shin: new THREE.CapsuleGeometry(0.06, 0.26, 4, 8),
+    boot: new THREE.BoxGeometry(0.11, 0.1, 0.2),
+    simpleBody: new THREE.CapsuleGeometry(0.24, 0.85, 4, 8),
+    simpleHead: new THREE.SphereGeometry(0.17, 8, 8),
   };
   return _sharedGeo;
 }
@@ -81,32 +102,32 @@ function getMergedRigGeos(jacketHex: number, vestHex: number, helmetHex: number)
 
   const rig: MergedRigGeos = {
     hips: mergeColoredParts([
-      { geometry: g.pelvis, colorHex: PANTS, scale: [1.05, 1, 0.72] },
-      { geometry: g.belt, colorHex: BOOT, position: [0, 0.095, 0], scale: [1.05, 1, 0.74] },
+      { geometry: g.pelvis, colorHex: PANTS, scale: [1.04, 1, 0.72] },
+      { geometry: g.belt, colorHex: BOOT, position: [0, 0.088, 0], scale: [1.04, 1, 0.74] },
     ]),
     torso: mergeColoredParts([
-      { geometry: g.torsoUpper, colorHex: jacketHex, position: [0, 0.34, 0], scale: [1.12, 1.18, 0.72] },
-      { geometry: g.vestOverlay, colorHex: vestHex, position: [0, 0.33, 0] },
-      { geometry: g.vestStripe, colorHex: STRIPE, position: [0, 0.26, 0] },
+      { geometry: g.torsoUpper, colorHex: jacketHex, position: [0, 0.3, 0], scale: [1.1, 1.12, 0.72] },
+      { geometry: g.vestOverlay, colorHex: vestHex, position: [0, 0.29, 0] },
+      { geometry: g.vestStripe, colorHex: STRIPE, position: [0, 0.23, 0] },
     ]),
     head: mergeColoredParts([
       { geometry: g.neck, colorHex: SKIN, position: [0, -0.01, 0] },
-      { geometry: g.head, colorHex: SKIN, position: [0, 0.16, 0], scale: [0.94, 1.06, 0.98] },
-      { geometry: g.eyeIris, colorHex: EYE, position: [-0.06, 0.17, 0.165] },
-      { geometry: g.eyeIris, colorHex: EYE, position: [0.06, 0.17, 0.165] },
-      { geometry: g.hairCap, colorHex: HAIR, position: [0, 0.175, -0.015] },
-      { geometry: g.helmetDome, colorHex: helmetHex, position: [0, 0.21, 0] },
-      { geometry: g.helmetBrim, colorHex: helmetHex, position: [0, 0.215, 0.048] },
+      { geometry: g.head, colorHex: SKIN, position: [0, 0.14, 0], scale: [0.94, 1.05, 0.98] },
+      { geometry: g.eyeIris, colorHex: EYE, position: [-0.052, 0.15, 0.142] },
+      { geometry: g.eyeIris, colorHex: EYE, position: [0.052, 0.15, 0.142] },
+      { geometry: g.hairCap, colorHex: HAIR, position: [0, 0.155, -0.014] },
+      { geometry: g.helmetDome, colorHex: helmetHex, position: [0, 0.185, 0] },
+      { geometry: g.helmetBrim, colorHex: helmetHex, position: [0, 0.19, 0.042] },
     ]),
     arm: mergeColoredParts([
-      { geometry: g.upperArm, colorHex: jacketHex, position: [0, -0.15, 0] },
-      { geometry: g.forearm, colorHex: jacketHex, position: [0, -0.43, 0.04], rotation: [-0.15, 0, 0] },
-      { geometry: g.palm, colorHex: SKIN, position: [0, -0.59, 0.06] },
+      { geometry: g.upperArm, colorHex: jacketHex, position: [0, -0.14, 0] },
+      { geometry: g.forearm, colorHex: jacketHex, position: [0, -0.39, 0.036], rotation: [-0.15, 0, 0] },
+      { geometry: g.palm, colorHex: SKIN, position: [0, -0.53, 0.054] },
     ]),
     leg: mergeColoredParts([
-      { geometry: g.thigh, colorHex: PANTS, position: [0, -0.21, 0] },
-      { geometry: g.shin, colorHex: PANTS, position: [0, -0.61, 0] },
-      { geometry: g.boot, colorHex: BOOT, position: [0, -0.79, 0.025] },
+      { geometry: g.thigh, colorHex: PANTS, position: [0, -0.19, 0] },
+      { geometry: g.shin, colorHex: PANTS, position: [0, -0.55, 0] },
+      { geometry: g.boot, colorHex: BOOT, position: [0, -0.71, 0.022] },
     ]),
   };
 
@@ -123,117 +144,426 @@ function getCachedMat<T extends THREE.Material>(key: string, factory: () => T): 
   return created;
 }
 
+// ============================================================================
+// LOCAL CC0 VRM & RIGGED GLB LOADER CACHE (public/models/, ZERO EXTERNAL CDN)
+// ============================================================================
+
+const LOCAL_MODEL_BASE =
+  (typeof import.meta !== 'undefined' && import.meta.env?.BASE_URL ? import.meta.env.BASE_URL : '/').replace(
+    /\/?$/,
+    '/',
+  ) + 'models/';
+
+const MODEL_SLOTS = [
+  { kind: 'vrm' as const, file: 'vrm_engineer_cc0.vrm' },
+  { kind: 'glb' as const, file: 'cesium_man_cc0.glb' },
+  { kind: 'glb' as const, file: 'rigged_figure_cc0.glb' },
+  { kind: 'vrm' as const, file: 'vrm_orion_cc0.vrm' },
+];
+
+interface LoadedGlbTemplate {
+  scene: THREE.Group;
+  animations: THREE.AnimationClip[];
+}
+
+const _glbCache = new Map<string, Promise<LoadedGlbTemplate | null>>();
+
+function loadLocalGlbTemplate(url: string): Promise<LoadedGlbTemplate | null> {
+  if (typeof window === 'undefined' || typeof fetch === 'undefined') {
+    return Promise.resolve(null);
+  }
+  const cached = _glbCache.get(url);
+  if (cached) return cached;
+
+  const promise = new Promise<LoadedGlbTemplate | null>((resolve) => {
+    const loader = new GLTFLoader();
+    loader.load(
+      url,
+      (gltf) => {
+        resolve({ scene: gltf.scene, animations: gltf.animations ?? [] });
+      },
+      undefined,
+      () => resolve(null),
+    );
+  });
+  _glbCache.set(url, promise);
+  return promise;
+}
+
+function loadLocalVrmInstance(url: string): Promise<VRM | null> {
+  if (typeof window === 'undefined' || typeof fetch === 'undefined') {
+    return Promise.resolve(null);
+  }
+  return new Promise<VRM | null>((resolve) => {
+    const loader = new GLTFLoader();
+    loader.register((parser) => new VRMLoaderPlugin(parser));
+    loader.load(
+      url,
+      (gltf) => {
+        const vrm = (gltf.userData as { vrm?: VRM }).vrm ?? null;
+        resolve(vrm);
+      },
+      undefined,
+      () => resolve(null),
+    );
+  });
+}
+
+function normalizeModelHeight(root: THREE.Object3D, targetHeight = 1.75): void {
+  root.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(root);
+  const size = new THREE.Vector3();
+  box.getSize(size);
+  if (size.y > 0.05 && Number.isFinite(size.y)) {
+    const scale = targetHeight / size.y;
+    root.scale.multiplyScalar(scale);
+    root.updateMatrixWorld(true);
+    const scaledBox = new THREE.Box3().setFromObject(root);
+    root.position.y -= scaledBox.min.y;
+  }
+}
+
+function addSafetyHelmetProp(parent: THREE.Object3D, helmetHex: number, headY: number): void {
+  const g = getSharedGeos();
+  const helmetMat = new THREE.MeshStandardMaterial({
+    color: helmetHex,
+    roughness: 0.36,
+    metalness: 0.22,
+  });
+  const dome = new THREE.Mesh(g.helmetDome, helmetMat);
+  dome.position.set(0, headY, 0);
+  dome.castShadow = true;
+  parent.add(dome);
+  const brim = new THREE.Mesh(g.helmetBrim, helmetMat);
+  brim.position.set(0, headY + 0.005, 0.04);
+  parent.add(brim);
+}
+
 /**
- * Builds an articulated PBR humanoid avatar using merged vertex-colored limb meshes.
- * Cuts Draw Calls from 25 -> 8 per avatar while preserving full walk/idle silhouette & animation.
+ * Builds a high-craft CC0 humanoid avatar with 3-tier distance-based LOD:
+ *   1) Detailed LOD (< 36m): Loads local CC0 VRM/GLB from `public/models/` (with instant articulated PBR rig fallback)
+ *      + safety helmet / workwear tint + walk / idle / wave animation + realistic 1.75m human height.
+ *   2) Simple LOD (36m..68m): Lightweight capsule silhouette.
+ *   3) Billboard LOD (>= 68m): Tiny crisp 2D icon sprite so distant avatars NEVER block the harbor vista!
  */
 export function buildHarborAvatar(options: {
   isPartner: boolean;
   shirtHex: string;
   contactShadowTex: THREE.CanvasTexture;
+  billboardIconTex?: THREE.CanvasTexture;
   isCurrentUser?: boolean;
+  skipContactShadow?: boolean;
+  modelVariantIndex?: number;
+  enableExternalCc0Model?: boolean;
 }): BuiltHumanoidRig {
   const g = getSharedGeos();
   const group = new THREE.Group();
 
   const jacketColor = new THREE.Color(options.shirtHex).getHex();
   const helmetColor = options.isPartner ? 0xf59e0b : options.isCurrentUser ? 0x38bdf8 : 0xf8fafc;
-  const vestColor = options.isPartner ? 0xf97316 : 0x0284c7;
+  const vestColor = options.isPartner ? 0xd96b27 : 0x1a5f8a;
 
+  // Root containers for each LOD tier
+  const detailedRoot = new THREE.Group();
+  const simpleRoot = new THREE.Group();
+  simpleRoot.visible = false;
+  group.add(detailedRoot, simpleRoot);
+
+  // 1) Contact Shadow (when not externally batched)
+  if (!options.skipContactShadow) {
+    const shadowMat = getCachedMat(
+      `shadow_${options.contactShadowTex.uuid}`,
+      () =>
+        new THREE.MeshBasicMaterial({
+          map: options.contactShadowTex,
+          transparent: true,
+          opacity: 0.58,
+          depthWrite: false,
+        }),
+    );
+    const shadow = new THREE.Mesh(g.shadow, shadowMat);
+    shadow.rotation.x = -Math.PI / 2;
+    shadow.position.y = 0.03;
+    group.add(shadow);
+  }
+
+  // 2) Instant Articulated Procedural Humanoid Rig (realistic 1.75m human scale!)
+  const fallbackRigGroup = new THREE.Group();
   const rigGeos = getMergedRigGeos(jacketColor, vestColor, helmetColor);
   const bodyMat = getCachedMat(
     'avatar_vertex_pbr',
-    () => new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.48, metalness: 0.14 }),
+    () => new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.5, metalness: 0.14 }),
   );
-  const shadowMat = getCachedMat(
-    `shadow_${options.contactShadowTex.uuid}`,
-    () =>
-      new THREE.MeshBasicMaterial({
-        map: options.contactShadowTex,
-        transparent: true,
-        opacity: 0.68,
-        depthWrite: false,
-      }),
-  );
-
-  const shadow = new THREE.Mesh(g.shadow, shadowMat);
-  shadow.rotation.x = -Math.PI / 2;
-  shadow.position.y = 0.03;
-  group.add(shadow);
 
   const hips = new THREE.Group();
-  hips.position.y = 1.02;
-  group.add(hips);
-
+  hips.position.y = 0.92;
+  fallbackRigGroup.add(hips);
   const hipsMesh = new THREE.Mesh(rigGeos.hips, bodyMat);
+  hipsMesh.castShadow = true;
   hips.add(hipsMesh);
 
   const spine = new THREE.Group();
-  spine.position.y = 0.13;
+  spine.position.y = 0.12;
   hips.add(spine);
-
   const torsoMesh = new THREE.Mesh(rigGeos.torso, bodyMat);
+  torsoMesh.castShadow = true;
   spine.add(torsoMesh);
 
   const headGroup = new THREE.Group();
-  headGroup.position.y = 0.66;
+  headGroup.position.y = 0.58;
   spine.add(headGroup);
-  headGroup.add(new THREE.Mesh(rigGeos.head, bodyMat));
+  const headMesh = new THREE.Mesh(rigGeos.head, bodyMat);
+  headMesh.castShadow = true;
+  headGroup.add(headMesh);
 
   const leftArm = new THREE.Group();
-  leftArm.position.set(-0.3, 0.52, 0);
-  leftArm.add(new THREE.Mesh(rigGeos.arm, bodyMat));
+  leftArm.position.set(-0.27, 0.46, 0);
+  const laMesh = new THREE.Mesh(rigGeos.arm, bodyMat);
+  laMesh.castShadow = true;
+  leftArm.add(laMesh);
   spine.add(leftArm);
 
   const rightArm = new THREE.Group();
-  rightArm.position.set(0.3, 0.52, 0);
-  rightArm.add(new THREE.Mesh(rigGeos.arm, bodyMat));
+  rightArm.position.set(0.27, 0.46, 0);
+  const raMesh = new THREE.Mesh(rigGeos.arm, bodyMat);
+  raMesh.castShadow = true;
+  rightArm.add(raMesh);
   spine.add(rightArm);
 
   const leftLeg = new THREE.Group();
-  leftLeg.position.set(-0.13, -0.05, 0);
-  leftLeg.add(new THREE.Mesh(rigGeos.leg, bodyMat));
+  leftLeg.position.set(-0.12, -0.05, 0);
+  const llMesh = new THREE.Mesh(rigGeos.leg, bodyMat);
+  llMesh.castShadow = true;
+  leftLeg.add(llMesh);
   hips.add(leftLeg);
 
   const rightLeg = new THREE.Group();
-  rightLeg.position.set(0.13, -0.05, 0);
-  rightLeg.add(new THREE.Mesh(rigGeos.leg, bodyMat));
+  rightLeg.position.set(0.12, -0.05, 0);
+  const rlMesh = new THREE.Mesh(rigGeos.leg, bodyMat);
+  rlMesh.castShadow = true;
+  rightLeg.add(rlMesh);
   hips.add(rightLeg);
 
-  group.scale.setScalar(1.22);
+  detailedRoot.add(fallbackRigGroup);
+
+  // 3) Mid-distance Simplified Silhouette LOD
+  const simpleMat = new THREE.MeshStandardMaterial({
+    color: jacketColor,
+    roughness: 0.6,
+    metalness: 0.1,
+  });
+  const simpleBody = new THREE.Mesh(g.simpleBody, simpleMat);
+  simpleBody.position.y = 0.85;
+  simpleRoot.add(simpleBody);
+  const simpleHelmetMat = new THREE.MeshStandardMaterial({ color: helmetColor, roughness: 0.45 });
+  const simpleHead = new THREE.Mesh(g.simpleHead, simpleHelmetMat);
+  simpleHead.position.y = 1.56;
+  simpleRoot.add(simpleHead);
+
+  // 4) Far-distance Billboard Icon Sprite LOD (unobtrusive iconization!)
+  let billboardSprite: THREE.Sprite | null = null;
+  if (options.billboardIconTex) {
+    const bbMat = new THREE.SpriteMaterial({
+      map: options.billboardIconTex,
+      transparent: true,
+      depthTest: true,
+      depthWrite: false,
+    });
+    billboardSprite = new THREE.Sprite(bbMat);
+    billboardSprite.position.set(0, 1.35, 0);
+    billboardSprite.scale.set(1.5, 1.5, 1);
+    billboardSprite.visible = false;
+    group.add(billboardSprite);
+  }
+
+  // 5) Async upgrade to local CC0 VRM / Rigged GLB from public/models/ (Requirements #7, #10, #14)
+  let loadedVrm: VRM | null = null;
+  let glbMixer: THREE.AnimationMixer | null = null;
+  let glbWalkAction: THREE.AnimationAction | null = null;
+  let externalModelRoot: THREE.Object3D | null = null;
+  let disposed = false;
+
+  if (options.enableExternalCc0Model !== false && typeof window !== 'undefined') {
+    const slotIdx = Math.abs(options.modelVariantIndex ?? 0) % MODEL_SLOTS.length;
+    const slot = MODEL_SLOTS[slotIdx];
+    const url = `${LOCAL_MODEL_BASE}${slot.file}`;
+
+    if (slot.kind === 'vrm') {
+      void loadLocalVrmInstance(url).then((vrm) => {
+        if (disposed || !vrm) return;
+        loadedVrm = vrm;
+        const vrmScene = vrm.scene;
+        vrmScene.rotation.y = Math.PI; // VRM0/1 front faces +Z in HarborScene
+        normalizeModelHeight(vrmScene, 1.78);
+        vrmScene.traverse((obj) => {
+          const m = obj as THREE.Mesh;
+          if (m.isMesh) {
+            m.castShadow = true;
+            m.receiveShadow = true;
+          }
+        });
+        addSafetyHelmetProp(vrmScene, helmetColor, 1.72);
+        externalModelRoot = vrmScene;
+        detailedRoot.add(vrmScene);
+        fallbackRigGroup.visible = false;
+      });
+    } else {
+      void loadLocalGlbTemplate(url).then((tpl) => {
+        if (disposed || !tpl) return;
+        const cloned = SkeletonUtils.clone(tpl.scene);
+        normalizeModelHeight(cloned, 1.76);
+        const tint = new THREE.Color(options.shirtHex);
+        cloned.traverse((obj) => {
+          const m = obj as THREE.Mesh;
+          if (m.isMesh) {
+            m.castShadow = true;
+            m.receiveShadow = true;
+            if (m.material && !Array.isArray(m.material)) {
+              const clonedMat = m.material.clone();
+              if ('color' in clonedMat && clonedMat.color instanceof THREE.Color) {
+                clonedMat.color.lerp(tint, 0.35);
+              }
+              m.material = clonedMat;
+            }
+          }
+        });
+        addSafetyHelmetProp(cloned, helmetColor, 1.68);
+        if (tpl.animations.length > 0) {
+          glbMixer = new THREE.AnimationMixer(cloned);
+          glbWalkAction = glbMixer.clipAction(tpl.animations[0]);
+          glbWalkAction.play();
+        }
+        externalModelRoot = cloned;
+        detailedRoot.add(cloned);
+        fallbackRigGroup.visible = false;
+      });
+    }
+  }
+
+  let currentLod: AvatarLodLevel = 'detailed';
 
   return {
     group,
-    updateAnimation: (_dt, elapsed, action, reducedMotion) => {
+    updateLod: (cameraDistance: number) => {
+      const nextLod = resolveAvatarLodLevel(cameraDistance);
+      currentLod = nextLod;
+      detailedRoot.visible = nextLod === 'detailed';
+      simpleRoot.visible = nextLod === 'simple';
+      if (billboardSprite) {
+        billboardSprite.visible = nextLod === 'billboard';
+        if (nextLod === 'billboard') {
+          // Gently scale icon with distance so it stays tiny & readable without covering ships
+          const iconSize = THREE.MathUtils.clamp(cameraDistance * 0.022, 1.35, 2.8);
+          billboardSprite.scale.set(iconSize, iconSize, 1);
+        }
+      } else {
+        simpleRoot.visible = nextLod !== 'detailed';
+      }
+      return nextLod;
+    },
+    updateAnimation: (dt, elapsed, action, reducedMotion) => {
+      if (currentLod !== 'detailed') return;
+
+      // Animate loaded VRM humanoid bones (walk / idle / wave)
+      if (loadedVrm) {
+        const hum = loadedVrm.humanoid;
+        const lArm = hum?.getNormalizedBoneNode('leftUpperArm');
+        const rArm = hum?.getNormalizedBoneNode('rightUpperArm');
+        const lLeg = hum?.getNormalizedBoneNode('leftUpperLeg');
+        const rLeg = hum?.getNormalizedBoneNode('rightUpperLeg');
+        const headBone = hum?.getNormalizedBoneNode('head');
+
+        if (reducedMotion) {
+          if (lArm) lArm.rotation.set(0, 0, 1.15);
+          if (rArm) rArm.rotation.set(0, 0, -1.15);
+          if (lLeg) lLeg.rotation.set(0, 0, 0);
+          if (rLeg) rLeg.rotation.set(0, 0, 0);
+        } else if (action === 'run') {
+          const stride = Math.sin(elapsed * 9.5);
+          if (lLeg) lLeg.rotation.x = stride * 0.55;
+          if (rLeg) rLeg.rotation.x = -stride * 0.55;
+          if (lArm) lArm.rotation.set(-stride * 0.45, 0, 1.15);
+          if (rArm) rArm.rotation.set(stride * 0.45, 0, -1.15);
+        } else if (action === 'wave') {
+          if (lArm) lArm.rotation.set(0, 0, 1.15);
+          if (rArm) rArm.rotation.set(0, 0, 0.8 + Math.sin(elapsed * 7.5) * 0.35);
+          if (lLeg) lLeg.rotation.x = 0;
+          if (rLeg) rLeg.rotation.x = 0;
+        } else {
+          if (lArm) lArm.rotation.set(Math.sin(elapsed * 1.4) * 0.05, 0, 1.18);
+          if (rArm) rArm.rotation.set(-Math.sin(elapsed * 1.4) * 0.05, 0, -1.18);
+          if (lLeg) lLeg.rotation.x = 0;
+          if (rLeg) rLeg.rotation.x = 0;
+          if (headBone) headBone.rotation.y = Math.sin(elapsed * 0.8) * 0.14;
+        }
+        loadedVrm.update(dt);
+        return;
+      }
+
+      // Animate loaded rigged GLB
+      if (glbMixer && glbWalkAction) {
+        if (reducedMotion) {
+          glbWalkAction.timeScale = 0;
+        } else {
+          glbWalkAction.timeScale = action === 'run' ? 1.35 : 0.16;
+          glbMixer.update(dt);
+        }
+        return;
+      }
+
+      // Animate instant articulated fallback rig (walk / idle / wave)
       if (reducedMotion) {
-        hips.position.y = 1.02;
+        hips.position.y = 0.92;
         spine.rotation.x = 0;
         leftLeg.rotation.x = 0;
         rightLeg.rotation.x = 0;
-        leftArm.rotation.x = 0;
-        rightArm.rotation.x = 0;
+        leftArm.rotation.set(0, 0, 0);
+        rightArm.rotation.set(0, 0, 0);
         headGroup.rotation.y = 0;
         return;
       }
       if (action === 'run') {
         const stride = Math.sin(elapsed * 10.5);
-        hips.position.y = 1.02 + Math.abs(Math.cos(elapsed * 10.5)) * 0.06;
-        spine.rotation.x = 0.12;
-        leftLeg.rotation.x = stride * 0.62;
-        rightLeg.rotation.x = -stride * 0.62;
-        leftArm.rotation.x = -stride * 0.5;
-        rightArm.rotation.x = stride * 0.5;
+        hips.position.y = 0.92 + Math.abs(Math.cos(elapsed * 10.5)) * 0.05;
+        spine.rotation.x = 0.1;
+        leftLeg.rotation.x = stride * 0.58;
+        rightLeg.rotation.x = -stride * 0.58;
+        leftArm.rotation.set(-stride * 0.46, 0, 0);
+        rightArm.rotation.set(stride * 0.46, 0, 0);
+      } else if (action === 'wave') {
+        hips.position.y = 0.92 + Math.sin(elapsed * 2.2) * 0.012;
+        spine.rotation.x = 0;
+        leftLeg.rotation.x = 0;
+        rightLeg.rotation.x = 0;
+        leftArm.rotation.set(0, 0, 0);
+        rightArm.rotation.set(-2.5, 0, Math.sin(elapsed * 8.0) * 0.28);
+        headGroup.rotation.y = Math.sin(elapsed * 1.4) * 0.14;
       } else {
-        hips.position.y = 1.02 + Math.sin(elapsed * 2.0) * 0.014;
+        hips.position.y = 0.92 + Math.sin(elapsed * 2.0) * 0.012;
         spine.rotation.x = 0.02;
         leftLeg.rotation.x = 0;
         rightLeg.rotation.x = 0;
-        leftArm.rotation.x = Math.sin(elapsed * 1.4) * 0.04;
-        rightArm.rotation.x = -Math.sin(elapsed * 1.4) * 0.04;
+        leftArm.rotation.set(Math.sin(elapsed * 1.4) * 0.04, 0, 0);
+        rightArm.rotation.set(-Math.sin(elapsed * 1.4) * 0.04, 0, 0);
         headGroup.rotation.y = Math.sin(elapsed * 0.85) * 0.12;
       }
     },
     dispose: () => {
+      disposed = true;
+      if (glbMixer) glbMixer.stopAllAction();
+      if (externalModelRoot) {
+        externalModelRoot.traverse((obj) => {
+          const m = obj as THREE.Mesh;
+          if (m.isMesh && m.material && !Array.isArray(m.material)) {
+            m.material.dispose();
+          }
+        });
+      }
+      simpleMat.dispose();
+      simpleHelmetMat.dispose();
+      if (billboardSprite) {
+        (billboardSprite.material as THREE.SpriteMaterial).dispose();
+      }
       group.clear();
     },
   };

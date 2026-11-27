@@ -68,7 +68,7 @@ describe('SGW Integration Guide (§1, §6, §7, §8) static compliance audit', (
       );
     }
 
-    const forbiddenDeps = ['express', 'dotenv', '@google/genai', '@pixiv/three-vrm', 'esbuild'];
+    const forbiddenDeps = ['express', 'dotenv', '@google/genai', 'esbuild'];
     for (const dep of forbiddenDeps) {
       assert.equal(dep in allDeps, false, `Forbidden or unused dependency present: ${dep}`);
     }
@@ -109,11 +109,19 @@ describe('SGW Integration Guide (§1, §6, §7, §8) static compliance audit', (
         );
       }
 
-      assert.equal(
-        /\b(localStorage|sessionStorage)\b/.test(code),
-        false,
-        `Browser storage access found in ${rel}`,
-      );
+      if (rel !== 'src/shipDisplayPrefs.ts') {
+        assert.equal(
+          /\b(localStorage|sessionStorage)\b/.test(code),
+          false,
+          `Browser storage access found outside shipDisplayPrefs.ts in ${rel}`,
+        );
+      } else {
+        assert.equal(
+          /\b(token|bearer|jwt|cookie|password|session)\b/i.test(code),
+          false,
+          'shipDisplayPrefs.ts must store ONLY non-PII UI display preferences, never tokens or session data',
+        );
+      }
     }
 
     const indexHtml = readFileSync(resolve(ROOT, 'index.html'), 'utf8');

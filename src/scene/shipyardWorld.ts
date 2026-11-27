@@ -1,16 +1,23 @@
 import * as THREE from 'three';
 import { PORTAL_BUILDINGS, type PortalBuildingSpec } from '../core/navMeshEngine';
+import { OBSERVATION_DECK_Y, QUAY_MAIN_DECK_Y } from '../core/physicsCollision';
 import type { HarborShip } from '../mapping';
-import { mergeSolidSubtreeToVertexColors } from './meshBatching';
+import type { ShipDisplayPrefsMap } from '../shipDisplayPrefs';
+import { createInstancedRingBatch, mergeSolidSubtreeToVertexColors } from './meshBatching';
 import {
   buildProjectVessel3D,
+  buildVesselScanPointCloud,
   disposeObjectTree,
   getVesselSilhouetteByIndex,
 } from './projectVesselTypes';
+import {
+  HOME_HARBOR_DECORATIVE_VESSELS,
+  type DecorativeVesselSpec,
+} from './sceneryCatalog';
 import type { HarborTexturePack } from './textures';
 
 /** Top surface elevation of the concrete quay apron. */
-export const QUAY_DECK_TOP_Y = 1.61;
+export const QUAY_DECK_TOP_Y = QUAY_MAIN_DECK_Y;
 /** Elevation offset for flush safety trims & floor decals to prevent coplanar Z-fighting. */
 export const Z_FIGHTING_SAFE_OFFSET = 0.025;
 
@@ -18,15 +25,27 @@ export interface DockedShipRuntime {
   ship: HarborShip;
   anchor: THREE.Group;
   hitProxy: THREE.Mesh;
-  statusRing: THREE.Mesh;
+  scanCloud: THREE.Points;
+  defaultYawDeg: number;
+  phase: number;
+}
+
+export interface DecorativeVesselRuntime {
+  spec: DecorativeVesselSpec;
+  anchor: THREE.Group;
+  hitProxy: THREE.Mesh;
+  scanCloud: THREE.Points;
   phase: number;
 }
 
 export interface ShipyardWorldHandles {
   clickablePortalProxies: THREE.Object3D[];
   clickableShipProxies: THREE.Object3D[];
+  clickableDecorativeShipProxies: THREE.Object3D[];
   walkableMeshes: THREE.Object3D[];
   dockedShips: DockedShipRuntime[];
+  decorativeVessels: DecorativeVesselRuntime[];
+  bridgeGlowMat: THREE.MeshStandardMaterial;
   instancedPropCounts: {
     bollards: number;
     fenders: number;
@@ -35,7 +54,9 @@ export interface ShipyardWorldHandles {
     streetlights: number;
     yardContainers: number;
   };
-  syncProjectShips: (ships: HarborShip[], lowSpec: boolean) => void;
+  syncProjectShips: (ships: HarborShip[], lowSpec: boolean, prefs?: ShipDisplayPrefsMap) => void;
+  applyShipDisplayPrefs: (prefs: ShipDisplayPrefsMap) => void;
+  setSelectedShipId: (shipId: string | null) => void;
   setLowSpecMode: (lowSpec: boolean) => void;
   update: (dt: number, elapsed: number, lowSpec: boolean) => void;
   dispose: () => void;
@@ -67,10 +88,10 @@ function buildGoliathCrane(
   const crane = new THREE.Group();
   crane.position.set(x, y, z);
 
-  const paintMat = new THREE.MeshStandardMaterial({ color: paintHex, roughness: 0.42, metalness: 0.45 });
-  const darkSteel = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.5, metalness: 0.72 });
-  const girderFaceMat = new THREE.MeshStandardMaterial({ map: bannerTex, roughness: 0.38, metalness: 0.35 });
-  const hookYellowMat = new THREE.MeshStandardMaterial({ color: 0xfacc15, roughness: 0.42, metalness: 0.25 });
+  const paintMat = new THREE.MeshStandardMaterial({ color: paintHex, roughness: 0.44, metalness: 0.42 });
+  const darkSteel = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.5, metalness: 0.7 });
+  const girderFaceMat = new THREE.MeshStandardMaterial({ map: bannerTex, roughness: 0.38, metalness: 0.3 });
+  const hookYellowMat = new THREE.MeshStandardMaterial({ color: 0xdca420, roughness: 0.44, metalness: 0.24 });
 
   for (const sx of [-5.2, 5.2]) {
     const bogie = new THREE.Mesh(new THREE.BoxGeometry(1.7, 1.15, 8.2), darkSteel);
@@ -80,38 +101,43 @@ function buildGoliathCrane(
     crane.add(bogie);
 
     for (const sz of [-3.5, 3.5]) {
-      addDiagonalBrace(crane, new THREE.Vector3(sx, 1.1, sz), new THREE.Vector3(sx * 0.84, 17.5, sz * 0.24), 0.38, paintMat);
+      addDiagonalBrace(crane, new THREE.Vector3(sx, 1.1, sz), new THREE.Vector3(sx * 0.84, 18.8, sz * 0.24), 0.4, paintMat);
     }
-    addDiagonalBrace(crane, new THREE.Vector3(sx * 0.94, 6.5, -2.5), new THREE.Vector3(sx * 0.94, 6.5, 2.5), 0.17, darkSteel);
+    addDiagonalBrace(crane, new THREE.Vector3(sx * 0.94, 7.2, -2.5), new THREE.Vector3(sx * 0.94, 7.2, 2.5), 0.18, darkSteel);
   }
 
-  const mainGirder = new THREE.Mesh(new THREE.BoxGeometry(20.5, 2.5, 2.3), paintMat);
-  mainGirder.position.set(0, 18.6, 0);
+  const mainGirder = new THREE.Mesh(new THREE.BoxGeometry(22.0, 2.7, 2.4), paintMat);
+  mainGirder.position.set(0, 19.8, 0);
   crane.add(mainGirder);
 
-  const bannerFront = new THREE.Mesh(new THREE.PlaneGeometry(20.2, 2.35), girderFaceMat);
-  bannerFront.position.set(0, 18.6, 1.17);
+  const bannerFront = new THREE.Mesh(new THREE.PlaneGeometry(21.6, 2.55), girderFaceMat);
+  bannerFront.position.set(0, 19.8, 1.24);
   crane.add(bannerFront);
 
-  const boom = new THREE.Mesh(new THREE.BoxGeometry(1.7, 1.3, 18.0), paintMat);
-  boom.position.set(0, 17.6, 6.0);
+  const bannerBack = new THREE.Mesh(new THREE.PlaneGeometry(21.6, 2.55), girderFaceMat);
+  bannerBack.position.set(0, 19.8, -1.24);
+  bannerBack.rotation.y = Math.PI;
+  crane.add(bannerBack);
+
+  const boom = new THREE.Mesh(new THREE.BoxGeometry(1.8, 1.35, 19.5), paintMat);
+  boom.position.set(0, 18.8, 6.4);
   crane.add(boom);
 
-  const trolley = new THREE.Mesh(new THREE.BoxGeometry(3.0, 1.5, 3.2), darkSteel);
-  trolley.position.set(0, 20.4, 0.2);
+  const trolley = new THREE.Mesh(new THREE.BoxGeometry(3.2, 1.6, 3.4), darkSteel);
+  trolley.position.set(0, 21.7, 0.2);
   crane.add(trolley);
 
-  const hookBlock = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.72, 0.9), hookYellowMat);
-  hookBlock.position.set(0, 11.2, 10.8);
+  const hookBlock = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.75, 0.95), hookYellowMat);
+  hookBlock.position.set(0, 12.0, 11.4);
   crane.add(hookBlock);
 
-  const beacon = new THREE.Mesh(new THREE.SphereGeometry(0.32, 8, 8), beaconMat);
-  beacon.position.set(0, 20.3, 0);
+  const beacon = new THREE.Mesh(new THREE.SphereGeometry(0.34, 8, 8), beaconMat);
+  beacon.position.set(0, 22.8, 0);
   crane.add(beacon);
 
   mergeSolidSubtreeToVertexColors(crane, {
     roughness: 0.44,
-    metalness: 0.48,
+    metalness: 0.45,
     castShadow: true,
     receiveShadow: true,
   });
@@ -154,7 +180,7 @@ function buildPortalPavilion(
     map: signTex,
     emissive: new THREE.Color(0xffffff),
     emissiveMap: signTex,
-    emissiveIntensity: 0.35,
+    emissiveIntensity: 0.32,
     roughness: 0.32,
   });
   const signFrame = new THREE.Mesh(new THREE.BoxGeometry(6.0, 1.4, 0.24), charcoalMat);
@@ -185,12 +211,54 @@ function buildPortalPavilion(
   return { group, hitProxy };
 }
 
+function buildPierLighthouse(
+  x: number,
+  y: number,
+  z: number,
+  accentHex: number,
+  lanternMat: THREE.MeshStandardMaterial,
+): THREE.Group {
+  const lh = new THREE.Group();
+  lh.position.set(x, y, z);
+  const whiteMat = new THREE.MeshStandardMaterial({ color: 0xf1f5f9, roughness: 0.5, metalness: 0.1 });
+  const accentMat = new THREE.MeshStandardMaterial({ color: accentHex, roughness: 0.46, metalness: 0.18 });
+  const darkMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.52, metalness: 0.55 });
+
+  const plinth = new THREE.Mesh(new THREE.CylinderGeometry(2.1, 2.4, 1.2, 12), darkMat);
+  plinth.position.y = 0.6;
+  lh.add(plinth);
+  const tower = new THREE.Mesh(new THREE.CylinderGeometry(1.1, 1.85, 11.5, 12), whiteMat);
+  tower.position.y = 6.9;
+  lh.add(tower);
+  const band = new THREE.Mesh(new THREE.CylinderGeometry(1.36, 1.56, 2.8, 12), accentMat);
+  band.position.y = 7.4;
+  lh.add(band);
+  const gallery = new THREE.Mesh(new THREE.CylinderGeometry(1.45, 1.25, 0.5, 12), darkMat);
+  gallery.position.y = 12.7;
+  lh.add(gallery);
+  const lantern = new THREE.Mesh(new THREE.CylinderGeometry(0.95, 0.95, 1.7, 10), lanternMat);
+  lantern.position.y = 13.7;
+  lh.add(lantern);
+  const dome = new THREE.Mesh(new THREE.ConeGeometry(1.25, 1.5, 10), accentMat);
+  dome.position.y = 15.25;
+  lh.add(dome);
+
+  mergeSolidSubtreeToVertexColors(lh, {
+    roughness: 0.48,
+    metalness: 0.24,
+    castShadow: true,
+    receiveShadow: true,
+  });
+  return lh;
+}
+
 /**
- * Builds the SGW Harbor quay & dynamic SEDMS project berths.
- * - Uses OffscreenCanvas PBR maps (concrete joints/weathering, corrugated containers) with low-spec Lambert fallback.
- * - Uses InstancedMesh for bollards, fenders, breakwater stones, trees, streetlights, benches, and yard containers
- *   to keep total scene Draw Calls well under 150.
- * - Elevates safety lines & floor markings by +0.025m above QUAY_DECK_TOP_Y to eliminate Z-fighting.
+ * Builds the Home Harbor Diorama & Dynamic SEDMS Project Berths:
+ *   - Strictly separates `shipsRoot` (business SEDMS projects from API/fixtures)
+ *     from `sceneryRoot` (decorative Hero "씨스타호", Floating Dry Dock "FD-01",
+ *     10+ background vessels, lighthouses, buoys, fabrication halls, and cranes).
+ *   - Includes raised central waterfront observation terrace + sloped ramps matching `sampleHarborElevation`.
+ *   - Attaches a toggleable 3D LiDAR point-cloud scan shell to every selectable vessel.
  */
 export function buildShipyardWorld(
   scene: THREE.Scene,
@@ -198,8 +266,10 @@ export function buildShipyardWorld(
 ): ShipyardWorldHandles {
   const clickablePortalProxies: THREE.Object3D[] = [];
   const clickableShipProxies: THREE.Object3D[] = [];
+  const clickableDecorativeShipProxies: THREE.Object3D[] = [];
   const walkableMeshes: THREE.Object3D[] = [];
   const dockedShips: DockedShipRuntime[] = [];
+  const decorativeVessels: DecorativeVesselRuntime[] = [];
   const clouds: Array<{ sprite: THREE.Sprite; speed: number; baseX: number }> = [];
   const staticDisposables: Array<{ dispose: () => void }> = [];
 
@@ -210,7 +280,7 @@ export function buildShipyardWorld(
     bumpMap: textures.concreteBump,
     bumpScale: 0.09,
     roughnessMap: textures.concreteRoughness,
-    roughness: 0.9,
+    roughness: 0.88,
     metalness: 0.05,
   });
   const concreteLowMat = new THREE.MeshLambertMaterial({ color: 0xb6c2cf });
@@ -228,8 +298,8 @@ export function buildShipyardWorld(
     bumpMap: textures.containerRibBump,
     bumpScale: 0.1,
     roughnessMap: textures.containerRibRoughness,
-    roughness: 0.7,
-    metalness: 0.28,
+    roughness: 0.68,
+    metalness: 0.26,
   });
   const containerYardLowMat = new THREE.MeshLambertMaterial({ color: 0xffffff });
 
@@ -248,7 +318,7 @@ export function buildShipyardWorld(
     map: textures.curtainWall,
     emissive: new THREE.Color(0xbae6fd),
     emissiveMap: textures.curtainWall,
-    emissiveIntensity: 0.42,
+    emissiveIntensity: 0.38,
     roughness: 0.18,
     metalness: 0.42,
   });
@@ -261,8 +331,8 @@ export function buildShipyardWorld(
   const bridgeGlowMat = new THREE.MeshStandardMaterial({
     color: 0xfef3c7,
     emissive: 0xfde68a,
-    emissiveIntensity: 1.35,
-    roughness: 0.14,
+    emissiveIntensity: 1.25,
+    roughness: 0.16,
   });
 
   staticDisposables.push(
@@ -280,20 +350,20 @@ export function buildShipyardWorld(
     bridgeGlowMat,
   );
 
-  // 1. North Quay (x in [-94, 94], z in [-48, -2.5]) + West/East Piers
+  // 1. North Quay (x in [-94, 94], z in [-48, -2.5]) + West/East Outfitting Piers
   const quayBase = new THREE.Mesh(new THREE.BoxGeometry(188, 2.6, 45.5), seawallMat);
   quayBase.position.set(0, 0.05, -25.25);
   quayBase.receiveShadow = true;
   scene.add(quayBase);
 
   const quayDeck = new THREE.Mesh(new THREE.BoxGeometry(188.4, 0.38, 45.7), concretePbrMat);
-  quayDeck.position.set(0, 1.42, -25.25); // Top sits cleanly at QUAY_DECK_TOP_Y = 1.610
+  quayDeck.position.set(0, 1.42, -25.25);
   quayDeck.receiveShadow = true;
   scene.add(quayDeck);
   walkableMeshes.push(quayDeck);
 
-  const rearApron = new THREE.Mesh(new THREE.BoxGeometry(204, 1.9, 20), asphaltPbrMat);
-  rearApron.position.set(0, 0.62, -58.0);
+  const rearApron = new THREE.Mesh(new THREE.BoxGeometry(200, 1.9, 46), asphaltPbrMat);
+  rearApron.position.set(0, 0.62, -71.0);
   rearApron.receiveShadow = true;
   scene.add(rearApron);
 
@@ -312,17 +382,21 @@ export function buildShipyardWorld(
     walkableMeshes.push(pierDeck);
     concreteMeshes.push(pierDeck);
 
-    // Waterfront safety line elevated cleanly by +0.025m (no Z-fighting!)
     const sideTrim = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.05, 40.0), hazardMat);
     sideTrim.position.set(side * 75.2, QUAY_DECK_TOP_Y + Z_FIGHTING_SAFE_OFFSET, 17.5);
     scene.add(sideTrim);
+
+    // Outer waterfront outfitting pier ladders/gangway decks toward Hero vessels (씨스타호 / FD-01)
+    const outerTrim = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.05, 40.0), hazardMat);
+    outerTrim.position.set(side * 93.7, QUAY_DECK_TOP_Y + Z_FIGHTING_SAFE_OFFSET, 17.5);
+    scene.add(outerTrim);
   }
 
   const frontTrim = new THREE.Mesh(new THREE.BoxGeometry(150.0, 0.05, 0.56), hazardMat);
   frontTrim.position.set(0, QUAY_DECK_TOP_Y + Z_FIGHTING_SAFE_OFFSET, -2.72);
   scene.add(frontTrim);
 
-  // Central Plaza Inlay + Compass Ring (elevated with >= +0.025m separation)
+  // Central Plaza Inlay + Raised Observation Terrace & Flanking Ramps (matching sampleHarborElevation!)
   const plazaTileMat = new THREE.MeshStandardMaterial({
     color: 0xd5dee8,
     roughness: 0.72,
@@ -337,12 +411,37 @@ export function buildShipyardWorld(
   plazaInlay.receiveShadow = true;
   scene.add(plazaInlay);
 
+  const terraceH = OBSERVATION_DECK_Y - QUAY_DECK_TOP_Y; // 0.80m
+  const terraceWoodMat = new THREE.MeshStandardMaterial({ color: 0x8b623f, roughness: 0.72, metalness: 0.05 });
+  const terracePlatform = new THREE.Mesh(new THREE.BoxGeometry(16.0, terraceH, 4.0), terraceWoodMat);
+  terracePlatform.position.set(0, QUAY_DECK_TOP_Y + terraceH * 0.5, -16.2);
+  terracePlatform.castShadow = true;
+  terracePlatform.receiveShadow = true;
+  scene.add(terracePlatform);
+  walkableMeshes.push(terracePlatform);
+
+  // Left & Right sloped ramps (|x| from 8 to 12) matching sampleHarborElevation
+  const rampLen = Math.hypot(4.0, terraceH);
+  const rampAngle = Math.atan2(terraceH, 4.0);
+  for (const side of [-1, 1]) {
+    const ramp = new THREE.Mesh(new THREE.BoxGeometry(rampLen, 0.16, 4.0), terraceWoodMat);
+    ramp.position.set(side * 10.0, QUAY_DECK_TOP_Y + terraceH * 0.5 - 0.06, -16.2);
+    ramp.rotation.z = side < 0 ? rampAngle : -rampAngle;
+    ramp.receiveShadow = true;
+    scene.add(ramp);
+    walkableMeshes.push(ramp);
+  }
+  const terraceRail = new THREE.Mesh(new THREE.BoxGeometry(16.0, 0.08, 0.08), steelMat);
+  terraceRail.position.set(0, OBSERVATION_DECK_Y + 0.92, -18.1);
+  scene.add(terraceRail);
+  staticDisposables.push(terraceWoodMat);
+
   const plazaRing = new THREE.Mesh(
     new THREE.RingGeometry(3.0, 3.55, 40),
     new THREE.MeshBasicMaterial({
       color: 0x0284c7,
       transparent: true,
-      opacity: 0.75,
+      opacity: 0.65,
       side: THREE.DoubleSide,
       polygonOffset: true,
       polygonOffsetFactor: -3,
@@ -350,16 +449,15 @@ export function buildShipyardWorld(
     }),
   );
   plazaRing.rotation.x = -Math.PI / 2;
-  plazaRing.position.set(0, QUAY_DECK_TOP_Y + Z_FIGHTING_SAFE_OFFSET * 2, -10.5);
+  plazaRing.position.set(0, QUAY_DECK_TOP_Y + Z_FIGHTING_SAFE_OFFSET * 2, -9.8);
   scene.add(plazaRing);
 
   // =========================================================================
-  // 2. INSTANCED HARBOR INFRASTRUCTURE (Keep total Draw Calls <= 150!)
+  // 2. INSTANCED HARBOR INFRASTRUCTURE
   // =========================================================================
   const dummy = new THREE.Object3D();
   const tmpColor = new THREE.Color();
 
-  // 2a. Instanced Rubber Fenders & Mooring Bollards (North Quay + West/East Piers)
   const fenderPositions: Array<{ x: number; y: number; z: number; ry: number }> = [];
   const bollardPositions: Array<{ x: number; y: number; z: number }> = [];
   for (let bx = -66; bx <= 66; bx += 13.2) {
@@ -369,7 +467,9 @@ export function buildShipyardWorld(
   for (const side of [-1, 1]) {
     for (let bz = 4; bz <= 32; bz += 7) {
       fenderPositions.push({ x: side * 74.75, y: 0.88, z: bz, ry: Math.PI / 2 });
+      fenderPositions.push({ x: side * 94.25, y: 0.88, z: bz, ry: Math.PI / 2 });
       bollardPositions.push({ x: side * 76.2, y: QUAY_DECK_TOP_Y, z: bz });
+      bollardPositions.push({ x: side * 92.6, y: QUAY_DECK_TOP_Y, z: bz });
     }
   }
 
@@ -389,7 +489,7 @@ export function buildShipyardWorld(
 
   const bollardPostGeo = new THREE.CylinderGeometry(0.24, 0.3, 0.56, 8);
   const bollardCapGeo = new THREE.CylinderGeometry(0.32, 0.24, 0.14, 8);
-  const bollardMat = new THREE.MeshStandardMaterial({ color: 0xfacc15, roughness: 0.44, metalness: 0.32 });
+  const bollardMat = new THREE.MeshStandardMaterial({ color: 0xdca420, roughness: 0.44, metalness: 0.32 });
   const bollardPostInst = new THREE.InstancedMesh(bollardPostGeo, bollardMat, bollardPositions.length);
   const bollardCapInst = new THREE.InstancedMesh(bollardCapGeo, bollardMat, bollardPositions.length);
   bollardPositions.forEach((bp, i) => {
@@ -409,7 +509,7 @@ export function buildShipyardWorld(
   bollardCapInst.computeBoundingSphere();
   scene.add(bollardPostInst, bollardCapInst);
 
-  // 2b. Instanced Breakwater Armor Stone Blocks (방파제 석축 — West & East Outer Revetments)
+  // Breakwater armor stone blocks along pier toes
   const stoneSpecs: Array<{ x: number; y: number; z: number; sx: number; sy: number; sz: number; ry: number; rx: number; shade: number }> = [];
   let stoneSeed = 913;
   const sRand = () => {
@@ -417,32 +517,19 @@ export function buildShipyardWorld(
     return stoneSeed / 4294967296;
   };
   for (const side of [-1, 1]) {
-    const outerX = side * 95.8;
-    for (let i = 0; i < 18; i += 1) {
-      const z = -2.0 + i * 2.45;
-      // Lower submerged-to-waterline tier
+    const outerX = side * 96.4;
+    for (let i = 0; i < 16; i += 1) {
+      const z = -1.5 + i * 2.45;
       stoneSpecs.push({
-        x: outerX + side * (1.2 + sRand() * 1.4),
+        x: outerX + side * (1.0 + sRand() * 1.4),
         y: 0.25 + sRand() * 0.4,
         z: z + (sRand() - 0.5) * 0.8,
-        sx: 1.5 + sRand() * 1.1,
-        sy: 1.0 + sRand() * 0.7,
-        sz: 1.5 + sRand() * 1.0,
+        sx: 1.4 + sRand() * 1.0,
+        sy: 0.9 + sRand() * 0.65,
+        sz: 1.4 + sRand() * 0.9,
         ry: sRand() * Math.PI,
         rx: (sRand() - 0.5) * 0.4,
-        shade: 0.75 + sRand() * 0.3,
-      });
-      // Upper crest armor tier
-      stoneSpecs.push({
-        x: outerX + side * (0.1 + sRand() * 0.9),
-        y: 1.05 + sRand() * 0.45,
-        z: z + (sRand() - 0.5) * 0.8,
-        sx: 1.2 + sRand() * 0.85,
-        sy: 0.85 + sRand() * 0.55,
-        sz: 1.25 + sRand() * 0.85,
-        ry: sRand() * Math.PI,
-        rx: (sRand() - 0.5) * 0.4,
-        shade: 0.82 + sRand() * 0.26,
+        shade: 0.75 + sRand() * 0.28,
       });
     }
   }
@@ -468,13 +555,11 @@ export function buildShipyardWorld(
   breakwaterInst.computeBoundingSphere();
   scene.add(breakwaterInst);
 
-  // 2c. Instanced Planter Trees (나무 — Curbs + Trunks + Dual Crowns with color tint variation)
+  // Planter Trees
   const treeCoords: Array<[number, number]> = [
     [-64, -17.8],
     [-46, -17.8],
     [-22, -17.8],
-    [-10, -17.8],
-    [10, -17.8],
     [22, -17.8],
     [46, -17.8],
     [64, -17.8],
@@ -513,14 +598,14 @@ export function buildShipyardWorld(
     dummy.rotation.set(0, i * 0.8, 0);
     dummy.updateMatrix();
     crown1Inst.setMatrixAt(i, dummy.matrix);
-    tmpColor.setHSL(0.39 + (i % 3) * 0.015, 0.56, 0.25 + (i % 2) * 0.04);
+    tmpColor.setHSL(0.39 + (i % 3) * 0.015, 0.5, 0.24 + (i % 2) * 0.04);
     crown1Inst.setColorAt(i, tmpColor);
 
     dummy.position.set(tx + 0.06 * Math.sin(i + 1), QUAY_DECK_TOP_Y + 2.92 * scaleVar, tz + 0.06 * Math.cos(i + 1));
     dummy.rotation.set(0, i * 1.4, 0);
     dummy.updateMatrix();
     crown2Inst.setMatrixAt(i, dummy.matrix);
-    tmpColor.setHSL(0.38 + (i % 3) * 0.015, 0.52, 0.34 + (i % 2) * 0.05);
+    tmpColor.setHSL(0.38 + (i % 3) * 0.015, 0.46, 0.32 + (i % 2) * 0.05);
     crown2Inst.setColorAt(i, tmpColor);
   });
   for (const inst of [curbInst, trunkInst, crown1Inst, crown2Inst]) {
@@ -530,7 +615,7 @@ export function buildShipyardWorld(
     scene.add(inst);
   }
 
-  // 2d. Instanced Quay Streetlights (가로등 — Pole + Arm + Warm Luminaire)
+  // Streetlights & High-Mast Lighting Towers
   const lampCoords: Array<{ x: number; z: number; ry: number }> = [];
   for (let lx = -60; lx <= 60; lx += 15) {
     lampCoords.push({ x: lx, z: -4.8, ry: 0 });
@@ -579,7 +664,7 @@ export function buildShipyardWorld(
     scene.add(inst);
   }
 
-  // 2e. Instanced Quay Benches (4 benches batched into 2 draw calls)
+  // Quay Benches
   const benchXs = [-22, -10, 10, 22];
   const benchSeatGeo = new THREE.BoxGeometry(3.0, 0.12, 0.56);
   const benchBackGeo = new THREE.BoxGeometry(3.0, 0.28, 0.08);
@@ -604,20 +689,20 @@ export function buildShipyardWorld(
   benchBackInst.computeBoundingSphere();
   scene.add(benchSeatInst, benchBackInst);
 
-  // 2f. Instanced Quay Yard Containers (Corrugated Bump + Roughness PBR Showcase on East/West Apron)
+  // Corrugated Yard Containers (low-saturation realistic maritime tones)
   const yardContainerSpecs: Array<{ x: number; y: number; z: number; color: number }> = [
-    { x: -66, y: 0, z: -34, color: 0x0284c7 },
-    { x: -66, y: 1, z: -34, color: 0xd97706 },
-    { x: -58, y: 0, z: -34, color: 0x059669 },
-    { x: -58, y: 0, z: -30.8, color: 0xdc2626 },
-    { x: -58, y: 1, z: -30.8, color: 0x1d4ed8 },
-    { x: -66, y: 0, z: -30.8, color: 0x0f766e },
-    { x: 58, y: 0, z: -34, color: 0xea580c },
-    { x: 58, y: 1, z: -34, color: 0x0284c7 },
-    { x: 66, y: 0, z: -34, color: 0x1d4ed8 },
-    { x: 66, y: 0, z: -30.8, color: 0x059669 },
-    { x: 66, y: 1, z: -30.8, color: 0xd97706 },
-    { x: 58, y: 0, z: -30.8, color: 0xdc2626 },
+    { x: -66, y: 0, z: -34, color: 0x1e5c8a },
+    { x: -66, y: 1, z: -34, color: 0xb87628 },
+    { x: -58, y: 0, z: -34, color: 0x2a6b55 },
+    { x: -58, y: 0, z: -30.8, color: 0x8e3333 },
+    { x: -58, y: 1, z: -30.8, color: 0x354d6e },
+    { x: -66, y: 0, z: -30.8, color: 0x1f6262 },
+    { x: 58, y: 0, z: -34, color: 0xa84d25 },
+    { x: 58, y: 1, z: -34, color: 0x1e5c8a },
+    { x: 66, y: 0, z: -34, color: 0x354d6e },
+    { x: 66, y: 0, z: -30.8, color: 0x2a6b55 },
+    { x: 66, y: 1, z: -30.8, color: 0xb87628 },
+    { x: 58, y: 0, z: -30.8, color: 0x8e3333 },
   ];
   const yardContainerGeo = new THREE.BoxGeometry(6.2, 2.5, 2.6);
   const yardContainerInst = new THREE.InstancedMesh(
@@ -675,59 +760,171 @@ export function buildShipyardWorld(
     clickablePortalProxies.push(hitProxy);
   }
 
-  // 4. Twin Goliath Gantry Cranes (DOCK-01 / DOCK-02)
-  scene.add(buildGoliathCrane(-44.0, QUAY_DECK_TOP_Y, -39.5, 0xc2410c, textures.craneBannerOrange, aviationRedMat));
-  scene.add(buildGoliathCrane(44.0, QUAY_DECK_TOP_Y, -39.5, 0x0369a1, textures.craneBannerBlue, aviationRedMat));
+  // 4. Twin Goliath Gantry Cranes ("SEASTAR HEAVY" — DOCK-01 / DOCK-02) + Rear Fabrication Halls
+  scene.add(buildGoliathCrane(-44.0, QUAY_DECK_TOP_Y, -39.5, 0xb4481c, textures.craneBannerOrange, aviationRedMat));
+  scene.add(buildGoliathCrane(44.0, QUAY_DECK_TOP_Y, -39.5, 0x144e78, textures.craneBannerBlue, aviationRedMat));
 
-  // 5. High-Altitude Soft Clouds (hidden in Low-Spec mode)
+  // Rear shipyard assembly halls for realistic horizon depth
+  const hallMat = new THREE.MeshStandardMaterial({ color: 0xd0d9e3, roughness: 0.64, metalness: 0.16 });
+  const hallRoofMat = new THREE.MeshStandardMaterial({ color: 0x26445f, roughness: 0.54, metalness: 0.3 });
+  for (const hx of [-64, 0, 64]) {
+    const hall = new THREE.Mesh(new THREE.BoxGeometry(44, 13.5, 22), hallMat);
+    hall.position.set(hx, 1.56 + 6.75, -68);
+    hall.castShadow = true;
+    hall.receiveShadow = true;
+    scene.add(hall);
+    const roof = new THREE.Mesh(new THREE.BoxGeometry(45.2, 0.8, 23.2), hallRoofMat);
+    roof.position.set(hx, 1.56 + 13.9, -68);
+    scene.add(roof);
+  }
+  staticDisposables.push(hallMat, hallRoofMat);
+
+  // Twin Pier-Head Lighthouses (West Red / East Green maritime harbor entrance markers)
+  scene.add(buildPierLighthouse(-84.5, QUAY_DECK_TOP_Y, 34.5, 0xb91c1c, lampGlowMat));
+  scene.add(buildPierLighthouse(84.5, QUAY_DECK_TOP_Y, 34.5, 0x15803d, lampGlowMat));
+
+  // 5. High-Altitude Soft Clouds
   const cloudMat = new THREE.SpriteMaterial({
     map: textures.cloudPuff,
     transparent: true,
-    opacity: 0.58,
+    opacity: 0.52,
     depthWrite: false,
   });
   for (let i = 0; i < 6; i += 1) {
     const sp = new THREE.Sprite(cloudMat);
-    const baseX = -140 + i * 56;
-    sp.position.set(baseX, 58 + (i % 3) * 8, -95 - (i % 2) * 35);
-    sp.scale.set(42 + (i % 3) * 10, 18, 1);
+    const baseX = -150 + i * 62;
+    sp.position.set(baseX, 66 + (i % 3) * 9, -110 - (i % 2) * 35);
+    sp.scale.set(46 + (i % 3) * 10, 18, 1);
     scene.add(sp);
-    clouds.push({ sprite: sp, speed: 0.5 + (i % 3) * 0.25, baseX });
+    clouds.push({ sprite: sp, speed: 0.45 + (i % 3) * 0.22, baseX });
   }
   staticDisposables.push(cloudMat);
 
-  // 6. Dynamic SEDMS Project Ship Mount/Unmount Manager
+  // =========================================================================
+  // 6. DEDICATED DECORATIVE SCENERY LAYER (Hero "씨스타호", "FD-01", 10+ Ships)
+  //    STRICTLY SEPARATED FROM BUSINESS SEDMS SHIPS (`shipsRoot`)!
+  // =========================================================================
+  const sceneryRoot = new THREE.Group();
+  sceneryRoot.name = 'DecorativeHarborSceneryRoot';
+  sceneryRoot.userData.isDecorative = true;
+  scene.add(sceneryRoot);
+
+  HOME_HARBOR_DECORATIVE_VESSELS.forEach((spec, idx) => {
+    const anchor = new THREE.Group();
+    anchor.position.set(spec.x, 0.05, spec.z);
+    anchor.rotation.y = THREE.MathUtils.degToRad(spec.defaultYawDeg);
+    anchor.scale.setScalar(spec.scale);
+    anchor.userData.isDecorative = true;
+    anchor.userData.decorativeShipId = spec.id;
+
+    const vesselMesh = buildProjectVessel3D(spec.vesselType, textures, bridgeGlowMat, false);
+    anchor.add(vesselMesh);
+
+    // 3D scan point-cloud shell (toggled on selection)
+    const scanCloud = buildVesselScanPointCloud(
+      vesselMesh,
+      spec.isHero ? 0xf59e0b : 0x38bdf8,
+    );
+    anchor.add(scanCloud);
+    sceneryRoot.add(anchor);
+
+    const hitProxy = new THREE.Mesh(
+      new THREE.BoxGeometry(spec.halfBeam * 2.1, 18, spec.halfLength * 2.05),
+      new THREE.MeshBasicMaterial({ visible: false }),
+    );
+    hitProxy.position.set(spec.x, 7.5, spec.z);
+    hitProxy.rotation.y = THREE.MathUtils.degToRad(spec.defaultYawDeg);
+    hitProxy.userData.decorativeShipId = spec.id;
+    hitProxy.userData.isDecorative = true;
+    sceneryRoot.add(hitProxy);
+    clickableDecorativeShipProxies.push(hitProxy);
+
+    decorativeVessels.push({
+      spec,
+      anchor,
+      hitProxy,
+      scanCloud,
+      phase: idx * 0.91 + 0.4,
+    });
+  });
+
+  // =========================================================================
+  // 7. DYNAMIC SEDMS BUSINESS PROJECT SHIPS (`shipsRoot` — API / Fixtures ONLY)
+  // =========================================================================
   const shipsRoot = new THREE.Group();
+  shipsRoot.name = 'BusinessProjectShipsRoot';
   scene.add(shipsRoot);
+  let shipStatusRingBatch: THREE.InstancedMesh | null = null;
+  let boardingMarkerBatch: THREE.InstancedMesh | null = null;
+  let lastAppliedPrefs: ShipDisplayPrefsMap = {};
+  let currentSelectedShipId: string | null = null;
 
   const clearDockedShips = () => {
+    if (shipStatusRingBatch) {
+      shipsRoot.remove(shipStatusRingBatch);
+      shipStatusRingBatch.geometry.dispose();
+      (shipStatusRingBatch.material as THREE.Material).dispose();
+      shipStatusRingBatch = null;
+    }
+    if (boardingMarkerBatch) {
+      shipsRoot.remove(boardingMarkerBatch);
+      boardingMarkerBatch.geometry.dispose();
+      (boardingMarkerBatch.material as THREE.Material).dispose();
+      boardingMarkerBatch = null;
+    }
     for (const item of dockedShips) {
-      const bm = item.anchor.userData.boardingMarker as THREE.Mesh | undefined;
-      if (bm) {
-        shipsRoot.remove(bm);
-        bm.geometry.dispose();
-        (bm.material as THREE.Material).dispose();
-      }
       shipsRoot.remove(item.anchor);
       shipsRoot.remove(item.hitProxy);
-      shipsRoot.remove(item.statusRing);
       disposeObjectTree(item.anchor);
       item.hitProxy.geometry.dispose();
       (item.hitProxy.material as THREE.Material).dispose();
-      item.statusRing.geometry.dispose();
-      (item.statusRing.material as THREE.Material).dispose();
     }
     dockedShips.length = 0;
     clickableShipProxies.length = 0;
   };
 
-  const syncProjectShips = (ships: HarborShip[], lowSpec: boolean) => {
+  const applyShipDisplayPrefs = (prefs: ShipDisplayPrefsMap) => {
+    lastAppliedPrefs = prefs;
+    for (const item of dockedShips) {
+      const customYaw = prefs[item.ship.id]?.yawDeg;
+      const yawDeg = customYaw !== undefined ? customYaw : item.defaultYawDeg;
+      const rad = THREE.MathUtils.degToRad(yawDeg);
+      item.anchor.rotation.y = rad;
+      item.hitProxy.rotation.y = rad;
+    }
+    for (const deco of decorativeVessels) {
+      const customYaw = prefs[deco.spec.id]?.yawDeg;
+      const yawDeg = customYaw !== undefined ? customYaw : deco.spec.defaultYawDeg;
+      const rad = THREE.MathUtils.degToRad(yawDeg);
+      deco.anchor.rotation.y = rad;
+      deco.hitProxy.rotation.y = rad;
+    }
+  };
+
+  const setSelectedShipId = (shipId: string | null) => {
+    currentSelectedShipId = shipId;
+    for (const item of dockedShips) {
+      item.scanCloud.visible = shipId === item.ship.id;
+    }
+    for (const deco of decorativeVessels) {
+      deco.scanCloud.visible = shipId === deco.spec.id;
+    }
+  };
+
+  const syncProjectShips = (ships: HarborShip[], lowSpec: boolean, prefs?: ShipDisplayPrefsMap) => {
+    if (prefs) lastAppliedPrefs = prefs;
     clearDockedShips();
+    const statusRingSpecs: Array<{ x: number; y: number; z: number; colorHex: number }> = [];
+    const boardingMarkerSpecs: Array<{ x: number; y: number; z: number; colorHex: number }> = [];
 
     ships.forEach((ship, idx) => {
+      const defaultYawDeg = 90;
+      const effectiveYawDeg = lastAppliedPrefs[ship.id]?.yawDeg ?? defaultYawDeg;
+      const yawRad = THREE.MathUtils.degToRad(effectiveYawDeg);
+
       const anchor = new THREE.Group();
       anchor.position.set(ship.berthX, 0.05, ship.berthZ);
-      anchor.rotation.y = Math.PI / 2;
+      anchor.rotation.y = yawRad;
       anchor.scale.setScalar(0.84);
 
       const silhouette = getVesselSilhouetteByIndex(ship.hullStyleIndex);
@@ -737,10 +934,9 @@ export function buildShipyardWorld(
       const flagColor = new THREE.Color(ship.appearance.flagHex);
       const hullAccentColor = new THREE.Color(ship.appearance.hullAccentHex);
 
-      // 1) Signal flag mast + distinct silhouette
+      // Signal flag mast distinguishing active business project vessels
       const flagGroup = new THREE.Group();
       flagGroup.position.set(0, 12.2, 13.5);
-
       const poleMat = new THREE.MeshStandardMaterial({ color: 0xe2e8f0, roughness: 0.35, metalness: 0.7 });
       const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.16, 7.2, 8), poleMat);
       pole.position.y = 3.6;
@@ -777,36 +973,15 @@ export function buildShipyardWorld(
       } else {
         flagMesh = new THREE.Mesh(new THREE.PlaneGeometry(5.0, 2.1), flagMat);
         flagMesh.position.set(2.65, 6.0, 0);
-
-        if (ship.appearance.flagPattern === 'striped') {
-          const stripeMat = new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide });
-          const stripe = new THREE.Mesh(new THREE.PlaneGeometry(5.0, 0.48), stripeMat);
-          stripe.position.set(2.65, 6.0, 0.03);
-          flagGroup.add(stripe);
-        } else if (ship.appearance.flagPattern === 'checkered') {
-          const checkMat = new THREE.MeshBasicMaterial({ color: 0xf8fafc, side: THREE.DoubleSide });
-          const checkGeo = new THREE.PlaneGeometry(1.1, 0.9);
-          const checkInst = new THREE.InstancedMesh(checkGeo, checkMat, 4);
-          for (let c = 0; c < 4; c += 1) {
-            dummy.position.set(0.8 + c * 1.25, c % 2 === 0 ? 6.48 : 5.52, 0.03);
-            dummy.rotation.set(0, 0, 0);
-            dummy.scale.set(1, 1, 1);
-            dummy.updateMatrix();
-            checkInst.setMatrixAt(c, dummy.matrix);
-          }
-          checkInst.instanceMatrix.needsUpdate = true;
-          checkInst.computeBoundingSphere();
-          flagGroup.add(checkInst);
-        }
       }
       flagGroup.add(flagMesh);
       anchor.add(flagGroup);
 
-      // 2) Hull status trim bands (batched via 2-instance InstancedMesh)
+      // Business project hull status trim band (highlights business ships cleanly vs scenery)
       const trimMat = new THREE.MeshStandardMaterial({
         color: hullAccentColor,
         emissive: hullAccentColor,
-        emissiveIntensity: 0.16,
+        emissiveIntensity: 0.18,
         roughness: 0.4,
         metalness: 0.25,
       });
@@ -822,13 +997,13 @@ export function buildShipyardWorld(
       trimInst.computeBoundingSphere();
       anchor.add(trimInst);
 
-      // 3) 7-day updated deck floodlights batched via InstancedMesh (2 draw calls per ship instead of 16!)
+      // 7-day updated deck floodlights
       const lampPostMat = new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.5, metalness: 0.65 });
       const lampBulbMat = ship.appearance.hasDeckLights
         ? new THREE.MeshStandardMaterial({
             color: 0xfef08a,
             emissive: 0xfbbf24,
-            emissiveIntensity: 2.1,
+            emissiveIntensity: 2.0,
             roughness: 0.2,
           })
         : new THREE.MeshStandardMaterial({
@@ -838,7 +1013,7 @@ export function buildShipyardWorld(
             roughness: 0.7,
           });
       const deckPostInst = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.08, 0.1, 2.2, 6), lampPostMat, 8);
-      const deckBulbInst = new THREE.InstancedMesh(new THREE.SphereGeometry(0.32, 8, 8), lampBulbMat, 8);
+      const deckBulbInst = new THREE.InstancedMesh(new THREE.SphereGeometry(0.3, 8, 8), lampBulbMat, 8);
       let dIdx = 0;
       for (const lz of [-11.5, -3.5, 4.5, 11.5]) {
         for (const lx of [-4.6, 4.6]) {
@@ -860,50 +1035,34 @@ export function buildShipyardWorld(
       deckBulbInst.computeBoundingSphere();
       anchor.add(deckPostInst, deckBulbInst);
 
+      // 3D LiDAR Point-Cloud Scan Shell (Requirement #10 — toggled on ship selection)
+      const scanCloud = buildVesselScanPointCloud(vesselMesh, flagColor.getHex());
+      scanCloud.visible = currentSelectedShipId === ship.id;
+      anchor.add(scanCloud);
+
       shipsRoot.add(anchor);
 
-      const statusRing = new THREE.Mesh(
-        new THREE.RingGeometry(15.5, 16.4, 36),
-        new THREE.MeshBasicMaterial({
-          color: flagColor,
-          transparent: true,
-          opacity: ship.appearance.hasDeckLights ? 0.62 : 0.38,
-          side: THREE.DoubleSide,
-          depthWrite: false,
-        }),
-      );
-      statusRing.rotation.x = -Math.PI / 2;
-      statusRing.position.set(ship.berthX, 0.09, ship.berthZ);
-      shipsRoot.add(statusRing);
+      statusRingSpecs.push({
+        x: ship.berthX,
+        y: 0.09,
+        z: ship.berthZ,
+        colorHex: flagColor.getHex(),
+      });
 
-      // Quay boarding marker elevated cleanly above quay deck (+0.055m)
-      const boardingMarker = new THREE.Mesh(
-        new THREE.RingGeometry(1.15, 1.55, 24),
-        new THREE.MeshBasicMaterial({
-          color: flagColor,
-          transparent: true,
-          opacity: 0.78,
-          side: THREE.DoubleSide,
-          depthWrite: false,
-          polygonOffset: true,
-          polygonOffsetFactor: -3,
-          polygonOffsetUnits: -3,
-        }),
-      );
-      boardingMarker.rotation.x = -Math.PI / 2;
-      boardingMarker.position.set(
-        ship.boardingPoint.x,
-        QUAY_DECK_TOP_Y + Z_FIGHTING_SAFE_OFFSET * 2.2,
-        ship.boardingPoint.z,
-      );
-      anchor.userData.boardingMarker = boardingMarker;
-      shipsRoot.add(boardingMarker);
+      boardingMarkerSpecs.push({
+        x: ship.boardingPoint.x,
+        y: QUAY_DECK_TOP_Y + Z_FIGHTING_SAFE_OFFSET * 2.2,
+        z: ship.boardingPoint.z,
+        colorHex: flagColor.getHex(),
+      });
 
+      // Local-aligned hit proxy (rotates cleanly with ship heading!)
       const hitProxy = new THREE.Mesh(
-        new THREE.BoxGeometry(40, 18, 16),
+        new THREE.BoxGeometry(16, 18, 40),
         new THREE.MeshBasicMaterial({ visible: false }),
       );
       hitProxy.position.set(ship.berthX, 7.5, ship.berthZ);
+      hitProxy.rotation.y = yawRad;
       hitProxy.userData.projectId = ship.id;
       shipsRoot.add(hitProxy);
       clickableShipProxies.push(hitProxy);
@@ -912,10 +1071,32 @@ export function buildShipyardWorld(
         ship,
         anchor,
         hitProxy,
-        statusRing,
+        scanCloud,
+        defaultYawDeg,
         phase: idx * 1.37,
       });
     });
+
+    shipStatusRingBatch = createInstancedRingBatch(statusRingSpecs, {
+      innerRadius: 15.5,
+      outerRadius: 16.4,
+      segments: 36,
+      opacity: 0.56,
+    });
+    if (shipStatusRingBatch) {
+      shipsRoot.add(shipStatusRingBatch);
+    }
+
+    boardingMarkerBatch = createInstancedRingBatch(boardingMarkerSpecs, {
+      innerRadius: 1.15,
+      outerRadius: 1.55,
+      segments: 24,
+      opacity: 0.78,
+      polygonOffset: true,
+    });
+    if (boardingMarkerBatch) {
+      shipsRoot.add(boardingMarkerBatch);
+    }
   };
 
   const setLowSpecMode = (lowSpec: boolean) => {
@@ -938,13 +1119,25 @@ export function buildShipyardWorld(
         }
       });
     }
+    for (const deco of decorativeVessels) {
+      deco.anchor.traverse((obj) => {
+        const mesh = obj as THREE.Mesh;
+        if (mesh.isMesh) {
+          mesh.castShadow = !lowSpec;
+          mesh.receiveShadow = !lowSpec;
+        }
+      });
+    }
   };
 
   return {
     clickablePortalProxies,
     clickableShipProxies,
+    clickableDecorativeShipProxies,
     walkableMeshes,
     dockedShips,
+    decorativeVessels,
+    bridgeGlowMat,
     instancedPropCounts: {
       bollards: bollardPositions.length,
       fenders: fenderPositions.length,
@@ -954,22 +1147,53 @@ export function buildShipyardWorld(
       yardContainers: yardContainerSpecs.length,
     },
     syncProjectShips,
+    applyShipDisplayPrefs,
+    setSelectedShipId,
     setLowSpecMode,
     update: (dt: number, elapsed: number, lowSpec: boolean) => {
       if (lowSpec) return;
 
       for (const c of clouds) {
         c.sprite.position.x += c.speed * dt;
-        if (c.sprite.position.x > 190) c.sprite.position.x = -190;
+        if (c.sprite.position.x > 195) c.sprite.position.x = -195;
       }
 
       for (const item of dockedShips) {
         item.anchor.position.y = 0.05 + Math.sin(elapsed * 1.15 + item.phase) * 0.14;
-        item.anchor.rotation.z = Math.sin(elapsed * 0.85 + item.phase) * 0.012;
+        item.anchor.rotation.z = Math.sin(elapsed * 0.85 + item.phase) * 0.011;
+        if (item.scanCloud.visible) {
+          const mat = item.scanCloud.material as THREE.PointsMaterial;
+          mat.opacity = 0.65 + Math.sin(elapsed * 3.5) * 0.2;
+        }
+      }
+
+      for (const deco of decorativeVessels) {
+        deco.anchor.position.y = 0.05 + Math.sin(elapsed * 1.0 + deco.phase) * 0.12;
+        deco.anchor.rotation.z = Math.sin(elapsed * 0.75 + deco.phase) * 0.01;
+        if (deco.spec.cruise) {
+          const span = deco.spec.cruise.rangeX;
+          const offset = Math.sin(elapsed * 0.018 * Math.abs(deco.spec.cruise.speed) + deco.phase) * span;
+          const nextX = deco.spec.x + offset;
+          deco.anchor.position.x = nextX;
+          deco.hitProxy.position.x = nextX;
+        }
+        if (deco.scanCloud.visible) {
+          const mat = deco.scanCloud.material as THREE.PointsMaterial;
+          mat.opacity = 0.65 + Math.sin(elapsed * 3.5) * 0.2;
+        }
       }
     },
     dispose: () => {
       clearDockedShips();
+      for (const deco of decorativeVessels) {
+        sceneryRoot.remove(deco.anchor);
+        sceneryRoot.remove(deco.hitProxy);
+        disposeObjectTree(deco.anchor);
+        deco.hitProxy.geometry.dispose();
+        (deco.hitProxy.material as THREE.Material).dispose();
+      }
+      decorativeVessels.length = 0;
+      clickableDecorativeShipProxies.length = 0;
       for (const d of staticDisposables) {
         d.dispose();
       }

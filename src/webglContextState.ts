@@ -9,9 +9,12 @@
 
 export type WebGLContextHealth = 'active' | 'lost' | 'unsupported';
 
+export type WebGLFallbackReason = 'context_lost' | 'load_failed' | null;
+
 export interface WebGLViewState {
   webglSupported: boolean;
   contextHealth: WebGLContextHealth;
+  fallbackReason: WebGLFallbackReason;
   viewMode: '3d' | '2d';
   autoRestoreTo3D: boolean;
   retryNonce: number;
@@ -20,6 +23,7 @@ export interface WebGLViewState {
 export type WebGLViewEvent =
   | { type: 'CONTEXT_LOST' }
   | { type: 'CONTEXT_RESTORED' }
+  | { type: 'LOAD_FAILED' }
   | { type: 'RETRY_3D' }
   | { type: 'SET_VIEW_MODE'; next: '3d' | '2d' };
 
@@ -33,6 +37,7 @@ export function createInitialWebGLViewState(
     return {
       webglSupported: false,
       contextHealth: 'unsupported',
+      fallbackReason: null,
       viewMode: '2d',
       autoRestoreTo3D: false,
       retryNonce: 0,
@@ -41,6 +46,7 @@ export function createInitialWebGLViewState(
   return {
     webglSupported: true,
     contextHealth: 'active',
+    fallbackReason: null,
     viewMode: initialViewMode,
     autoRestoreTo3D: false,
     retryNonce: 0,
@@ -57,8 +63,20 @@ export function transitionWebGLViewState(
       return {
         ...state,
         contextHealth: 'lost',
+        fallbackReason: 'context_lost',
         viewMode: '2d',
         autoRestoreTo3D: state.viewMode === '3d' || state.autoRestoreTo3D,
+      };
+    }
+
+    case 'LOAD_FAILED': {
+      if (!state.webglSupported) return state;
+      return {
+        ...state,
+        contextHealth: 'lost',
+        fallbackReason: 'load_failed',
+        viewMode: '2d',
+        autoRestoreTo3D: false,
       };
     }
 
@@ -67,6 +85,7 @@ export function transitionWebGLViewState(
       return {
         ...state,
         contextHealth: 'active',
+        fallbackReason: null,
         viewMode: state.autoRestoreTo3D ? '3d' : state.viewMode,
         autoRestoreTo3D: false,
       };
@@ -77,6 +96,7 @@ export function transitionWebGLViewState(
       return {
         ...state,
         contextHealth: 'active',
+        fallbackReason: null,
         viewMode: '3d',
         autoRestoreTo3D: false,
         retryNonce: state.retryNonce + 1,
@@ -89,6 +109,7 @@ export function transitionWebGLViewState(
         return {
           ...state,
           contextHealth: 'active',
+          fallbackReason: null,
           viewMode: '3d',
           autoRestoreTo3D: false,
           retryNonce: state.retryNonce + 1,
