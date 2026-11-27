@@ -1,8 +1,9 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Anchor,
   Building2,
   ExternalLink,
+  FileBarChart2,
   Flag,
   Lightbulb,
   LogOut,
@@ -17,13 +18,19 @@ import {
   SGW_PORTAL_LINKS,
 } from '../deepLink';
 import type { HarborShip } from '../mapping';
+import type { MetaRegistryResponse } from '../meta/hubTypes';
 import type { RuntimeEnv } from '../runtimeEnv';
+import { ShipKeyItemsTab } from './ShipKeyItemsTab';
 
 export interface OnboardPanelProps {
   ship: HarborShip | null;
   customDisplayName?: string;
   phase: 'harbor' | 'boarding' | 'onboard';
   runtimeEnv: RuntimeEnv;
+  hubRegistry?: MetaRegistryResponse | null;
+  onHighlightShip?: (shipId: string) => void;
+  onOpenReport?: (shipId: string) => void;
+  onToast?: (message: string) => void;
   onPreviewLinkBlocked: (featureLabel: string) => void;
   onDisembark: () => void;
 }
@@ -41,9 +48,19 @@ export const OnboardPanel: React.FC<OnboardPanelProps> = ({
   customDisplayName,
   phase,
   runtimeEnv,
+  hubRegistry = null,
+  onHighlightShip,
+  onOpenReport,
+  onToast,
   onPreviewLinkBlocked,
   onDisembark,
 }) => {
+  const [activeTab, setActiveTab] = useState<'overview' | 'key-items'>('overview');
+
+  useEffect(() => {
+    setActiveTab('overview');
+  }, [ship?.id]);
+
   if (!ship || phase === 'harbor') return null;
 
   const isPreview = runtimeEnv === 'preview';
@@ -123,116 +140,195 @@ export const OnboardPanel: React.FC<OnboardPanelProps> = ({
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={onDisembark}
-            aria-label="선상 패널 닫고 하선"
-            className="rounded-lg p-1.5 text-slate-300 hover:bg-slate-800 hover:text-white focus-visible:outline-2 focus-visible:outline-sky-400"
-          >
-            <X className="h-4 w-4" aria-hidden="true" />
-          </button>
+          <div className="flex items-center gap-1.5 shrink-0">
+            {onOpenReport && (
+              <button
+                type="button"
+                data-testid="onboard-report-btn"
+                onClick={() => onOpenReport(ship.id)}
+                aria-label={`${displayTitle} 통합 리포트 열기`}
+                className="inline-flex min-h-[32px] items-center gap-1 rounded-lg border border-sky-500/60 bg-sky-950/75 px-2.5 py-1 text-xs font-semibold text-sky-100 hover:bg-sky-900/80 focus-visible:outline-2 focus-visible:outline-sky-400"
+              >
+                <FileBarChart2 className="h-3.5 w-3.5 text-sky-300 shrink-0" aria-hidden="true" />
+                <span>리포트</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onDisembark}
+              aria-label="선상 패널 닫고 하선"
+              className="rounded-lg p-1.5 text-slate-300 hover:bg-slate-800 hover:text-white focus-visible:outline-2 focus-visible:outline-sky-400"
+            >
+              <X className="h-4 w-4" aria-hidden="true" />
+            </button>
+          </div>
         </div>
 
-        {/* Metadata Grid */}
-        <dl className="grid grid-cols-2 gap-2.5 rounded-xl border border-slate-800 bg-slate-950/85 p-3.5 text-xs">
-          <div>
-            <dt className="text-slate-400">내 역할</dt>
-            <dd className="mt-0.5 font-semibold text-white">{ship.role}</dd>
-          </div>
-          <div>
-            <dt className="text-slate-400">상태</dt>
-            <dd className="mt-0.5 flex items-center gap-1.5 font-semibold text-white">
-              <span
-                className="h-2.5 w-2.5 rounded-full shrink-0"
-                style={{ backgroundColor: ship.appearance.flagHex }}
-                aria-hidden="true"
-              />
-              <span>
-                {ship.status} ({ship.appearance.statusLabelKo})
-              </span>
-            </dd>
-          </div>
-          <div>
-            <dt className="text-slate-400">최근 갱신 시각</dt>
-            <dd className="mt-0.5 font-mono text-slate-200">{ship.updatedAt}</dd>
-          </div>
-          <div>
-            <dt className="text-slate-400">갑판 불빛 (7일 기준)</dt>
-            <dd className="mt-0.5 inline-flex items-center gap-1 font-semibold">
-              <Lightbulb
-                className={`h-3.5 w-3.5 ${
-                  ship.appearance.hasDeckLights ? 'text-amber-300' : 'text-slate-500'
-                }`}
-                aria-hidden="true"
-              />
-              <span className={ship.appearance.hasDeckLights ? 'text-amber-200' : 'text-slate-400'}>
-                {ship.appearance.hasDeckLights ? '점등 (최근 활동)' : '소등 (7일 경과)'}
-              </span>
-            </dd>
-          </div>
-        </dl>
-
-        <p className="text-xs leading-relaxed text-slate-300">
-          {isPreview
-            ? '미리보기 데모 선상 패널입니다. 실제 SEDMS 프로젝트·팀 채팅·NAS 폴더 이동은 SGW 운영 환경에서만 동작합니다.'
-            : '도면·배포·결재는 SEDMS에서, 프로젝트 소통과 공유 문서는 SGTALK 팀 채팅 및 SGW NAS에서 이어서 처리합니다.'}
-        </p>
-
-        {/* Primary CTA: SEDMS 에서 열기 */}
-        <a
-          href={safeSedmsHref}
-          onClick={(e) => {
-            if (isPreview) {
-              e.preventDefault();
-              onPreviewLinkBlocked(`SEDMS 프로젝트(${ship.code}) 열기`);
-            }
-          }}
-          className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-sky-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-sky-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400"
+        {/* Panel Tabs: [개요] / [핵심 항목] */}
+        <div
+          role="tablist"
+          aria-label="선상 패널 탭"
+          className="grid grid-cols-2 gap-1 rounded-xl border border-slate-800 bg-slate-950/90 p-1"
+          data-testid="onboard-panel-tabs"
         >
-          SEDMS 에서 열기
-          <ExternalLink className="h-4 w-4" aria-hidden="true" />
-        </a>
-
-        {/* Secondary Actions: 팀 채팅 / NAS 폴더 / 하선 */}
-        <div className="grid grid-cols-3 gap-2">
-          <a
-            href={safeChatHref}
-            onClick={(e) => {
-              if (isPreview) {
-                e.preventDefault();
-                onPreviewLinkBlocked(`팀 채팅(${ship.code})`);
-              }
-            }}
-            className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-700 bg-slate-800 px-2.5 py-2 text-xs font-semibold text-slate-100 hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-sky-400"
-          >
-            <MessageSquare className="h-3.5 w-3.5 text-sky-400 shrink-0" aria-hidden="true" />
-            <span>팀 채팅</span>
-          </a>
-
-          <a
-            href={safeNasHref}
-            onClick={(e) => {
-              if (isPreview) {
-                e.preventDefault();
-                onPreviewLinkBlocked(`NAS 폴더(${ship.code})`);
-              }
-            }}
-            className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-700 bg-slate-800 px-2.5 py-2 text-xs font-semibold text-slate-100 hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-sky-400"
-          >
-            <Building2 className="h-3.5 w-3.5 text-teal-400 shrink-0" aria-hidden="true" />
-            <span>NAS 폴더</span>
-          </a>
-
           <button
             type="button"
-            onClick={onDisembark}
-            aria-label={`${ship.name}에서 하선하기`}
-            className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-rose-500/50 bg-rose-950/60 px-2.5 py-2 text-xs font-semibold text-rose-100 hover:bg-rose-900/70 focus-visible:outline-2 focus-visible:outline-sky-400"
+            role="tab"
+            aria-selected={activeTab === 'overview'}
+            aria-label="선박 개요 탭"
+            data-testid="onboard-tab-overview"
+            onClick={() => setActiveTab('overview')}
+            className={`min-h-[34px] rounded-lg px-3 py-1.5 text-xs font-bold transition focus-visible:outline-2 focus-visible:outline-sky-400 ${
+              activeTab === 'overview'
+                ? 'bg-sky-700 text-white shadow'
+                : 'text-slate-300 hover:bg-slate-800/80 hover:text-white'
+            }`}
           >
-            <LogOut className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-            <span>하선</span>
+            개요
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'key-items'}
+            aria-label="선박 핵심 항목 탭"
+            data-testid="onboard-tab-key-items"
+            onClick={() => setActiveTab('key-items')}
+            className={`min-h-[34px] rounded-lg px-3 py-1.5 text-xs font-bold transition focus-visible:outline-2 focus-visible:outline-sky-400 ${
+              activeTab === 'key-items'
+                ? 'bg-sky-700 text-white shadow'
+                : 'text-slate-300 hover:bg-slate-800/80 hover:text-white'
+            }`}
+          >
+            핵심 항목
           </button>
         </div>
+
+        {activeTab === 'overview' ? (
+          <>
+            {/* Metadata Grid */}
+            <dl className="grid grid-cols-2 gap-2.5 rounded-xl border border-slate-800 bg-slate-950/85 p-3.5 text-xs">
+              <div>
+                <dt className="text-slate-400">내 역할</dt>
+                <dd className="mt-0.5 font-semibold text-white">{ship.role}</dd>
+              </div>
+              <div>
+                <dt className="text-slate-400">상태</dt>
+                <dd className="mt-0.5 flex items-center gap-1.5 font-semibold text-white">
+                  <span
+                    className="h-2.5 w-2.5 rounded-full shrink-0"
+                    style={{ backgroundColor: ship.appearance.flagHex }}
+                    aria-hidden="true"
+                  />
+                  <span>
+                    {ship.status} ({ship.appearance.statusLabelKo})
+                  </span>
+                </dd>
+              </div>
+              <div>
+                <dt className="text-slate-400">최근 갱신 시각</dt>
+                <dd className="mt-0.5 font-mono text-slate-200">{ship.updatedAt}</dd>
+              </div>
+              <div>
+                <dt className="text-slate-400">갑판 불빛 (7일 기준)</dt>
+                <dd className="mt-0.5 inline-flex items-center gap-1 font-semibold">
+                  <Lightbulb
+                    className={`h-3.5 w-3.5 ${
+                      ship.appearance.hasDeckLights ? 'text-amber-300' : 'text-slate-500'
+                    }`}
+                    aria-hidden="true"
+                  />
+                  <span className={ship.appearance.hasDeckLights ? 'text-amber-200' : 'text-slate-400'}>
+                    {ship.appearance.hasDeckLights ? '점등 (최근 활동)' : '소등 (7일 경과)'}
+                  </span>
+                </dd>
+              </div>
+            </dl>
+
+            <p className="text-xs leading-relaxed text-slate-300">
+              {isPreview
+                ? '미리보기 데모 선상 패널입니다. 실제 SEDMS 프로젝트·팀 채팅·NAS 폴더 이동은 SGW 운영 환경에서만 동작합니다.'
+                : '도면·배포·결재는 SEDMS에서, 프로젝트 소통과 공유 문서는 SGTALK 팀 채팅 및 SGW NAS에서 이어서 처리합니다.'}
+            </p>
+
+            {/* Primary CTA: SEDMS 에서 열기 */}
+            <a
+              href={safeSedmsHref}
+              onClick={(e) => {
+                if (isPreview) {
+                  e.preventDefault();
+                  onPreviewLinkBlocked(`SEDMS 프로젝트(${ship.code}) 열기`);
+                }
+              }}
+              className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-sky-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-sky-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400"
+            >
+              SEDMS 에서 열기
+              <ExternalLink className="h-4 w-4" aria-hidden="true" />
+            </a>
+
+            {/* Secondary Actions: 팀 채팅 / NAS 폴더 / 하선 */}
+            <div className="grid grid-cols-3 gap-2">
+              <a
+                href={safeChatHref}
+                onClick={(e) => {
+                  if (isPreview) {
+                    e.preventDefault();
+                    onPreviewLinkBlocked(`팀 채팅(${ship.code})`);
+                  }
+                }}
+                className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-700 bg-slate-800 px-2.5 py-2 text-xs font-semibold text-slate-100 hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-sky-400"
+              >
+                <MessageSquare className="h-3.5 w-3.5 text-sky-400 shrink-0" aria-hidden="true" />
+                <span>팀 채팅</span>
+              </a>
+
+              <a
+                href={safeNasHref}
+                onClick={(e) => {
+                  if (isPreview) {
+                    e.preventDefault();
+                    onPreviewLinkBlocked(`NAS 폴더(${ship.code})`);
+                  }
+                }}
+                className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-700 bg-slate-800 px-2.5 py-2 text-xs font-semibold text-slate-100 hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-sky-400"
+              >
+                <Building2 className="h-3.5 w-3.5 text-teal-400 shrink-0" aria-hidden="true" />
+                <span>NAS 폴더</span>
+              </a>
+
+              <button
+                type="button"
+                onClick={onDisembark}
+                aria-label={`${ship.name}에서 하선하기`}
+                className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-rose-500/50 bg-rose-950/60 px-2.5 py-2 text-xs font-semibold text-rose-100 hover:bg-rose-900/70 focus-visible:outline-2 focus-visible:outline-sky-400"
+              >
+                <LogOut className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                <span>하선</span>
+              </button>
+            </div>
+          </>
+        ) : (
+          <div className="space-y-3">
+            <ShipKeyItemsTab
+              projectId={ship.id}
+              runtimeEnv={runtimeEnv}
+              registry={hubRegistry}
+              onHighlightShip={onHighlightShip}
+              onPreviewLinkBlocked={onPreviewLinkBlocked}
+              onToast={onToast}
+            />
+            <div className="flex justify-end pt-1">
+              <button
+                type="button"
+                onClick={onDisembark}
+                aria-label={`${ship.name}에서 하선하기`}
+                className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-rose-500/50 bg-rose-950/60 px-3 py-1.5 text-xs font-semibold text-rose-100 hover:bg-rose-900/70 focus-visible:outline-2 focus-visible:outline-sky-400"
+              >
+                <LogOut className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                <span>하선</span>
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -715,6 +715,15 @@ export async function generateMetaReport(
         raw.integrity && typeof raw.integrity === 'object' && !Array.isArray(raw.integrity)
           ? (raw.integrity as Record<string, unknown>)
           : {};
+      const rawResidue = rawIntegrity.maskedResidue;
+      const maskedResidue =
+        typeof rawResidue === 'number' && Number.isFinite(rawResidue)
+          ? rawResidue
+          : rawResidue === false
+            ? 0
+            : rawResidue === true
+              ? 1
+              : -1;
       return {
         reportVersion: asString(raw.reportVersion, '1.0'),
         projectId: asString(raw.projectId, params.project),
@@ -730,7 +739,7 @@ export async function generateMetaReport(
         sections,
         unavailableModules,
         integrity: {
-          maskedResidue: Boolean(rawIntegrity.maskedResidue),
+          maskedResidue,
           sourceHonesty: rawIntegrity.sourceHonesty !== false,
         },
       };

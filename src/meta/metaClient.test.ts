@@ -101,7 +101,7 @@ describe('METASGW /api/meta/* Hub Client (Stage 1/5)', () => {
     assert.equal(repJson.data.report.projectId, 'proj01');
     assert.equal(repJson.data.report.rangeDays, 7);
     assert.equal(repJson.data.report.integrity.sourceHonesty, true);
-    assert.equal(repJson.data.report.integrity.maskedResidue, false);
+    assert.equal(repJson.data.report.integrity.maskedResidue, 0);
 
     const repMd = await generateMetaReport({ project: 'proj02', days: 14, format: 'md' }, opts);
     assert.equal(repMd.ok, true);
@@ -188,7 +188,7 @@ describe('METASGW /api/meta/* Hub Client (Stage 1/5)', () => {
           executiveKpi: { total: 1 },
           sections: [{ moduleId: 'sgw', status: 'active', highlights: [] }],
           unavailableModules: ['sedms'],
-          integrity: { maskedResidue: false, sourceHonesty: true },
+          integrity: { maskedResidue: 0, sourceHonesty: true },
         });
       }
       return jsonResponse({ code: 'ERR_SERVER' }, 500);

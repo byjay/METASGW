@@ -22,9 +22,11 @@ import { SGW_PORTAL_LINKS, isSafeNavigationUrl } from '../deepLink';
 import { getErrorDescriptor, type AppErrorCode } from '../errorCatalog';
 import { formatDisconnectedBanner } from '../mapping';
 import { PREVIEW_DEMO_BANNER_TEXT, type RuntimeEnv } from '../runtimeEnv';
+import type { HubModuleChipItem } from '../meta/hubChipModel';
 import type { SgwUser } from '../sgwAdapter';
 import type { CameraPreset, QualityTier, RenderMetrics } from '../scene/harborSceneTypes';
 import { WEBGL_RETRY_BUTTON_LABEL } from '../webglContextState';
+import { HudHubStatusStrip } from './HudHubStatusStrip';
 
 export interface HudTopBarProps {
   user: SgwUser;
@@ -54,6 +56,11 @@ export interface HudTopBarProps {
   onZoom: (factor: number) => void;
   onLogout: () => void;
   onPreviewLinkBlocked: (featureLabel: string) => void;
+  hubChips?: HubModuleChipItem[];
+  hubProjectLabel?: string | null;
+  hubRefreshing?: boolean;
+  onRefreshHub?: () => void;
+  onOpenReport?: () => void;
 }
 
 const CAMERA_LABEL: Record<CameraPreset, string> = {
@@ -96,6 +103,11 @@ export const HudTopBar: React.FC<HudTopBarProps> = ({
   onZoom,
   onLogout,
   onPreviewLinkBlocked,
+  hubChips,
+  hubProjectLabel,
+  hubRefreshing = false,
+  onRefreshHub,
+  onOpenReport,
 }) => {
   const isPreview = runtimeEnv === 'preview';
   const effectiveTier: QualityTier = qualityTier ?? (lowSpecMode ? 'low' : 'high');
@@ -428,6 +440,17 @@ export const HudTopBar: React.FC<HudTopBarProps> = ({
             </span>
           )}
         </div>
+      )}
+      {hubChips && (hubChips.length > 0 || hubRefreshing) && (
+        <HudHubStatusStrip
+          chips={hubChips}
+          runtimeEnv={runtimeEnv}
+          projectLabel={hubProjectLabel}
+          refreshing={hubRefreshing}
+          onRefresh={onRefreshHub}
+          onOpenReport={onOpenReport}
+          onPreviewLinkBlocked={onPreviewLinkBlocked}
+        />
       )}
     </header>
   );

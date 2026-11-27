@@ -107,7 +107,7 @@ export interface MetaReportSection {
 }
 
 export interface MetaReportIntegrity {
-  maskedResidue: boolean;
+  maskedResidue: number;
   sourceHonesty: boolean;
 }
 

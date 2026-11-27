@@ -426,7 +426,7 @@ export function getPreviewReportJson(
     ],
     unavailableModules: [],
     integrity: {
-      maskedResidue: false,
+      maskedResidue: 0,
       sourceHonesty: true,
     },
   };

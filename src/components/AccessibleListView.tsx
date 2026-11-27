@@ -174,7 +174,7 @@ export const AccessibleListView: React.FC<AccessibleListViewProps> = ({
       id="main-content"
       tabIndex={-1}
       data-testid="quick-radar-view"
-      className="min-h-screen w-full overflow-x-hidden overflow-y-auto bg-slate-950 px-3 sm:px-4 pb-16 pt-24 sm:pt-20 text-slate-100 focus:outline-none"
+      className="min-h-screen w-full overflow-x-hidden overflow-y-auto bg-slate-950 px-3 sm:px-4 pb-16 pt-32 sm:pt-28 text-slate-100 focus:outline-none"
       aria-label="메타SGW 빠른 레이더 및 2D 목록 상황판"
     >
       <a

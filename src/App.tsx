@@ -38,6 +38,9 @@ const PeopleFinderDrawer = lazy(() =>
 const RadialActionMenu = lazy(() =>
   import('./components/RadialActionMenu').then((m) => ({ default: m.RadialActionMenu })),
 );
+const ReportModal = lazy(() =>
+  import('./ui/ReportModal').then((m) => ({ default: m.ReportModal })),
+);
 import {
   detectDeviceProfile,
   subscribeReducedMotion,
@@ -50,6 +53,17 @@ import {
   type HarborPerson,
   type HarborShip,
 } from './mapping';
+import {
+  HUB_POLL_INTERVAL_MS,
+  mergeHubModuleChips,
+} from './meta/hubChipModel';
+import type { MetaHubSummaryResponse, MetaRegistryResponse } from './meta/hubTypes';
+import {
+  createProjectRequestCoordinator,
+  fetchMetaHubSummary,
+  fetchMetaRegistry,
+  type ProjectRequestCoordinator,
+} from './meta/metaClient';
 import {
   detectRuntimeEnv,
   PREVIEW_SGW_ONLY_TOAST,
@@ -210,8 +224,18 @@ export function App() {
   const [minimapOpen, setMinimapOpen] = useState<boolean>(() => isDesktopViewport());
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
+  // Unified /api/meta/* Hub status chip state (Stage 2/5) & Report Modal (Stage 4/5)
+  const [hubRegistry, setHubRegistry] = useState<MetaRegistryResponse | null>(null);
+  const [hubSummary, setHubSummary] = useState<MetaHubSummaryResponse | null>(null);
+  const [hubRefreshing, setHubRefreshing] = useState<boolean>(false);
+  const [reportModalProjectId, setReportModalProjectId] = useState<string | null>(null);
+
   const canvasContainerRef = useRef<HTMLDivElement | null>(null);
   const sceneRef = useRef<HarborSceneHandle | null>(null);
+  const hubCoordinatorRef = useRef<ProjectRequestCoordinator | null>(null);
+  if (!hubCoordinatorRef.current) {
+    hubCoordinatorRef.current = createProjectRequestCoordinator(null);
+  }
   const toastTimerRef = useRef<number | null>(null);
   const boardingTimerRef = useRef<number | null>(null);
   const reducedMotionRef = useRef<boolean>(reducedMotion);
@@ -538,6 +562,129 @@ export function App() {
     sceneRef.current?.setSelectedShipId(selectedId);
   }, [radialTarget, activeBoardedShip]);
 
+  // Active project for /api/meta/hub/summary (current selected/boarded project, fallback to first project)
+  const hubTargetProjectId = useMemo<string | null>(() => {
+    if (activeBoardedShip) return activeBoardedShip.id;
+    if (radialTarget?.kind === 'ship') return radialTarget.ship.id;
+    if (projectSession.minimapSelectedShipId && shipsById.has(projectSession.minimapSelectedShipId)) {
+      return projectSession.minimapSelectedShipId;
+    }
+    return mappedShips[0]?.id ?? null;
+  }, [activeBoardedShip, radialTarget, projectSession.minimapSelectedShipId, shipsById, mappedShips]);
+
+  const hubProjectLabel = useMemo<string | null>(() => {
+    if (!hubTargetProjectId) return null;
+    const ship = shipsById.get(hubTargetProjectId);
+    if (!ship) return hubTargetProjectId;
+    return shipDisplayPrefs[ship.id]?.customName || ship.name || ship.code;
+  }, [hubTargetProjectId, shipsById, shipDisplayPrefs]);
+
+  const hubChips = useMemo(
+    () => mergeHubModuleChips(hubRegistry, hubSummary),
+    [hubRegistry, hubSummary],
+  );
+
+  const loadHubRegistry = useCallback(async () => {
+    const res = await fetchMetaRegistry({ runtimeEnv });
+    if (res.ok) {
+      setHubRegistry(res.data);
+    } else if (res.code === 'ERR_AUTH_REQUIRED') {
+      window.location.replace(res.redirectUrl ?? SGW_LOGIN_REDIRECT_URL);
+    }
+  }, [runtimeEnv]);
+
+  const loadHubSummary = useCallback(
+    async (projectId: string, refresh: 0 | 1) => {
+      const coordinator = hubCoordinatorRef.current;
+      if (!coordinator) return;
+      coordinator.switchProject(projectId);
+      setHubRefreshing(true);
+      const outcome = await coordinator.run(projectId, 'hub-summary', (signal) =>
+        fetchMetaHubSummary({ project: projectId, refresh }, { runtimeEnv, signal }),
+      );
+      if (outcome.stale || !outcome.result) {
+        return;
+      }
+      setHubRefreshing(false);
+      const res = outcome.result;
+      if (res.ok) {
+        setHubSummary(res.data);
+        return;
+      }
+      if (res.code === 'ERR_AUTH_REQUIRED') {
+        window.location.replace(res.redirectUrl ?? SGW_LOGIN_REDIRECT_URL);
+      } else if (res.code === 'ERR_RATE_LIMITED') {
+        // Keep previously cached hubSummary intact on 429
+        showToast('요청이 많습니다. 잠시 후 다시 시도해 주세요.');
+      } else if (res.code === 'ERR_PROJECT_FORBIDDEN') {
+        showToast('접근 권한이 없는 프로젝트입니다. 허용된 프로젝트를 선택해 주세요.');
+      } else if (refresh === 1 && res.code !== 'ERR_ABORTED') {
+        showToast(res.message);
+      }
+    },
+    [runtimeEnv, showToast],
+  );
+
+  // Load /api/meta/registry once after authentication
+  useEffect(() => {
+    if (authStatus !== 'authenticated') return;
+    void loadHubRegistry();
+  }, [authStatus, loadHubRegistry]);
+
+  // Load /api/meta/hub/summary on project switch + 45s visibility-aware auto-refresh
+  useEffect(() => {
+    if (authStatus !== 'authenticated') return;
+    const coordinator = hubCoordinatorRef.current;
+    if (!hubTargetProjectId) {
+      coordinator?.cancelAll();
+      setHubSummary(null);
+      setHubRefreshing(false);
+      return;
+    }
+
+    void loadHubSummary(hubTargetProjectId, 0);
+
+    let timerId: number | null = null;
+    const startTimer = () => {
+      if (timerId !== null) window.clearInterval(timerId);
+      timerId = window.setInterval(() => {
+        if (!document.hidden) {
+          void loadHubSummary(hubTargetProjectId, 0);
+        }
+      }, HUB_POLL_INTERVAL_MS);
+    };
+
+    const handleVisibility = () => {
+      if (document.hidden) {
+        if (timerId !== null) {
+          window.clearInterval(timerId);
+          timerId = null;
+        }
+      } else {
+        void loadHubSummary(hubTargetProjectId, 0);
+        startTimer();
+      }
+    };
+
+    if (!document.hidden) {
+      startTimer();
+    }
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    return () => {
+      if (timerId !== null) window.clearInterval(timerId);
+      document.removeEventListener('visibilitychange', handleVisibility);
+      coordinator?.cancelAll();
+    };
+  }, [authStatus, hubTargetProjectId, loadHubSummary]);
+
+  const handleRefreshHub = useCallback(() => {
+    void loadHubRegistry();
+    if (hubTargetProjectId) {
+      void loadHubSummary(hubTargetProjectId, 1);
+    }
+  }, [hubTargetProjectId, loadHubRegistry, loadHubSummary]);
+
   // Keyboard shortcuts: E / Enter to board nearby ship; Escape to disembark or close overlays
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -549,6 +696,10 @@ export function App() {
           target.tagName === 'SELECT');
 
       if (e.key === 'Escape') {
+        if (reportModalProjectId) {
+          setReportModalProjectId(null);
+          return;
+        }
         if (projectSession.radialTarget) {
           setProjectSession((prev) =>
             transitionProjectSessionState(prev, { type: 'CLOSE_RADIAL' }),
@@ -573,7 +724,8 @@ export function App() {
         boardingState.phase === 'harbor' &&
         boardingState.nearbyShipId &&
         !projectSession.selectedPersonSub &&
-        !projectSession.radialTarget
+        !projectSession.radialTarget &&
+        !reportModalProjectId
       ) {
         e.preventDefault();
         startBoardingShip(boardingState.nearbyShipId);
@@ -585,6 +737,7 @@ export function App() {
     boardingState,
     projectSession.selectedPersonSub,
     projectSession.radialTarget,
+    reportModalProjectId,
     startBoardingShip,
     handleDisembark,
   ]);
@@ -986,6 +1139,12 @@ export function App() {
           transitionProjectSessionState(prev, { type: 'CLOSE_RADIAL' }),
         );
       },
+      boardShip: (shipId: string) => startBoardingShip(shipId),
+      openReport: (shipId?: string) => {
+        const nextId = shipId ?? hubTargetProjectId;
+        if (nextId) setReportModalProjectId(nextId);
+      },
+      closeReport: () => setReportModalProjectId(null),
       renameShip: (shipId: string, name: string) => handleRenameShip(shipId, name),
       rotateShipStep: (shipId: string, steps: number) => handleRotateShipStep(shipId, steps),
       snapShipParallel: (shipId: string) => handleSnapShipParallel(shipId),
@@ -993,7 +1152,14 @@ export function App() {
     return () => {
       delete win.__METASGW_QA__;
     };
-  }, [decorativeById, handleRenameShip, handleRotateShipStep, handleSnapShipParallel]);
+  }, [
+    decorativeById,
+    hubTargetProjectId,
+    startBoardingShip,
+    handleRenameShip,
+    handleRotateShipStep,
+    handleSnapShipParallel,
+  ]);
 
   const handleSelectQualityTier = useCallback((nextTier: QualityTier) => {
     setUserSelectedQuality(true);
@@ -1201,6 +1367,15 @@ export function App() {
           void handleLogout();
         }}
         onPreviewLinkBlocked={showPreviewBlockedToast}
+        hubChips={hubChips}
+        hubProjectLabel={hubProjectLabel}
+        hubRefreshing={hubRefreshing}
+        onRefreshHub={handleRefreshHub}
+        onOpenReport={
+          hubTargetProjectId
+            ? () => setReportModalProjectId(hubTargetProjectId)
+            : undefined
+        }
       />
 
       {shouldKeep3DMounted && (
@@ -1454,11 +1629,15 @@ export function App() {
           <RadialActionMenu
             target={radialTarget}
             runtimeEnv={runtimeEnv}
+            hubRegistry={hubRegistry}
             customShipName={activeRadialCustomName}
             currentYawDeg={activeRadialYawDeg}
             rotationWarning={rotationWarning}
             onBoardShip={startBoardingShip}
             onFocusPerson3D={viewMode === '3d' ? handleFocusPerson3D : undefined}
+            onHighlightShip={(shipId) => sceneRef.current?.setSelectedShipId(shipId)}
+            onOpenReport={(shipId) => setReportModalProjectId(shipId)}
+            onToast={showToast}
             onRenameShip={handleRenameShip}
             onRotateShipStep={handleRotateShipStep}
             onRotateShipAbsolute={handleRotateShipAbsolute}
@@ -1479,8 +1658,30 @@ export function App() {
             customDisplayName={shipDisplayPrefs[activeBoardedShip.id]?.customName}
             phase={boardingState.phase}
             runtimeEnv={runtimeEnv}
+            hubRegistry={hubRegistry}
+            onHighlightShip={(shipId) => sceneRef.current?.setSelectedShipId(shipId)}
+            onOpenReport={(shipId) => setReportModalProjectId(shipId)}
+            onToast={showToast}
             onPreviewLinkBlocked={showPreviewBlockedToast}
             onDisembark={handleDisembark}
+          />
+        )}
+
+        {reportModalProjectId && (
+          <ReportModal
+            open={Boolean(reportModalProjectId)}
+            projectId={reportModalProjectId}
+            projectName={
+              shipsById.get(reportModalProjectId)
+                ? shipDisplayPrefs[reportModalProjectId]?.customName ||
+                  shipsById.get(reportModalProjectId)?.name
+                : reportModalProjectId
+            }
+            runtimeEnv={runtimeEnv}
+            registry={hubRegistry}
+            onClose={() => setReportModalProjectId(null)}
+            onPreviewLinkBlocked={showPreviewBlockedToast}
+            onToast={showToast}
           />
         )}
       </Suspense>
@@ -1504,7 +1705,7 @@ export function App() {
           role="status"
           aria-live="polite"
           data-testid="preview-sgw-only-toast"
-          className="fixed left-1/2 top-24 sm:top-16 z-50 flex max-w-[calc(100vw-1.5rem)] -translate-x-1/2 items-center gap-2 rounded-xl border border-amber-400/60 bg-slate-950/96 px-4 py-2.5 text-xs font-semibold text-amber-100 shadow-2xl"
+          className="fixed left-1/2 top-32 sm:top-24 z-50 flex max-w-[calc(100vw-1.5rem)] -translate-x-1/2 items-center gap-2 rounded-xl border border-amber-400/60 bg-slate-950/96 px-4 py-2.5 text-xs font-semibold text-amber-100 shadow-2xl"
         >
           <Info className="h-4 w-4 shrink-0 text-amber-400" aria-hidden="true" />
           <span className="truncate">{toastMessage}</span>

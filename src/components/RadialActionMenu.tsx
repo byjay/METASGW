@@ -4,6 +4,7 @@ import {
   Anchor,
   Building2,
   Compass,
+  FileBarChart2,
   FolderKanban,
   Mail,
   MessageSquare,
@@ -25,9 +26,11 @@ import {
   SGW_PORTAL_LINKS,
 } from '../deepLink';
 import type { HarborPerson, HarborShip } from '../mapping';
+import type { MetaRegistryResponse } from '../meta/hubTypes';
 import type { RuntimeEnv } from '../runtimeEnv';
 import type { ClickedDecorativeShip } from '../scene/harborSceneTypes';
 import { MAX_SHIP_NAME_LENGTH } from '../shipDisplayPrefs';
+import { ShipKeyItemsTab } from './ShipKeyItemsTab';
 
 export type RadialDirection = 'north' | 'east' | 'south' | 'west';
 
@@ -48,12 +51,16 @@ export interface RadialMenuItem {
 export interface RadialActionMenuProps {
   target: RadialTarget | null;
   runtimeEnv: RuntimeEnv;
+  hubRegistry?: MetaRegistryResponse | null;
   viewportSize?: { width: number; height: number };
   customShipName?: string;
   currentYawDeg?: number;
   rotationWarning?: string | null;
   onBoardShip?: (shipId: string) => void;
   onFocusPerson3D?: (sub: string) => void;
+  onHighlightShip?: (shipId: string) => void;
+  onOpenReport?: (shipId: string) => void;
+  onToast?: (message: string) => void;
   onRenameShip?: (shipId: string, rawName: string) => { ok: boolean; reason?: string };
   onRotateShipStep?: (shipId: string, deltaSteps: number) => void;
   onRotateShipAbsolute?: (shipId: string, nextYawDeg: number) => void;
@@ -211,12 +218,16 @@ const DIRECTION_ICON: Record<RadialDirection, React.ReactNode> = {
 export const RadialActionMenu: React.FC<RadialActionMenuProps> = ({
   target,
   runtimeEnv,
+  hubRegistry = null,
   viewportSize,
   customShipName,
   currentYawDeg = 90,
   rotationWarning = null,
   onBoardShip,
   onFocusPerson3D,
+  onHighlightShip,
+  onOpenReport,
+  onToast,
   onRenameShip,
   onRotateShipStep,
   onRotateShipAbsolute,
@@ -224,6 +235,7 @@ export const RadialActionMenu: React.FC<RadialActionMenuProps> = ({
   onPreviewLinkBlocked,
   onClose,
 }) => {
+  const [activeTab, setActiveTab] = useState<'overview' | 'key-items'>('overview');
   const [activeDir, setActiveDir] = useState<RadialDirection>('north');
   const [renameOpen, setRenameOpen] = useState(false);
   const [rotateOpen, setRotateOpen] = useState(false);
@@ -245,6 +257,7 @@ export const RadialActionMenu: React.FC<RadialActionMenuProps> = ({
 
   useEffect(() => {
     if (!target) return;
+    setActiveTab('overview');
     setActiveDir('north');
     setRenameOpen(false);
     setRotateOpen(false);
@@ -283,6 +296,9 @@ export const RadialActionMenu: React.FC<RadialActionMenuProps> = ({
     }
 
     if (typingInInput) return;
+
+    const showingKeyItemsTab = target.kind === 'ship' && activeTab === 'key-items';
+    if (showingKeyItemsTab) return;
 
     // Q / E keyboard rotation in 15° steps when a ship popup is open (Req #19)
     if (isShipLike && onRotateShipStep && (e.key === 'q' || e.key === 'Q')) {
@@ -404,16 +420,83 @@ export const RadialActionMenu: React.FC<RadialActionMenuProps> = ({
             )}
           </div>
 
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="팝업 닫기"
-            className="inline-flex min-h-[32px] min-w-[32px] shrink-0 items-center justify-center rounded-lg border border-slate-700 bg-slate-900 p-1.5 text-slate-200 hover:bg-slate-800 hover:text-white focus-visible:outline-2 focus-visible:outline-sky-300"
-          >
-            <X className="h-4 w-4" aria-hidden="true" />
-          </button>
+          <div className="flex items-center gap-1 shrink-0">
+            {target.kind === 'ship' && onOpenReport && (
+              <button
+                type="button"
+                data-testid="radial-report-btn"
+                onClick={() => onOpenReport(target.ship.id)}
+                aria-label={`${displayTitle} 통합 리포트 열기`}
+                className="inline-flex min-h-[32px] items-center gap-1 rounded-lg border border-sky-500/60 bg-sky-950/75 px-2 py-1 text-[11px] font-semibold text-sky-100 hover:bg-sky-900/80 focus-visible:outline-2 focus-visible:outline-sky-300"
+              >
+                <FileBarChart2 className="h-3.5 w-3.5 text-sky-300 shrink-0" aria-hidden="true" />
+                <span>리포트</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="팝업 닫기"
+              className="inline-flex min-h-[32px] min-w-[32px] shrink-0 items-center justify-center rounded-lg border border-slate-700 bg-slate-900 p-1.5 text-slate-200 hover:bg-slate-800 hover:text-white focus-visible:outline-2 focus-visible:outline-sky-300"
+            >
+              <X className="h-4 w-4" aria-hidden="true" />
+            </button>
+          </div>
         </div>
 
+        {/* Business Ship Tabs: [개요] / [핵심 항목] (NEVER shown on decorative ships or people) */}
+        {target.kind === 'ship' && (
+          <div
+            role="tablist"
+            aria-label="선박 팝업 탭"
+            className="grid grid-cols-2 gap-1 rounded-xl border border-slate-800 bg-slate-900/90 p-1"
+            data-testid="radial-ship-tabs"
+          >
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'overview'}
+              aria-label="선박 개요 탭"
+              data-testid="radial-tab-overview"
+              onClick={() => setActiveTab('overview')}
+              className={`min-h-[30px] rounded-lg px-2.5 py-1 text-xs font-bold transition focus-visible:outline-2 focus-visible:outline-sky-300 ${
+                activeTab === 'overview'
+                  ? 'bg-sky-700 text-white shadow'
+                  : 'text-slate-300 hover:bg-slate-800 hover:text-white'
+              }`}
+            >
+              개요
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'key-items'}
+              aria-label="선박 핵심 항목 탭"
+              data-testid="radial-tab-key-items"
+              onClick={() => setActiveTab('key-items')}
+              className={`min-h-[30px] rounded-lg px-2.5 py-1 text-xs font-bold transition focus-visible:outline-2 focus-visible:outline-sky-300 ${
+                activeTab === 'key-items'
+                  ? 'bg-sky-700 text-white shadow'
+                  : 'text-slate-300 hover:bg-slate-800 hover:text-white'
+              }`}
+            >
+              핵심 항목
+            </button>
+          </div>
+        )}
+
+        {target.kind === 'ship' && activeTab === 'key-items' ? (
+          <ShipKeyItemsTab
+            compact
+            projectId={target.ship.id}
+            runtimeEnv={runtimeEnv}
+            registry={hubRegistry}
+            onHighlightShip={onHighlightShip}
+            onPreviewLinkBlocked={onPreviewLinkBlocked}
+            onToast={onToast}
+          />
+        ) : (
+          <>
         {/* 4 Cardinal SGW Deep-Link Actions (Business Ships & People ONLY — NEVER decorative ships) */}
         {items.length > 0 && (
           <div className="grid grid-cols-2 gap-1.5" role="group" aria-label="4방향 빠른 이동">
@@ -652,6 +735,8 @@ export const RadialActionMenu: React.FC<RadialActionMenuProps> = ({
               </div>
             )}
           </div>
+        )}
+          </>
         )}
 
         <div className="sr-only">
