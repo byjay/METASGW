@@ -25,6 +25,17 @@ export const OBSERVATION_DECK_Y = 2.41;
 
 /** Minimum 3D camera orbit distance (meters). At FOV 50°, a 2.78m quay worker spans ~93% height at 3.2m and ~50% at 6.0m. */
 export const CAMERA_MIN_DISTANCE = 3.2;
+/** Stage 11: Max mouse-wheel / free-orbit zoom floor (meters). At 5.2m (FOV 50°), a 2.78m worker spans ~56% viewport height with full head-to-boot framing and quay surroundings. */
+export const CAMERA_WHEEL_MIN_DISTANCE = 5.2;
+export const CAMERA_CLOSE_ZOOM_BLEND_START = 26.0;
+export const CAMERA_CLOSE_ZOOM_BLEND_END = 10.5;
+export const CAMERA_FAR_MIN_POLAR_ANGLE = 0.14;
+export const CAMERA_FAR_MAX_POLAR_ANGLE = Math.PI * 0.485;
+/** Close-zoom polar angle bounds from +Y (radians): [1.24..1.44] ≈ [71.0°..82.5°] (downward pitch 7.5°..19.0°), keeping full worker body inside viewport and water ratio <= 40%. */
+export const CAMERA_CLOSE_MIN_POLAR_ANGLE = 1.24;
+export const CAMERA_CLOSE_MAX_POLAR_ANGLE = 1.44;
+export const WORKER_CHEST_HEIGHT_OFFSET = 1.45;
+export const QUAY_CLOSE_ZOOM_MAX_TARGET_Z = -7.5;
 export const CAMERA_PERSON_FOCUS_MIN_DIST = 3.0;
 export const CAMERA_PERSON_FOCUS_MAX_DIST = 6.0;
 export const CAMERA_PERSON_FOCUS_DEFAULT_DIST = 4.5;
@@ -583,4 +594,223 @@ export function computeProjectedScreenHeightFraction(
   if (cameraDistanceM <= 0 || objectHeightM <= 0) return 0;
   const halfFovRad = ((fovDeg * Math.PI) / 180) * 0.5;
   return objectHeightM / (2 * cameraDistanceM * Math.tan(halfFovRad));
+}
+
+export interface PolarAngleBounds {
+  minPolarAngle: number;
+  maxPolarAngle: number;
+  closeBlend: number;
+}
+
+/**
+ * Smoothly blends OrbitControls polar-angle bounds as camera distance enters close-up range
+ * (`CAMERA_CLOSE_ZOOM_BLEND_START` -> `CAMERA_CLOSE_ZOOM_BLEND_END`) so distant harbor overviews
+ * keep full freedom while max wheel zoom frames the quay worker cleanly without diving into water.
+ */
+export function computePolarAngleBoundsForDistance(distance: number): PolarAngleBounds {
+  const rawT =
+    (CAMERA_CLOSE_ZOOM_BLEND_START - distance) /
+    (CAMERA_CLOSE_ZOOM_BLEND_START - CAMERA_CLOSE_ZOOM_BLEND_END);
+  const t = Math.max(0, Math.min(1, rawT));
+  if (t <= 0) {
+    return {
+      minPolarAngle: CAMERA_FAR_MIN_POLAR_ANGLE,
+      maxPolarAngle: CAMERA_FAR_MAX_POLAR_ANGLE,
+      closeBlend: 0,
+    };
+  }
+  if (t >= 1) {
+    return {
+      minPolarAngle: CAMERA_CLOSE_MIN_POLAR_ANGLE,
+      maxPolarAngle: CAMERA_CLOSE_MAX_POLAR_ANGLE,
+      closeBlend: 1,
+    };
+  }
+  const closeBlend = t * t * (3 - 2 * t);
+  return {
+    minPolarAngle:
+      CAMERA_FAR_MIN_POLAR_ANGLE +
+      (CAMERA_CLOSE_MIN_POLAR_ANGLE - CAMERA_FAR_MIN_POLAR_ANGLE) * closeBlend,
+    maxPolarAngle:
+      CAMERA_FAR_MAX_POLAR_ANGLE +
+      (CAMERA_CLOSE_MAX_POLAR_ANGLE - CAMERA_FAR_MAX_POLAR_ANGLE) * closeBlend,
+    closeBlend,
+  };
+}
+
+export interface CloseZoomFramingResult {
+  cameraPos: { x: number; y: number; z: number };
+  targetPos: { x: number; y: number; z: number };
+  distance: number;
+  polarAngle: number;
+  closeBlend: number;
+}
+
+/**
+ * Stage 11 Close-Zoom Camera Framing Solver:
+ * When the user scrolls the mouse wheel all the way in during free orbit (outside `focusPerson`),
+ * prevents the camera from diving into open water or cropping the worker's head:
+ *   1. Leaves far-range camera (`distance >= 26m`) untouched (except standard collision floor).
+ *   2. Smoothly pulls an over-water Home Harbor target onto the quay worker apron (`quayAnchor`).
+ *   3. Locks target elevation to quay worker chest height (`deck + 1.45m`) so boots-to-helmet stay centered.
+ *   4. Clamps distance `>= CAMERA_WHEEL_MIN_DISTANCE` (`5.2m`) and polar angle into `[1.24, 1.44]` rad,
+ *      keeping water coverage <= 40% across all azimuths while preserving full body + quay surroundings.
+ *   5. Applies `clampCameraCollision` so ground/water penetration remains impossible.
+ */
+export function clampCloseZoomCameraFraming(
+  cameraPos: { x: number; y: number; z: number },
+  targetPos: { x: number; y: number; z: number },
+  quayAnchor: { x: number; z: number },
+  obstacles: readonly ObstacleBox2D[] = HARBOR_STATIC_COLLIDERS,
+): CloseZoomFramingResult {
+  const dx0 = cameraPos.x - targetPos.x;
+  const dy0 = cameraPos.y - targetPos.y;
+  const dz0 = cameraPos.z - targetPos.z;
+  const rawDist = Math.hypot(dx0, dy0, dz0);
+  const { minPolarAngle, maxPolarAngle, closeBlend } =
+    computePolarAngleBoundsForDistance(rawDist);
+
+  if (closeBlend <= 0) {
+    const safeCam = clampCameraCollision(cameraPos, obstacles);
+    const sdx = safeCam.x - targetPos.x;
+    const sdy = safeCam.y - targetPos.y;
+    const sdz = safeCam.z - targetPos.z;
+    const dist = Math.hypot(sdx, sdy, sdz) || 1;
+    return {
+      cameraPos: safeCam,
+      targetPos: { ...targetPos },
+      distance: dist,
+      polarAngle: Math.acos(Math.max(-1, Math.min(1, sdy / dist))),
+      closeBlend: 0,
+    };
+  }
+
+  let tx = targetPos.x;
+  let ty = targetPos.y;
+  let tz = targetPos.z;
+
+  // Pull open-water Home Harbor target onto quay apron so wheel-zooming from Harbor View frames the quay worker
+  const inHomeHarborBasin = Math.abs(tx) <= 115 && tz <= 95;
+  const targetIsOverWaterOrEdge = isOverWater(tx, tz) || tz > QUAY_CLOSE_ZOOM_MAX_TARGET_Z;
+  if (inHomeHarborBasin && targetIsOverWaterOrEdge) {
+    const safeAnchorX = Math.max(-88, Math.min(88, quayAnchor.x));
+    const safeAnchorZ = Math.min(QUAY_CLOSE_ZOOM_MAX_TARGET_Z, quayAnchor.z);
+    tx = tx + (safeAnchorX - tx) * closeBlend;
+    tz = tz + (safeAnchorZ - tz) * closeBlend;
+  }
+
+  // Anchor target height to worker chest height on quay deck so head and boots stay cleanly in frame
+  if (isOnWalkableLand(tx, tz, 0)) {
+    const desiredChestY = sampleHarborElevation(tx, tz) + WORKER_CHEST_HEIGHT_OFFSET;
+    ty = ty + (desiredChestY - ty) * closeBlend;
+  }
+
+  const dist = Math.max(CAMERA_WHEEL_MIN_DISTANCE, rawDist || CAMERA_WHEEL_MIN_DISTANCE);
+  const safeRawDist = rawDist > 1e-5 ? rawDist : 1;
+  const rawPolar = Math.acos(Math.max(-1, Math.min(1, dy0 / safeRawDist)));
+  const polarAngle = Math.max(minPolarAngle, Math.min(maxPolarAngle, rawPolar));
+  const horizMag = Math.hypot(dx0, dz0);
+  const azimuth = horizMag > 1e-5 ? Math.atan2(dx0, dz0) : 0;
+
+  const sinP = Math.sin(polarAngle);
+  const cosP = Math.cos(polarAngle);
+  const framedCam = {
+    x: tx + dist * sinP * Math.sin(azimuth),
+    y: ty + dist * cosP,
+    z: tz + dist * sinP * Math.cos(azimuth),
+  };
+
+  const safeCam = clampCameraCollision(framedCam, obstacles);
+  const fdx = safeCam.x - tx;
+  const fdy = safeCam.y - ty;
+  const fdz = safeCam.z - tz;
+  const finalDist = Math.hypot(fdx, fdy, fdz) || dist;
+  const finalPolar = Math.acos(Math.max(-1, Math.min(1, fdy / finalDist)));
+
+  return {
+    cameraPos: safeCam,
+    targetPos: { x: tx, y: ty, z: tz },
+    distance: finalDist,
+    polarAngle: finalPolar,
+    closeBlend,
+  };
+}
+
+/**
+ * Estimates the vertical fraction `[0, 1]` of the viewport showing open water (`y = 0`, outside
+ * walkable quay/pier decks) using analytical ray-plane sampling across vertical NDC rows.
+ * Used to verify Stage 11's `waterRatio <= 0.40` guarantee at max wheel zoom.
+ */
+export function estimateWaterScreenFraction(
+  cameraPos: { x: number; y: number; z: number },
+  targetPos: { x: number; y: number; z: number },
+  fovDeg = 50,
+  sampleRows = 101,
+): number {
+  const fx = targetPos.x - cameraPos.x;
+  const fy = targetPos.y - cameraPos.y;
+  const fz = targetPos.z - cameraPos.z;
+  const fLen = Math.hypot(fx, fy, fz);
+  if (fLen < 1e-6) return 0;
+  const dirX = fx / fLen;
+  const dirY = fy / fLen;
+  const dirZ = fz / fLen;
+
+  // Camera right = normalize(forward x worldUp), camera up = right x forward
+  let rx = -dirZ;
+  let rz = dirX;
+  const rLen = Math.hypot(rx, rz);
+  if (rLen > 1e-6) {
+    rx /= rLen;
+    rz /= rLen;
+  } else {
+    rx = 1;
+    rz = 0;
+  }
+  const ux = -dirY * rz;
+  const uy = rz * dirX - rx * dirZ;
+  const uz = dirY * rx;
+  const uLen = Math.hypot(ux, uy, uz) || 1;
+  const upX = ux / uLen;
+  const upY = uy / uLen;
+  const upZ = uz / uLen;
+
+  const tanHalfFov = Math.tan(((fovDeg * Math.PI) / 180) * 0.5);
+  let waterHits = 0;
+
+  for (let i = 0; i < sampleRows; i += 1) {
+    const ndcY = -1 + (2 * (i + 0.5)) / sampleRows;
+    const rayX = dirX + upX * (ndcY * tanHalfFov);
+    const rayY = dirY + upY * (ndcY * tanHalfFov);
+    const rayZ = dirZ + upZ * (ndcY * tanHalfFov);
+
+    // Rays pointing at or above the horizon hit sky/mountains, never water
+    if (rayY >= -1e-4) continue;
+
+    // Intersect quay deck plane (y = QUAY_MAIN_DECK_Y) first — concrete quay sits above sea level
+    let hitLand = false;
+    if (cameraPos.y > QUAY_MAIN_DECK_Y) {
+      const tDeck = (QUAY_MAIN_DECK_Y - cameraPos.y) / rayY;
+      if (tDeck > 0) {
+        const hx = cameraPos.x + rayX * tDeck;
+        const hz = cameraPos.z + rayZ * tDeck;
+        if (isOnWalkableLand(hx, hz, 0)) {
+          hitLand = true;
+        }
+      }
+    }
+    if (hitLand) continue;
+
+    // Otherwise intersect ocean surface (y = 0)
+    const tWater = (0 - cameraPos.y) / rayY;
+    if (tWater > 0) {
+      const wx = cameraPos.x + rayX * tWater;
+      const wz = cameraPos.z + rayZ * tWater;
+      if (isOverWater(wx, wz)) {
+        waterHits += 1;
+      }
+    }
+  }
+
+  return waterHits / sampleRows;
 }

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import {
   Activity,
   Building2,
@@ -62,6 +62,8 @@ export interface HudTopBarProps {
   onRefreshHub?: () => void;
   onOpenReport?: () => void;
 }
+
+export const HUD_HEIGHT_CSS_VAR = '--metasgw-hud-height';
 
 const CAMERA_LABEL: Record<CameraPreset, string> = {
   harbor: '항구 뷰',
@@ -134,8 +136,38 @@ export const HudTopBar: React.FC<HudTopBarProps> = ({
     }
   };
 
+  const headerRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    const el = headerRef.current;
+    if (!el || typeof document === 'undefined') return;
+
+    const syncHudHeight = () => {
+      const measured = Math.ceil(el.getBoundingClientRect().height);
+      if (measured > 0) {
+        document.documentElement.style.setProperty(HUD_HEIGHT_CSS_VAR, `${measured}px`);
+      }
+    };
+
+    syncHudHeight();
+    let observer: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      observer = new ResizeObserver(syncHudHeight);
+      observer.observe(el);
+    }
+    window.addEventListener('resize', syncHudHeight);
+
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', syncHudHeight);
+      document.documentElement.style.removeProperty(HUD_HEIGHT_CSS_VAR);
+    };
+  }, []);
+
   return (
     <header
+      ref={headerRef}
+      data-testid="hud-top-bar"
       className="fixed top-0 inset-x-0 z-30 border-b border-slate-700/80 bg-slate-950/96 text-slate-100"
       role="banner"
     >

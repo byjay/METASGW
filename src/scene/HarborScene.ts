@@ -17,8 +17,11 @@ import {
   AVATAR_PROP_MIN_CLEARANCE,
   CAMERA_MIN_DISTANCE,
   CAMERA_PERSON_FOCUS_DEFAULT_DIST,
+  CAMERA_WHEEL_MIN_DISTANCE,
   clampCameraCollision,
+  clampCloseZoomCameraFraming,
   computePersonFocusCameraPose,
+  computePolarAngleBoundsForDistance,
   HARBOR_ALL_OBSTACLES,
   resolveAvatarPhysicsMovement,
   resolveAvatarPropClearance,
@@ -386,7 +389,7 @@ export class HarborSceneController implements HarborSceneHandle {
     this.controls.screenSpacePanning = false;
     this.controls.maxPolarAngle = Math.PI * 0.485;
     this.controls.minPolarAngle = 0.14;
-    this.controls.minDistance = CAMERA_MIN_DISTANCE;
+    this.controls.minDistance = CAMERA_WHEEL_MIN_DISTANCE;
     // Unlocked infinite-world zoom range (Requirement #11)
     this.controls.maxDistance = 800;
     this.controls.addEventListener('start', () => {
@@ -1127,15 +1130,69 @@ export class HarborSceneController implements HarborSceneHandle {
     this.renderFrame();
   }
 
+  /**
+   * Stage 11 Close-Zoom Framing Guard:
+   * During free mouse-wheel / orbit zoom (when not in `focusPerson` mode), keeps the target anchored
+   * to quay worker chest height and restricts polar angle + distance floor so the full worker body
+   * and surrounding quay stay inside the viewport with water coverage <= 40% and zero ground/water clip.
+   * Preserves Stage 10's `focusPerson` (3–6m front pose) completely untouched.
+   */
+  private applyCloseZoomFraming(): void {
+    if (this.focusedPersonSub !== null) {
+      this.controls.minDistance = CAMERA_MIN_DISTANCE;
+      this.controls.minPolarAngle = 0.14;
+      this.controls.maxPolarAngle = Math.PI * 0.485;
+      const clampedCam = clampCameraCollision(this.camera.position, this.activeColliders);
+      this.camera.position.set(clampedCam.x, clampedCam.y, clampedCam.z);
+      return;
+    }
+
+    this.controls.minDistance = CAMERA_WHEEL_MIN_DISTANCE;
+    const dist = this.camera.position.distanceTo(this.controls.target);
+    const bounds = computePolarAngleBoundsForDistance(dist);
+    this.controls.minPolarAngle = bounds.minPolarAngle;
+    this.controls.maxPolarAngle = bounds.maxPolarAngle;
+
+    // Pick the nearest quay worker (defaulting to player avatar on North Quay) as close-zoom anchor
+    let anchorX = this.playerPos.x;
+    let anchorZ = this.playerPos.z;
+    let bestDistSq =
+      (anchorX - this.controls.target.x) ** 2 + (anchorZ - this.controls.target.z) ** 2;
+    for (const rt of this.personRuntimes) {
+      if (rt.isSeated) continue;
+      const dSq =
+        (rt.curX - this.controls.target.x) ** 2 + (rt.curZ - this.controls.target.z) ** 2;
+      if (dSq < bestDistSq) {
+        bestDistSq = dSq;
+        anchorX = rt.curX;
+        anchorZ = rt.curZ;
+      }
+    }
+
+    const framed = clampCloseZoomCameraFraming(
+      this.camera.position,
+      this.controls.target,
+      { x: anchorX, z: anchorZ },
+      this.activeColliders,
+    );
+    this.controls.target.set(framed.targetPos.x, framed.targetPos.y, framed.targetPos.z);
+    this.camera.position.set(framed.cameraPos.x, framed.cameraPos.y, framed.cameraPos.z);
+    if (framed.closeBlend > 0) {
+      this.camera.lookAt(this.controls.target);
+    }
+  }
+
   public zoomBy(factor: number): void {
+    const minDist =
+      this.focusedPersonSub !== null ? CAMERA_MIN_DISTANCE : CAMERA_WHEEL_MIN_DISTANCE;
     _scratchOffset.subVectors(this.camera.position, this.controls.target);
     _scratchOffset.multiplyScalar(factor);
-    const len = THREE.MathUtils.clamp(_scratchOffset.length(), CAMERA_MIN_DISTANCE, 800);
+    const len = THREE.MathUtils.clamp(_scratchOffset.length(), minDist, 800);
     _scratchOffset.setLength(len);
     this.camera.position.copy(this.controls.target).add(_scratchOffset);
-    const clamped = clampCameraCollision(this.camera.position, this.activeColliders);
-    this.camera.position.set(clamped.x, clamped.y, clamped.z);
+    this.applyCloseZoomFraming();
     this.controls.update();
+    this.applyCloseZoomFraming();
     this.syncAvatarLodsNow();
     this.occlusionController.update(
       this.camera.position,
@@ -1149,16 +1206,18 @@ export class HarborSceneController implements HarborSceneHandle {
 
   public setZoomDistance(distance: number): void {
     this.cameraTween = null;
+    const minDist =
+      this.focusedPersonSub !== null ? CAMERA_MIN_DISTANCE : CAMERA_WHEEL_MIN_DISTANCE;
     _scratchOffset.subVectors(this.camera.position, this.controls.target);
     if (_scratchOffset.lengthSq() < 1e-4) {
       _scratchOffset.set(0, 58, 140);
     }
-    const len = THREE.MathUtils.clamp(distance, CAMERA_MIN_DISTANCE, 800);
+    const len = THREE.MathUtils.clamp(distance, minDist, 800);
     _scratchOffset.setLength(len);
     this.camera.position.copy(this.controls.target).add(_scratchOffset);
-    const clamped = clampCameraCollision(this.camera.position, this.activeColliders);
-    this.camera.position.set(clamped.x, clamped.y, clamped.z);
+    this.applyCloseZoomFraming();
     this.controls.update();
+    this.applyCloseZoomFraming();
     this.syncAvatarLodsNow();
     this.occlusionController.update(
       this.camera.position,
@@ -1181,6 +1240,7 @@ export class HarborSceneController implements HarborSceneHandle {
       this.activeColliders,
       d,
     );
+    this.controls.minDistance = CAMERA_MIN_DISTANCE;
     this.controls.target.set(pose.targetPos.x, pose.targetPos.y, pose.targetPos.z);
     this.camera.position.set(pose.cameraPos.x, pose.cameraPos.y, pose.cameraPos.z);
     this.controls.update();
@@ -1349,6 +1409,9 @@ export class HarborSceneController implements HarborSceneHandle {
     const found = this.personRuntimes.find((r) => r.person.sub === sub);
     if (!found) return;
     this.focusedPersonSub = sub;
+    this.controls.minDistance = CAMERA_MIN_DISTANCE;
+    this.controls.minPolarAngle = 0.14;
+    this.controls.maxPolarAngle = Math.PI * 0.485;
 
     const personY = sampleHarborElevation(found.curX, found.curZ);
     const pose = computePersonFocusCameraPose(
@@ -1997,9 +2060,13 @@ export class HarborSceneController implements HarborSceneHandle {
       this.controls.target.y = minTargetY;
     }
 
-    // Prevent camera from clipping below water or inside quay structures (Req #17 & Stage 10)
-    const clampedCam = clampCameraCollision(this.camera.position, this.activeColliders);
-    this.camera.position.set(clampedCam.x, clampedCam.y, clampedCam.z);
+    // Apply Stage 11 close-zoom full-body framing & water-ratio guard during free zoom (preserving focusPerson & tweens)
+    if (!this.cameraTween) {
+      this.applyCloseZoomFraming();
+    } else {
+      const clampedCam = clampCameraCollision(this.camera.position, this.activeColliders);
+      this.camera.position.set(clampedCam.x, clampedCam.y, clampedCam.z);
+    }
 
     // Dynamically fade occluding ship superstructures to opacity 0.25 & boost close-range shadows
     this.occlusionController.update(

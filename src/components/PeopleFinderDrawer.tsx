@@ -16,6 +16,27 @@ export interface PeopleFinderDrawerProps {
   onPreviewLinkBlocked: (featureLabel: string) => void;
 }
 
+export const DEFAULT_DESKTOP_HUD_HEIGHT_PX = 96;
+export const DEFAULT_MOBILE_HUD_HEIGHT_PX = 124;
+export const PEOPLE_DRAWER_HUD_GAP_PX = 8;
+
+/**
+ * Computes the guaranteed safe top offset (px) for `PeopleFinderDrawer` so its title ("사람 찾기")
+ * and close button (`×`) always sit cleanly below `HudTopBar` + `HudHubStatusStrip`.
+ */
+export function computePeopleDrawerTopPx(
+  hudHeightPx: number | null | undefined,
+  viewportWidth: number,
+): number {
+  const fallbackHud =
+    viewportWidth < 640 ? DEFAULT_MOBILE_HUD_HEIGHT_PX : DEFAULT_DESKTOP_HUD_HEIGHT_PX;
+  const measuredHud =
+    typeof hudHeightPx === 'number' && Number.isFinite(hudHeightPx) && hudHeightPx > 0
+      ? Math.ceil(hudHeightPx)
+      : fallbackHud;
+  return measuredHud + PEOPLE_DRAWER_HUD_GAP_PX;
+}
+
 const PRESENCE_SORT_ORDER: Record<HarborPerson['presenceStatus'], number> = {
   online: 0,
   away: 1,
@@ -69,13 +90,16 @@ export const PeopleFinderDrawer: React.FC<PeopleFinderDrawerProps> = ({
     <aside
       aria-label="직원 찾기"
       data-testid="people-finder-drawer"
-      className="fixed inset-x-3 top-24 bottom-28 z-30 flex flex-col rounded-2xl border border-slate-700/80 bg-slate-950/96 text-slate-100 shadow-2xl backdrop-blur-md sm:inset-x-auto sm:right-3 sm:top-16 sm:bottom-20 sm:w-80"
+      className="fixed inset-x-3 top-[calc(var(--metasgw-hud-height,124px)+8px)] bottom-24 z-30 flex flex-col rounded-2xl border border-slate-700/80 bg-slate-950/96 text-slate-100 shadow-2xl backdrop-blur-md sm:inset-x-auto sm:right-3 sm:top-[calc(var(--metasgw-hud-height,96px)+8px)] sm:bottom-20 sm:w-80"
     >
-      <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
+      <div
+        data-testid="people-finder-drawer-header"
+        className="flex shrink-0 items-center justify-between gap-2 border-b border-slate-800 px-4 py-3"
+      >
         <div className="flex items-center gap-2 min-w-0">
           <Users className="h-4 w-4 text-emerald-400 shrink-0" aria-hidden="true" />
-          <h2 className="text-sm font-bold text-white">사람 찾기</h2>
-          <span className="rounded bg-emerald-950/90 border border-emerald-400/50 px-1.5 py-0.5 text-[11px] font-semibold text-emerald-100">
+          <h2 className="text-sm font-bold text-white whitespace-nowrap">사람 찾기</h2>
+          <span className="shrink-0 whitespace-nowrap rounded bg-emerald-950/90 border border-emerald-400/50 px-1.5 py-0.5 text-[11px] font-semibold text-emerald-100">
             온라인 {onlineCount}/{people.length}
           </span>
         </div>
@@ -83,7 +107,7 @@ export const PeopleFinderDrawer: React.FC<PeopleFinderDrawerProps> = ({
           type="button"
           onClick={onClose}
           aria-label="사람 찾기 닫기"
-          className="rounded-lg p-1 text-slate-300 hover:bg-slate-800 hover:text-white"
+          className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-slate-300 hover:bg-slate-800 hover:text-white focus-visible:outline-2 focus-visible:outline-sky-400"
         >
           <X className="h-4 w-4" aria-hidden="true" />
         </button>
