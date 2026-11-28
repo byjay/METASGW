@@ -9,11 +9,13 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import {
   findQuayPath,
   PORTAL_BUILDINGS,
+  type ObstacleBox2D,
   type PortalBuildingSpec,
   type Vec2,
 } from '../core/navMeshEngine';
 import {
   clampCameraCollision,
+  HARBOR_STATIC_COLLIDERS,
   resolveAvatarPhysicsMovement,
   resolveAvatarSpawnOverlaps,
   sampleHarborElevation,
@@ -22,7 +24,18 @@ import {
   evaluateAutoQualityDowngrade,
   resolvePixelRatioForQuality,
 } from '../deviceProfile';
-import { assertValidShipBerths, type HarborPerson, type HarborShip } from '../mapping';
+import {
+  assertValidShipBerths,
+  selectVisibleQuayColleagues,
+  type HarborPerson,
+  type HarborShip,
+} from '../mapping';
+import {
+  assignHubBuildingSlots,
+  buildHubBuildingColliders,
+  type HubBuildingPlacement,
+} from '../meta/hubBuildingModel';
+import type { HubModuleChipItem } from '../meta/hubChipModel';
 import type { ShipDisplayPrefsMap } from '../shipDisplayPrefs';
 import type {
   AvatarSceneGraphAudit,
@@ -31,13 +44,18 @@ import type {
   HarborSceneCallbacks,
   HarborSceneHandle,
   HarborSceneInitOptions,
+  HubBuildingSceneAudit,
   ProjectedLabel,
   QualityTier,
   RenderBatchMetrics,
   RenderMetrics,
   ScreenAnchorPoint,
 } from './harborSceneTypes';
-import { buildHumanoidEngineerAvatar, type BuiltHumanoidRig } from './humanoidAvatar';
+import {
+  buildHumanoidEngineerAvatar,
+  type AvatarActionState,
+  type BuiltHumanoidRig,
+} from './humanoidAvatar';
 import { InfiniteWorldChunkManager } from './infiniteWorldChunks';
 import {
   collectSceneBatchStats,
@@ -74,6 +92,7 @@ interface PersonNpcRuntime {
   heading: number;
   patrolDir: 1 | -1;
   patrolRange: number;
+  isSeated: boolean;
 }
 
 const _scratchProj = new THREE.Vector3();
@@ -266,6 +285,12 @@ export class HarborSceneController implements HarborSceneHandle {
   private waypointMarker: THREE.Mesh;
   private playerHalo: THREE.Mesh;
 
+  private allPeople: HarborPerson[] = [];
+  private hubPlacements: HubBuildingPlacement[] = [];
+  private activeColliders: ObstacleBox2D[] = [...HARBOR_STATIC_COLLIDERS];
+  private lastOverflowCount = 0;
+  private lastOnLeaveCount = 0;
+  private lastSimplifiedMaterial = false;
   private personRuntimes: PersonNpcRuntime[] = [];
   private personHitProxies: THREE.Object3D[] = [];
   private peopleRoot = new THREE.Group();
@@ -381,12 +406,14 @@ export class HarborSceneController implements HarborSceneHandle {
 
     this.scene.add(this.peopleRoot);
 
+    this.lastSimplifiedMaterial = this.qualityTier === 'low';
     this.playerRig = buildHumanoidEngineerAvatar({
       isPartner: false,
       shirtHex: '#0284c7',
       contactShadowTex: this.textures.contactShadow,
       isCurrentUser: true,
       modelVariantIndex: 0,
+      simplifiedMaterial: this.lastSimplifiedMaterial,
     });
     this.playerPos.y = sampleHarborElevation(this.playerPos.x, this.playerPos.z);
     this.playerRig.group.position.set(this.playerPos.x, this.playerPos.y, this.playerPos.z);
@@ -666,6 +693,29 @@ export class HarborSceneController implements HarborSceneHandle {
     this.chunkManager.setLowSpec(tier === 'low');
     this.setupPostProcessing(w, h);
     this.applyAtmosphere(this.darkTheme);
+
+    // Rebuild player & colleague 3D rigs when quality tier changes (updates low-tier simplified 3D material & avatar cap)
+    const nextSimplified = tier === 'low';
+    if (nextSimplified !== this.lastSimplifiedMaterial) {
+      this.lastSimplifiedMaterial = nextSimplified;
+      this.scene.remove(this.playerRig.group);
+      this.playerRig.dispose();
+      this.playerRig = buildHumanoidEngineerAvatar({
+        isPartner: false,
+        shirtHex: '#0284c7',
+        contactShadowTex: this.textures.contactShadow,
+        isCurrentUser: true,
+        modelVariantIndex: 0,
+        simplifiedMaterial: nextSimplified,
+      });
+      this.playerRig.group.position.set(this.playerPos.x, this.playerPos.y, this.playerPos.z);
+      this.playerRig.group.rotation.y = this.playerPos.heading;
+      this.scene.add(this.playerRig.group);
+      if (this.hubPlacements.length > 0) {
+        this.world.syncHubBuildings(this.hubPlacements, nextSimplified);
+      }
+    }
+    this.rebuildPeopleScene();
     this.refreshBatchStats();
     this.renderFrame();
   }
@@ -715,6 +765,36 @@ export class HarborSceneController implements HarborSceneHandle {
     this.renderFrame();
   }
 
+  public setHubBuildings(chips: HubModuleChipItem[]): void {
+    this.hubPlacements = assignHubBuildingSlots(chips);
+    this.activeColliders = [
+      ...HARBOR_STATIC_COLLIDERS,
+      ...buildHubBuildingColliders(this.hubPlacements),
+    ];
+    this.world.syncHubBuildings(this.hubPlacements, this.qualityTier === 'low');
+    this.refreshBatchStats();
+    this.emitLabels();
+    this.renderFrame();
+  }
+
+  public inspectHubBuildings(): HubBuildingSceneAudit {
+    return {
+      count: this.world.hubBuildings.length,
+      buildings: this.world.hubBuildings.map((rt) => ({
+        moduleId: rt.placement.moduleId,
+        name: rt.placement.chip.name,
+        status: rt.placement.chip.status,
+        lotId: rt.placement.lot.lotId,
+        x: rt.placement.lot.centerX,
+        z: rt.placement.lot.centerZ,
+        hasScaffolding: Boolean(rt.group.getObjectByName('hub-building-scaffolding')),
+        lightsOn: Boolean(rt.group.getObjectByName('hub-building-cornice-light')),
+        signText: rt.placement.appearance.signBannerText,
+        entryUrl: rt.placement.chip.entryUrl,
+      })),
+    };
+  }
+
   private disposePeopleBatches(): void {
     if (this.presenceRingBatch) {
       this.peopleRoot.remove(this.presenceRingBatch);
@@ -731,6 +811,14 @@ export class HarborSceneController implements HarborSceneHandle {
   }
 
   public setPeople(people: HarborPerson[]): void {
+    this.allPeople = people;
+    this.rebuildPeopleScene();
+    this.refreshBatchStats();
+    this.emitLabels();
+    this.renderFrame();
+  }
+
+  private rebuildPeopleScene(): void {
     this.disposePeopleBatches();
     for (const rt of this.personRuntimes) {
       this.peopleRoot.remove(rt.rig.group);
@@ -741,44 +829,71 @@ export class HarborSceneController implements HarborSceneHandle {
     this.personRuntimes = [];
     this.personHitProxies = [];
 
-    // Resolve spawn overlaps so colleagues NEVER clip into buildings, water, or each other (#17)
-    const nonSelf = people.filter((p) => !p.isCurrentUser);
-    const separated = resolveAvatarSpawnOverlaps(nonSelf);
+    // 1:1 presence matching:
+    //   - Excludes current user (playerRig) and 'leave' (연차) colleagues from 3D quay
+    //   - Applies per-quality-tier avatar cap (high=16, medium=10, low=3) & tracks overflow ("외 n명")
+    const selection = selectVisibleQuayColleagues(this.allPeople, this.qualityTier);
+    this.lastOverflowCount = selection.overflowCount;
+    this.lastOnLeaveCount = selection.onLeaveCount;
+
+    // Separate walking/standing colleagues so they never clip into buildings, benches, water, or each other;
+    // keep seated 'away' colleagues locked cleanly onto their exact physical quay bench slots.
+    const seatedAway = selection.visible.filter((p) => p.presenceStatus === 'away');
+    const walkingOrIdle = resolveAvatarSpawnOverlaps(
+      selection.visible.filter((p) => p.presenceStatus !== 'away'),
+      this.activeColliders,
+    );
+    const orderedVisible = [...walkingOrIdle, ...seatedAway];
+    const simplified = this.qualityTier === 'low';
 
     const hitGeo = new THREE.CylinderGeometry(0.95, 0.95, 2.3, 8);
     const hitMat = new THREE.MeshBasicMaterial({ visible: false });
     const ringSpecs: Array<{ x: number; y: number; z: number; colorHex: number }> = [];
     const shadowPositions: Array<{ x: number; y: number; z: number; scale: number }> = [];
 
-    separated.forEach((person, idx) => {
+    orderedVisible.forEach((person, idx) => {
+      const isSeated = person.presenceStatus === 'away';
       const rig = buildHumanoidEngineerAvatar({
         isPartner: person.isPartner,
         shirtHex: person.shirtHex,
         contactShadowTex: this.textures.contactShadow,
         skipContactShadow: true,
         modelVariantIndex: idx + 1,
+        simplifiedMaterial: simplified,
       });
       const y = sampleHarborElevation(person.position.x, person.position.z);
       rig.group.position.set(person.position.x, y, person.position.z);
-      rig.group.rotation.y = person.facingYaw;
+      rig.group.rotation.y = isSeated ? 0 : person.facingYaw;
+
+      // Apply immediate seated pose on frame 0 so away colleagues sit cleanly on the quay bench
+      if (isSeated) {
+        rig.updateAnimation(0, 0, 'sit', true);
+      }
 
       const hitProxy = new THREE.Mesh(hitGeo.clone(), hitMat.clone());
-      hitProxy.position.set(0, 1.15, 0);
+      hitProxy.position.set(0, isSeated ? 0.95 : 1.15, 0);
       hitProxy.userData.personSub = person.sub;
       rig.group.add(hitProxy);
       this.personHitProxies.push(hitProxy);
+
+      const ringColorHex =
+        person.presenceStatus === 'online'
+          ? 0x10b981
+          : person.presenceStatus === 'away'
+            ? 0xf59e0b
+            : 0x64748b;
 
       ringSpecs.push({
         x: person.position.x,
         y: y + 0.055,
         z: person.position.z,
-        colorHex: person.online ? 0x10b981 : 0x64748b,
+        colorHex: ringColorHex,
       });
       shadowPositions.push({
         x: person.position.x,
         y,
         z: person.position.z,
-        scale: 2.35,
+        scale: isSeated ? 1.85 : 2.35,
       });
 
       this.peopleRoot.add(rig.group);
@@ -792,9 +907,10 @@ export class HarborSceneController implements HarborSceneHandle {
         homeZ: person.position.z,
         curX: person.position.x,
         curZ: person.position.z,
-        heading: person.facingYaw,
+        heading: isSeated ? 0 : person.facingYaw,
         patrolDir: idx % 2 === 0 ? 1 : -1,
-        patrolRange: person.online ? 4.6 + (idx % 3) * 1.4 : 0,
+        patrolRange: person.presenceStatus === 'online' ? 4.6 + (idx % 3) * 1.4 : 0,
+        isSeated,
       });
     });
 
@@ -819,9 +935,6 @@ export class HarborSceneController implements HarborSceneHandle {
 
     hitGeo.dispose();
     hitMat.dispose();
-    this.refreshBatchStats();
-    this.emitLabels();
-    this.renderFrame();
   }
 
   public setCameraPreset(preset: CameraPreset): void {
@@ -841,7 +954,7 @@ export class HarborSceneController implements HarborSceneHandle {
     this.controls.target.set(x, 3.0, z);
     this.camera.position.x += dx;
     this.camera.position.z += dz;
-    const clamped = clampCameraCollision(this.camera.position);
+    const clamped = clampCameraCollision(this.camera.position, this.activeColliders);
     this.camera.position.set(clamped.x, clamped.y, clamped.z);
     this.controls.update();
     this.chunkManager.update(this.controls.target.x, this.controls.target.z, this.elapsedTotal);
@@ -860,7 +973,7 @@ export class HarborSceneController implements HarborSceneHandle {
     const len = THREE.MathUtils.clamp(_scratchOffset.length(), 8, 800);
     _scratchOffset.setLength(len);
     this.camera.position.copy(this.controls.target).add(_scratchOffset);
-    const clamped = clampCameraCollision(this.camera.position);
+    const clamped = clampCameraCollision(this.camera.position, this.activeColliders);
     this.camera.position.set(clamped.x, clamped.y, clamped.z);
     this.controls.update();
     this.syncAvatarLodsNow();
@@ -877,7 +990,7 @@ export class HarborSceneController implements HarborSceneHandle {
     const len = THREE.MathUtils.clamp(distance, 8, 800);
     _scratchOffset.setLength(len);
     this.camera.position.copy(this.controls.target).add(_scratchOffset);
-    const clamped = clampCameraCollision(this.camera.position);
+    const clamped = clampCameraCollision(this.camera.position, this.activeColliders);
     this.camera.position.set(clamped.x, clamped.y, clamped.z);
     this.controls.update();
     this.syncAvatarLodsNow();
@@ -922,11 +1035,15 @@ export class HarborSceneController implements HarborSceneHandle {
     const playerMeshCount = countSpritesAndMeshes(this.playerRig.group);
     let minColleagueMeshCount = Number.POSITIVE_INFINITY;
     let allAvatarsVisible = this.playerRig.group.visible;
+    let walkingCount = 0;
+    let sittingCount = 0;
 
     for (const rt of this.personRuntimes) {
       const c = countSpritesAndMeshes(rt.rig.group);
       if (c < minColleagueMeshCount) minColleagueMeshCount = c;
       if (!rt.rig.group.visible) allAvatarsVisible = false;
+      if (rt.isSeated) sittingCount += 1;
+      else if (rt.person.presenceStatus === 'online') walkingCount += 1;
     }
 
     return {
@@ -938,6 +1055,12 @@ export class HarborSceneController implements HarborSceneHandle {
         this.camera.position.distanceTo(this.playerRig.group.position).toFixed(2),
       ),
       allAvatarsVisible,
+      renderedColleagueCount: this.personRuntimes.length,
+      walkingCount,
+      sittingCount,
+      overflowCount: this.lastOverflowCount,
+      onLeaveExcludedCount: this.lastOnLeaveCount,
+      simplifiedMaterialActive: this.lastSimplifiedMaterial,
     };
   }
 
@@ -1142,6 +1265,15 @@ export class HarborSceneController implements HarborSceneHandle {
           if (portalHits.length > 0) {
             const id = (portalHits[0].object.userData as { portalId?: string }).portalId;
             if (id) nextHover = `portal:${id}`;
+          } else {
+            const hubHits = this.raycaster.intersectObjects(
+              this.world.clickableHubBuildingProxies,
+              false,
+            );
+            if (hubHits.length > 0) {
+              const modId = (hubHits[0].object.userData as { hubModuleId?: string }).hubModuleId;
+              if (modId) nextHover = `hub:${modId}`;
+            }
           }
         }
       }
@@ -1217,6 +1349,16 @@ export class HarborSceneController implements HarborSceneHandle {
         .portalId;
       if (portalId) {
         this.callbacks.onPortalClicked(portalId);
+        return;
+      }
+    }
+
+    // 4b. Hub Module Harbor Buildings (360 · SECAD · PDF · 메일 · SEcMS & future registry systems)
+    const hubHits = this.raycaster.intersectObjects(this.world.clickableHubBuildingProxies, false);
+    if (hubHits.length > 0) {
+      const hubModuleId = (hubHits[0].object.userData as { hubModuleId?: string }).hubModuleId;
+      if (hubModuleId) {
+        this.callbacks.onHubBuildingClicked?.(hubModuleId, { x: e.clientX, y: e.clientY });
         return;
       }
     }
@@ -1348,6 +1490,7 @@ export class HarborSceneController implements HarborSceneHandle {
         { x: this.playerPos.x, z: this.playerPos.z },
         { x: this.playerPos.x + nx * speed * dt, z: this.playerPos.z + nz * speed * dt },
         peers,
+        this.activeColliders,
       );
       this.playerPos.x = resolved.x;
       this.playerPos.z = resolved.z;
@@ -1414,16 +1557,19 @@ export class HarborSceneController implements HarborSceneHandle {
       const rt = this.personRuntimes.find((r) => r.person.sub === sub);
       if (rt) {
         const y = sampleHarborElevation(rt.curX, rt.curZ);
-        const p = this.projectToScreen(rt.curX, y + 3.2, rt.curZ);
+        const p = this.projectToScreen(rt.curX, y + (rt.isSeated ? 2.6 : 3.2), rt.curZ);
         candidates.push({
           id: `person:${rt.person.sub}`,
           text: rt.person.name,
-          subText: rt.person.dept,
-          kind: rt.person.isPartner
-            ? 'person-partner'
-            : rt.person.online
-              ? 'person-online'
-              : 'person-offline',
+          subText: `${rt.person.dept} · ${rt.person.presenceLabelKo}`,
+          kind:
+            rt.person.presenceStatus === 'away'
+              ? 'person-away'
+              : rt.person.isPartner
+                ? 'person-partner'
+                : rt.person.presenceStatus === 'online'
+                  ? 'person-online'
+                  : 'person-offline',
           showText: true,
           ...p,
         });
@@ -1438,6 +1584,25 @@ export class HarborSceneController implements HarborSceneHandle {
           text: b.label,
           kind: 'portal',
           accentHex: b.accentHex,
+          showText: true,
+          ...p,
+        });
+      }
+    } else if (this.hoveredLabelId?.startsWith('hub:')) {
+      const modId = this.hoveredLabelId.slice(4);
+      const hb = this.world.hubBuildings.find((item) => item.placement.moduleId === modId);
+      if (hb) {
+        const p = this.projectToScreen(
+          hb.placement.lot.centerX,
+          9.6,
+          hb.placement.lot.centerZ,
+        );
+        candidates.push({
+          id: `hub:${hb.placement.moduleId}`,
+          text: hb.placement.chip.name,
+          subText: hb.placement.appearance.signBannerText,
+          kind: 'hub-building',
+          accentHex: hb.placement.appearance.accentHex,
           showText: true,
           ...p,
         });
@@ -1599,7 +1764,7 @@ export class HarborSceneController implements HarborSceneHandle {
     this.controls.update();
 
     // Prevent camera from clipping below water or inside quay structures (Req #17)
-    const clampedCam = clampCameraCollision(this.camera.position);
+    const clampedCam = clampCameraCollision(this.camera.position, this.activeColliders);
     this.camera.position.set(clampedCam.x, clampedCam.y, clampedCam.z);
 
     this.updatePlayerMovement(dt);
@@ -1616,11 +1781,13 @@ export class HarborSceneController implements HarborSceneHandle {
         rt.curZ - this.playerPos.z,
       );
 
-      let action: 'idle' | 'run' | 'wave' = 'idle';
-      if (rt.person.online && distToPlayer < 7.5) {
+      let action: AvatarActionState = 'idle';
+      if (rt.isSeated) {
+        action = 'sit';
+      } else if (rt.person.presenceStatus === 'online' && distToPlayer < 7.5) {
         action = 'wave';
-      } else if (!suppressMotion && rt.person.online && rt.patrolRange > 0.5) {
-        // Gentle quay-only patrol walk — strictly clamped to concrete quay (zero water/building clipping)
+      } else if (!suppressMotion && rt.person.presenceStatus === 'online' && rt.patrolRange > 0.5) {
+        // Gentle quay-only patrol walk — strictly clamped to concrete quay (zero water/building/bench clipping)
         const walkSpeed = 1.55;
         const desiredX = rt.curX + rt.patrolDir * walkSpeed * dt;
         const desiredZ = rt.homeZ;
@@ -1634,6 +1801,7 @@ export class HarborSceneController implements HarborSceneHandle {
           { x: rt.curX, z: rt.curZ },
           { x: desiredX, z: desiredZ },
           otherPeers,
+          this.activeColliders,
         );
         const movedDist = Math.hypot(resolved.x - rt.curX, resolved.z - rt.curZ);
         if (

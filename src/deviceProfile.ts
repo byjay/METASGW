@@ -52,6 +52,18 @@ export function resolvePixelRatioForQuality(tier: QualityTier, devicePixelRatio 
 }
 
 /**
+ * Maximum number of 3D colleague avatars rendered simultaneously on the quay per quality tier.
+ * Colleagues beyond this cap are summarized via the unobtrusive "외 n명" indicator and remain
+ * fully accessible in the 2D list and PeopleFinderDrawer.
+ * NOTE: On 'low' tier we cap avatar count and use simplified 3D materials — NEVER 2D sprites.
+ */
+export function resolveAvatarCapForQuality(tier: QualityTier): number {
+  if (tier === 'low') return 3;
+  if (tier === 'medium') return 10;
+  return 16;
+}
+
+/**
  * Pure runtime auto-downgrade evaluator (Requirement #1):
  * - Only runs if the user has NOT manually locked a quality tier.
  * - After measuring the first 3 seconds of actual frame times, if avgFrameMs > 33ms

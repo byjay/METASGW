@@ -14,6 +14,7 @@ import {
   getMetaModuleStatusLabel,
   isNormalModuleStatus,
   NULL_KPI_PLACEHOLDER,
+  shouldRenderItemSeverityBadge,
   type MetaCablesKeyResponse,
   type MetaDrawingsKeyResponse,
   type MetaItemCategory,
@@ -169,17 +170,17 @@ export function formatRelativeUpdatedAt(updatedAt: string | null, nowMs = Date.n
   return `${Math.floor(diffDays / 365)}년 전`;
 }
 
-function getSeverityRank(severity: MetaItemSeverity | null): number {
-  if (severity === null) return 3;
-  return SEVERITY_PRIORITY[severity] ?? 3;
+function getSeverityRank(item: Pick<MetaKeyItem, 'severity' | 'severityProvided'>): number {
+  if (!shouldRenderItemSeverityBadge(item) || item.severity === null) return 3;
+  return SEVERITY_PRIORITY[item.severity] ?? 3;
 }
 
 /**
- * Sorts `MetaKeyItem` entries by severity (`urgent` > `warn` > `normal` > `null`), then newest `updatedAt`.
+ * Sorts `MetaKeyItem` entries by severity (`urgent` > `warn` > `normal` > `null`/unprovided), then newest `updatedAt`.
  */
 export function sortKeyItems(items: readonly MetaKeyItem[]): MetaKeyItem[] {
   return [...items].sort((a, b) => {
-    const sevDiff = getSeverityRank(a.severity) - getSeverityRank(b.severity);
+    const sevDiff = getSeverityRank(a) - getSeverityRank(b);
     if (sevDiff !== 0) return sevDiff;
     const timeDiff = parseTimestampMs(b.updatedAt) - parseTimestampMs(a.updatedAt);
     if (timeDiff !== 0) return timeDiff;
@@ -240,7 +241,7 @@ export function filterKeyItems(
   if (filter === 'all') return [...items];
   if (filter === 'drawing') return items.filter((item) => item.category === 'drawing');
   if (filter === 'cable') return items.filter((item) => item.category === 'cable');
-  return items.filter((item) => item.severity === 'urgent');
+  return items.filter((item) => shouldRenderItemSeverityBadge(item) && item.severity === 'urgent');
 }
 
 /**
@@ -357,7 +358,7 @@ export function countKeyItemsByFilter(
   for (const item of items) {
     if (item.category === 'drawing') drawing += 1;
     if (item.category === 'cable') cable += 1;
-    if (item.severity === 'urgent') urgent += 1;
+    if (shouldRenderItemSeverityBadge(item) && item.severity === 'urgent') urgent += 1;
   }
   return {
     all: items.length,

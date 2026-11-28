@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-export type AvatarActionState = 'idle' | 'run' | 'wave';
+export type AvatarActionState = 'idle' | 'run' | 'wave' | 'sit';
 /**
  * 3D-only LOD levels for harbor personnel.
  * 2D billboard sprites are strictly prohibited: avatars remain shaded volumetric
@@ -15,6 +15,8 @@ export interface HumanoidAvatarOptions {
   isCurrentUser?: boolean;
   skipContactShadow?: boolean;
   modelVariantIndex?: number;
+  /** Low-tier optimization: lightweight MeshLambertMaterial & zero shadows, strictly still 3D volumetric. */
+  simplifiedMaterial?: boolean;
 }
 
 export interface BuiltHumanoidRig {
@@ -176,104 +178,143 @@ export function buildHumanoidEngineerAvatar(options: HumanoidAvatarOptions): Bui
   const skinHex = skinPalette[variant];
   const hairHex = hairPalette[variant];
 
-  // Shared PBR Materials with crisp material contrast (matte cloth vs glossy helmet vs metallic buckle vs glowing lamp/tablet)
-  const jacketMat = getCachedMat(
-    `eng_jacket_${jacketHex}`,
-    () => new THREE.MeshStandardMaterial({ color: jacketHex, roughness: 0.7, metalness: 0.05 }),
-  );
-  const collarMat = getCachedMat(
-    `eng_collar_${collarHex}`,
-    () => new THREE.MeshStandardMaterial({ color: collarHex, roughness: 0.74, metalness: 0.04 }),
-  );
-  const vestMat = getCachedMat(
-    `eng_vest_${vestHex}`,
-    () => new THREE.MeshStandardMaterial({ color: vestHex, roughness: 0.52, metalness: 0.08 }),
-  );
-  const reflectiveMat = getCachedMat(
-    'eng_reflective_stripe',
-    () =>
-      new THREE.MeshStandardMaterial({
-        color: 0xf1f5f9,
-        emissive: 0xcbd5e1,
-        emissiveIntensity: 0.24,
-        roughness: 0.22,
-        metalness: 0.52,
-      }),
-  );
-  const trousersMat = getCachedMat(
-    'eng_trousers',
-    () => new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.78, metalness: 0.04 }),
-  );
-  const jointPadMat = getCachedMat(
-    'eng_joint_pad',
-    () => new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.6, metalness: 0.12 }),
-  );
-  const leatherDarkMat = getCachedMat(
-    'eng_dark_gear',
-    () => new THREE.MeshStandardMaterial({ color: 0x111827, roughness: 0.48, metalness: 0.18 }),
-  );
-  const bootUpperMat = getCachedMat(
-    'eng_boot_upper',
-    () => new THREE.MeshStandardMaterial({ color: 0x18181b, roughness: 0.5, metalness: 0.16 }),
-  );
-  const bootSoleMat = getCachedMat(
-    'eng_boot_sole',
-    () => new THREE.MeshStandardMaterial({ color: 0x09090b, roughness: 0.82, metalness: 0.06 }),
-  );
-  const metalBuckleMat = getCachedMat(
-    'eng_metal_buckle',
-    () => new THREE.MeshStandardMaterial({ color: 0xdbeafe, roughness: 0.22, metalness: 0.85 }),
-  );
-  const skinMat = getCachedMat(
-    `eng_skin_${skinHex}`,
-    () => new THREE.MeshStandardMaterial({ color: skinHex, roughness: 0.6, metalness: 0.02 }),
-  );
-  const hairMat = getCachedMat(
-    `eng_hair_${hairHex}`,
-    () => new THREE.MeshStandardMaterial({ color: hairHex, roughness: 0.76, metalness: 0.04 }),
-  );
-  const eyeMat = getCachedMat(
-    'eng_eye',
-    () => new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.16, metalness: 0.05 }),
-  );
-  const helmetMat = getCachedMat(
-    `eng_helmet_${helmetHex}`,
-    () => new THREE.MeshStandardMaterial({ color: helmetHex, roughness: 0.22, metalness: 0.2 }),
-  );
-  const headlampHousingMat = getCachedMat(
-    'eng_headlamp_housing',
-    () => new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.34, metalness: 0.5 }),
-  );
-  const headlampLensMat = getCachedMat(
-    'eng_headlamp_lens',
-    () =>
-      new THREE.MeshStandardMaterial({
-        color: 0xfef9c3,
-        emissive: 0xfde047,
-        emissiveIntensity: 1.15,
-        roughness: 0.12,
-        metalness: 0.08,
-      }),
-  );
-  const idBadgeMat = getCachedMat(
-    'eng_id_badge',
-    () => new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.3, metalness: 0.08 }),
-  );
-  const tabletFrameMat = getCachedMat(
-    'eng_tablet_frame',
-    () => new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.32, metalness: 0.58 }),
-  );
-  const tabletScreenMat = getCachedMat(
-    'eng_tablet_screen',
-    () =>
-      new THREE.MeshStandardMaterial({
-        color: 0x7dd3fc,
-        emissive: 0x0ea5e9,
-        emissiveIntensity: 0.92,
-        roughness: 0.14,
-        metalness: 0.12,
-      }),
-  );
+  const simplified = Boolean(options.simplifiedMaterial);
+  const makeShadedMat = (
+    key: string,
+    params: {
+      color: number;
+      roughness?: number;
+      metalness?: number;
+      emissive?: number;
+      emissiveIntensity?: number;
+    },
+  ): THREE.Material => {
+    if (simplified) {
+      return getCachedMat(
+        `simp_${key}`,
+        () =>
+          new THREE.MeshLambertMaterial({
+            color: params.color,
+            emissive: params.emissive ?? 0x000000,
+            emissiveIntensity: params.emissiveIntensity ?? 0,
+          }),
+      );
+    }
+    return getCachedMat(
+      key,
+      () =>
+        new THREE.MeshStandardMaterial({
+          color: params.color,
+          roughness: params.roughness ?? 0.6,
+          metalness: params.metalness ?? 0.05,
+          emissive: params.emissive ?? 0x000000,
+          emissiveIntensity: params.emissiveIntensity ?? 0,
+        }),
+    );
+  };
+
+  // Shared Materials: full PBR on high/medium, lightweight Lambert on low (strictly 3D volumetric always)
+  const jacketMat = makeShadedMat(`eng_jacket_${jacketHex}`, {
+    color: jacketHex,
+    roughness: 0.7,
+    metalness: 0.05,
+  });
+  const collarMat = makeShadedMat(`eng_collar_${collarHex}`, {
+    color: collarHex,
+    roughness: 0.74,
+    metalness: 0.04,
+  });
+  const vestMat = makeShadedMat(`eng_vest_${vestHex}`, {
+    color: vestHex,
+    roughness: 0.52,
+    metalness: 0.08,
+  });
+  const reflectiveMat = makeShadedMat('eng_reflective_stripe', {
+    color: 0xf1f5f9,
+    emissive: 0xcbd5e1,
+    emissiveIntensity: 0.24,
+    roughness: 0.22,
+    metalness: 0.52,
+  });
+  const trousersMat = makeShadedMat('eng_trousers', {
+    color: 0x1e293b,
+    roughness: 0.78,
+    metalness: 0.04,
+  });
+  const jointPadMat = makeShadedMat('eng_joint_pad', {
+    color: 0x334155,
+    roughness: 0.6,
+    metalness: 0.12,
+  });
+  const leatherDarkMat = makeShadedMat('eng_dark_gear', {
+    color: 0x111827,
+    roughness: 0.48,
+    metalness: 0.18,
+  });
+  const bootUpperMat = makeShadedMat('eng_boot_upper', {
+    color: 0x18181b,
+    roughness: 0.5,
+    metalness: 0.16,
+  });
+  const bootSoleMat = makeShadedMat('eng_boot_sole', {
+    color: 0x09090b,
+    roughness: 0.82,
+    metalness: 0.06,
+  });
+  const metalBuckleMat = makeShadedMat('eng_metal_buckle', {
+    color: 0xdbeafe,
+    roughness: 0.22,
+    metalness: 0.85,
+  });
+  const skinMat = makeShadedMat(`eng_skin_${skinHex}`, {
+    color: skinHex,
+    roughness: 0.6,
+    metalness: 0.02,
+  });
+  const hairMat = makeShadedMat(`eng_hair_${hairHex}`, {
+    color: hairHex,
+    roughness: 0.76,
+    metalness: 0.04,
+  });
+  const eyeMat = makeShadedMat('eng_eye', {
+    color: 0x0f172a,
+    roughness: 0.16,
+    metalness: 0.05,
+  });
+  const helmetMat = makeShadedMat(`eng_helmet_${helmetHex}`, {
+    color: helmetHex,
+    roughness: 0.22,
+    metalness: 0.2,
+  });
+  const headlampHousingMat = makeShadedMat('eng_headlamp_housing', {
+    color: 0x1e293b,
+    roughness: 0.34,
+    metalness: 0.5,
+  });
+  const headlampLensMat = makeShadedMat('eng_headlamp_lens', {
+    color: 0xfef9c3,
+    emissive: 0xfde047,
+    emissiveIntensity: 1.15,
+    roughness: 0.12,
+    metalness: 0.08,
+  });
+  const idBadgeMat = makeShadedMat('eng_id_badge', {
+    color: 0xf8fafc,
+    roughness: 0.3,
+    metalness: 0.08,
+  });
+  const tabletFrameMat = makeShadedMat('eng_tablet_frame', {
+    color: 0x0f172a,
+    roughness: 0.32,
+    metalness: 0.58,
+  });
+  const tabletScreenMat = makeShadedMat('eng_tablet_screen', {
+    color: 0x7dd3fc,
+    emissive: 0x0ea5e9,
+    emissiveIntensity: 0.92,
+    roughness: 0.14,
+    metalness: 0.12,
+  });
   const groundRingMat = getCachedMat(
     `eng_ring_${ringHex}`,
     () =>
@@ -322,9 +363,10 @@ export function buildHumanoidEngineerAvatar(options: HumanoidAvatarOptions): Bui
   const shadowCasters: THREE.Mesh[] = [];
   const registerMesh = (mesh: THREE.Mesh, name: string, castsShadow = true): THREE.Mesh => {
     mesh.name = name;
-    mesh.castShadow = castsShadow;
-    mesh.receiveShadow = true;
-    if (castsShadow) shadowCasters.push(mesh);
+    const allowShadow = !simplified && castsShadow;
+    mesh.castShadow = allowShadow;
+    mesh.receiveShadow = !simplified;
+    if (allowShadow) shadowCasters.push(mesh);
     return mesh;
   };
 
@@ -672,6 +714,30 @@ export function buildHumanoidEngineerAvatar(options: HumanoidAvatarOptions): Bui
       return nextLod;
     },
     updateAnimation: (_dt, elapsed, action, reducedMotion) => {
+      if (action === 'sit') {
+        // Seated bench pose for 'away' (자리비움) colleagues — always applied even in reducedMotion/low-tier
+        hips.position.y = 0.44;
+        hips.position.z = 0.04;
+        hips.rotation.y = 0;
+        const breathe = reducedMotion ? 0 : Math.sin(elapsed * 1.6) * 0.015;
+        const headLookY = reducedMotion ? 0 : Math.sin(elapsed * 0.65) * 0.2;
+        spine.rotation.set(-0.08 + breathe, 0, 0);
+        headGroup.rotation.set(0.03, headLookY, 0);
+
+        leftLeg.hip.rotation.x = -1.48;
+        rightLeg.hip.rotation.x = -1.48;
+        leftLeg.knee.rotation.x = 1.46;
+        rightLeg.knee.rotation.x = 1.46;
+
+        leftArm.shoulder.rotation.set(-0.48, 0.14, 0.08);
+        leftArm.elbow.rotation.x = -0.82;
+        rightArm.shoulder.rotation.set(-0.42, -0.1, -0.08);
+        rightArm.elbow.rotation.x = -0.74;
+        return;
+      }
+
+      hips.position.z = 0;
+
       if (reducedMotion) {
         hips.position.y = 0.88;
         hips.rotation.y = 0;

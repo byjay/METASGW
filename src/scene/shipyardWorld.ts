@@ -2,7 +2,9 @@ import * as THREE from 'three';
 import { PORTAL_BUILDINGS, type PortalBuildingSpec } from '../core/navMeshEngine';
 import { OBSERVATION_DECK_Y, QUAY_MAIN_DECK_Y } from '../core/physicsCollision';
 import type { HarborShip } from '../mapping';
+import type { HubBuildingPlacement } from '../meta/hubBuildingModel';
 import type { ShipDisplayPrefsMap } from '../shipDisplayPrefs';
+import { buildHubModuleBuilding3D, type HubBuildingRuntime } from './hubBuildings3D';
 import { createInstancedRingBatch, mergeSolidSubtreeToVertexColors } from './meshBatching';
 import {
   buildProjectVessel3D,
@@ -40,11 +42,13 @@ export interface DecorativeVesselRuntime {
 
 export interface ShipyardWorldHandles {
   clickablePortalProxies: THREE.Object3D[];
+  clickableHubBuildingProxies: THREE.Object3D[];
   clickableShipProxies: THREE.Object3D[];
   clickableDecorativeShipProxies: THREE.Object3D[];
   walkableMeshes: THREE.Object3D[];
   dockedShips: DockedShipRuntime[];
   decorativeVessels: DecorativeVesselRuntime[];
+  hubBuildings: HubBuildingRuntime[];
   bridgeGlowMat: THREE.MeshStandardMaterial;
   instancedPropCounts: {
     bollards: number;
@@ -55,6 +59,7 @@ export interface ShipyardWorldHandles {
     yardContainers: number;
   };
   syncProjectShips: (ships: HarborShip[], lowSpec: boolean, prefs?: ShipDisplayPrefsMap) => void;
+  syncHubBuildings: (placements: HubBuildingPlacement[], lowSpec: boolean) => void;
   applyShipDisplayPrefs: (prefs: ShipDisplayPrefsMap) => void;
   setSelectedShipId: (shipId: string | null) => void;
   setLowSpecMode: (lowSpec: boolean) => void;
@@ -265,11 +270,13 @@ export function buildShipyardWorld(
   textures: HarborTexturePack,
 ): ShipyardWorldHandles {
   const clickablePortalProxies: THREE.Object3D[] = [];
+  const clickableHubBuildingProxies: THREE.Object3D[] = [];
   const clickableShipProxies: THREE.Object3D[] = [];
   const clickableDecorativeShipProxies: THREE.Object3D[] = [];
   const walkableMeshes: THREE.Object3D[] = [];
   const dockedShips: DockedShipRuntime[] = [];
   const decorativeVessels: DecorativeVesselRuntime[] = [];
+  const hubBuildings: HubBuildingRuntime[] = [];
   const clouds: Array<{ sprite: THREE.Sprite; speed: number; baseX: number }> = [];
   const staticDisposables: Array<{ dispose: () => void }> = [];
 
@@ -1159,6 +1166,37 @@ export function buildShipyardWorld(
     }
   };
 
+  // =========================================================================
+  // 8. DYNAMIC HUB MODULE HARBOR BUILDINGS (Stage 8 — /api/meta/registry + summary)
+  //    Places planned & active hub systems (`s360`, `secad`, `pdf`, `mail`, `secms`,
+  //    and any future registry systems) on empty quay/pier lots without touching
+  //    existing SGW Portal Pavilions or docked SEDMS ships.
+  // =========================================================================
+  const hubBuildingsRoot = new THREE.Group();
+  hubBuildingsRoot.name = 'HubModuleBuildingsRoot';
+  scene.add(hubBuildingsRoot);
+
+  const clearHubBuildings = () => {
+    for (const item of hubBuildings) {
+      hubBuildingsRoot.remove(item.group);
+      hubBuildingsRoot.remove(item.hitProxy);
+      item.dispose();
+    }
+    hubBuildings.length = 0;
+    clickableHubBuildingProxies.length = 0;
+  };
+
+  const syncHubBuildings = (placements: HubBuildingPlacement[], lowSpec: boolean) => {
+    clearHubBuildings();
+    placements.forEach((placement, idx) => {
+      const built = buildHubModuleBuilding3D(placement, textures, lowSpec, idx);
+      hubBuildingsRoot.add(built.group);
+      hubBuildingsRoot.add(built.hitProxy);
+      hubBuildings.push(built);
+      clickableHubBuildingProxies.push(built.hitProxy);
+    });
+  };
+
   const setLowSpecMode = (lowSpec: boolean) => {
     for (const cm of concreteMeshes) {
       cm.material = lowSpec ? concreteLowMat : concretePbrMat;
@@ -1188,15 +1226,26 @@ export function buildShipyardWorld(
         }
       });
     }
+    for (const hb of hubBuildings) {
+      hb.group.traverse((obj) => {
+        const mesh = obj as THREE.Mesh;
+        if (mesh.isMesh) {
+          mesh.castShadow = !lowSpec;
+          mesh.receiveShadow = !lowSpec;
+        }
+      });
+    }
   };
 
   return {
     clickablePortalProxies,
+    clickableHubBuildingProxies,
     clickableShipProxies,
     clickableDecorativeShipProxies,
     walkableMeshes,
     dockedShips,
     decorativeVessels,
+    hubBuildings,
     bridgeGlowMat,
     instancedPropCounts: {
       bollards: bollardPositions.length,
@@ -1207,6 +1256,7 @@ export function buildShipyardWorld(
       yardContainers: yardContainerSpecs.length,
     },
     syncProjectShips,
+    syncHubBuildings,
     applyShipDisplayPrefs,
     setSelectedShipId,
     setLowSpecMode,
@@ -1216,6 +1266,12 @@ export function buildShipyardWorld(
       for (const c of clouds) {
         c.sprite.position.x += c.speed * dt;
         if (c.sprite.position.x > 195) c.sprite.position.x = -195;
+      }
+
+      for (const hb of hubBuildings) {
+        const baseIntensity = hb.placement.appearance.lightsOn ? 1.35 : 0.6;
+        const speed = hb.placement.chip.status === 'unavailable' ? 4.2 : 2.1;
+        hb.beaconMat.emissiveIntensity = baseIntensity + Math.sin(elapsed * speed + hb.phase) * 0.45;
       }
 
       for (const item of dockedShips) {
@@ -1244,6 +1300,7 @@ export function buildShipyardWorld(
       }
     },
     dispose: () => {
+      clearHubBuildings();
       clearDockedShips();
       for (const deco of decorativeVessels) {
         sceneryRoot.remove(deco.anchor);

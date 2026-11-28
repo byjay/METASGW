@@ -9,10 +9,20 @@
  *   - Vessel appearance (status color, signal flag, 7-day deck lights) is derived exclusively here.
  */
 
-import type { SedmsProject, SgwEmployee, SgwPresenceEntry } from './sgwAdapter';
+import { resolveAvatarCapForQuality, type QualityTier } from './deviceProfile';
+import type { SedmsProject, SgwEmployee, SgwPresenceEntry, SgwPresenceStatus } from './sgwAdapter';
 
 export const PRESENCE_TTL_MS = 30_000;
 export const DECK_LIGHTS_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+export type PresenceStatus = SgwPresenceStatus;
+
+export const PRESENCE_STATUS_LABEL_KO: Record<PresenceStatus, string> = {
+  online: '온라인',
+  away: '자리비움',
+  leave: '연차',
+  offline: '오프라인',
+};
 
 export interface HarborPerson {
   sub: string;
@@ -23,6 +33,9 @@ export interface HarborPerson {
   isPartner: boolean;
   isCurrentUser: boolean;
   online: boolean;
+  presenceStatus: PresenceStatus;
+  presenceLabelKo: string;
+  benchIndex?: number;
   position: { x: number; y: number; z: number };
   facingYaw: number;
   shirtHex: string;
@@ -213,34 +226,72 @@ export function formatDisconnectedBanner(
   return `연결 끊김 — 마지막 갱신 ${elapsedMinutes}분 전`;
 }
 
+export function resolvePresenceStatus(
+  entry: SgwPresenceEntry | undefined,
+  isCurrentUser: boolean,
+  nowMs: number,
+): PresenceStatus {
+  if (entry?.status) {
+    if (entry.status === 'leave') return 'leave';
+    if (entry.status === 'away') return 'away';
+    if (entry.status === 'online') return 'online';
+    if (entry.status === 'offline') return isCurrentUser ? 'online' : 'offline';
+  }
+  if (isCurrentUser) return 'online';
+  if (!entry) return 'offline';
+  if (entry.lastSeenAt > 0) {
+    return nowMs - entry.lastSeenAt <= PRESENCE_TTL_MS && entry.online !== false
+      ? 'online'
+      : 'offline';
+  }
+  return entry.online === true ? 'online' : 'offline';
+}
+
 export function isPresenceOnline(
   entry: SgwPresenceEntry | undefined,
   nowMs: number,
 ): boolean {
-  if (!entry) return false;
-  if (entry.lastSeenAt > 0) {
-    return nowMs - entry.lastSeenAt <= PRESENCE_TTL_MS && entry.online !== false;
-  }
-  return entry.online === true;
+  return resolvePresenceStatus(entry, false, nowMs) === 'online';
 }
 
 /**
- * Deterministic safe boardwalk slots on the quay apron (`z` in [-11.5, -4.5]),
- * guaranteed collision-free with buildings (`z < -20`) and water (`z >= -2.5`).
+ * Deterministic safe boardwalk walking slots on the quay apron (`z` in [-11.5, -8.0]),
+ * guaranteed collision-free with buildings (`z < -20`), quay benches (`z = -5.8`), and water (`z >= -2.5`).
  */
 const QUAY_AVATAR_SLOTS: ReadonlyArray<{ x: number; z: number; yaw: number }> = [
-  { x: -16, z: -5.4, yaw: 0.2 },
-  { x: -6, z: -6.2, yaw: -0.1 },
-  { x: 6, z: -5.2, yaw: -0.25 },
-  { x: 16, z: -6.0, yaw: 0.3 },
-  { x: -24, z: -7.6, yaw: 0.4 },
-  { x: 24, z: -7.4, yaw: -0.4 },
-  { x: -18, z: -10.4, yaw: 0.15 },
-  { x: -8, z: -10.8, yaw: 0.0 },
-  { x: 4, z: -10.2, yaw: -0.1 },
-  { x: 14, z: -10.6, yaw: -0.2 },
-  { x: 22, z: -10.4, yaw: -0.35 },
-  { x: -28, z: -5.0, yaw: 0.5 },
+  { x: -16, z: -8.6, yaw: 0.2 },
+  { x: -6, z: -9.4, yaw: -0.1 },
+  { x: 6, z: -8.4, yaw: -0.25 },
+  { x: 16, z: -9.2, yaw: 0.3 },
+  { x: -24, z: -10.2, yaw: 0.4 },
+  { x: 24, z: -10.0, yaw: -0.4 },
+  { x: -18, z: -11.4, yaw: 0.15 },
+  { x: -8, z: -11.8, yaw: 0.0 },
+  { x: 4, z: -11.2, yaw: -0.1 },
+  { x: 14, z: -11.6, yaw: -0.2 },
+  { x: 22, z: -11.4, yaw: -0.35 },
+  { x: -28, z: -8.8, yaw: 0.5 },
+];
+
+/**
+ * Seated quay bench slots aligned 1:1 with the 4 physical 3D wooden benches in shipyardWorld.ts
+ * (`benchXs = [-22, -10, 10, 22]`, seat at `z = -5.8`, backrest at `z = -6.02`, facing `+Z` harbor).
+ * Each 3m bench holds up to 2 seated away colleagues cleanly with 1.1m lateral clearance.
+ */
+export const QUAY_BENCH_SLOTS: ReadonlyArray<{
+  x: number;
+  z: number;
+  yaw: number;
+  benchIndex: number;
+}> = [
+  { x: -22.55, z: -5.72, yaw: 0, benchIndex: 0 },
+  { x: -10.55, z: -5.72, yaw: 0, benchIndex: 1 },
+  { x: 9.45, z: -5.72, yaw: 0, benchIndex: 2 },
+  { x: 21.45, z: -5.72, yaw: 0, benchIndex: 3 },
+  { x: -21.45, z: -5.72, yaw: 0, benchIndex: 0 },
+  { x: -9.45, z: -5.72, yaw: 0, benchIndex: 1 },
+  { x: 10.55, z: -5.72, yaw: 0, benchIndex: 2 },
+  { x: 22.55, z: -5.72, yaw: 0, benchIndex: 3 },
 ];
 
 export function mapEmployeesToHarborPeople(
@@ -254,12 +305,35 @@ export function mapEmployeesToHarborPeople(
     presenceBySub.set(entry.sub, entry);
   }
 
-  return employees.map((emp, idx) => {
-    const slot = QUAY_AVATAR_SLOTS[idx % QUAY_AVATAR_SLOTS.length];
-    const rowOffset = Math.floor(idx / QUAY_AVATAR_SLOTS.length);
+  let walkIdx = 0;
+  let benchIdx = 0;
+
+  return employees.map((emp) => {
     const hash = stableHash(emp.sub);
     const isCurrentUser = currentUserSub !== null && emp.sub === currentUserSub;
-    const online = isCurrentUser || isPresenceOnline(presenceBySub.get(emp.sub), nowMs);
+    const presenceStatus = resolvePresenceStatus(presenceBySub.get(emp.sub), isCurrentUser, nowMs);
+    const online = presenceStatus === 'online';
+
+    let posX: number;
+    let posZ: number;
+    let yaw: number;
+    let assignedBench: number | undefined;
+
+    if (!isCurrentUser && presenceStatus === 'away') {
+      const benchSlot = QUAY_BENCH_SLOTS[benchIdx % QUAY_BENCH_SLOTS.length];
+      benchIdx += 1;
+      posX = benchSlot.x;
+      posZ = benchSlot.z;
+      yaw = benchSlot.yaw;
+      assignedBench = benchSlot.benchIndex;
+    } else {
+      const slot = QUAY_AVATAR_SLOTS[walkIdx % QUAY_AVATAR_SLOTS.length];
+      const rowOffset = Math.floor(walkIdx / QUAY_AVATAR_SLOTS.length);
+      walkIdx += 1;
+      posX = slot.x + rowOffset * 1.8;
+      posZ = Math.max(-13.5, slot.z - rowOffset * 1.4);
+      yaw = slot.yaw;
+    }
 
     return {
       sub: emp.sub,
@@ -270,18 +344,72 @@ export function mapEmployeesToHarborPeople(
       isPartner: emp.isPartner,
       isCurrentUser,
       online,
+      presenceStatus,
+      presenceLabelKo: PRESENCE_STATUS_LABEL_KO[presenceStatus],
+      benchIndex: assignedBench,
       position: {
-        x: slot.x + rowOffset * 1.8,
+        x: posX,
         y: 1.61,
-        z: Math.max(-13.5, slot.z - rowOffset * 1.4),
+        z: posZ,
       },
-      facingYaw: slot.yaw,
+      facingYaw: yaw,
       shirtHex: emp.isPartner
         ? PARTNER_SHIRT_HEX
         : EMPLOYEE_SHIRT_PALETTE[hash % EMPLOYEE_SHIRT_PALETTE.length],
       accentHex: emp.isPartner ? '#fb923c' : '#38bdf8',
     };
   });
+}
+
+export interface QuayColleagueSelection {
+  visible: HarborPerson[];
+  overflowCount: number;
+  onLeaveCount: number;
+  cap: number;
+  totalEligibleCount: number;
+}
+
+const PRESENCE_RENDER_PRIORITY: Record<PresenceStatus, number> = {
+  online: 0,
+  away: 1,
+  offline: 2,
+  leave: 3,
+};
+
+/**
+ * Selects which colleagues render as 3D volumetric avatars on the quay for the active quality tier:
+ *   - Excludes current user (rendered separately as playerRig).
+ *   - Excludes colleagues on leave (`presenceStatus === 'leave'` -> "오늘 연차" = not on quay).
+ *   - Prioritizes `online` (walking) then `away` (seated on benches) then `offline` (standing).
+ *   - Caps visible 3D colleague count per quality tier and reports `overflowCount` for the "외 n명" badge.
+ */
+export function selectVisibleQuayColleagues(
+  people: readonly HarborPerson[],
+  qualityTier: QualityTier,
+): QuayColleagueSelection {
+  const cap = resolveAvatarCapForQuality(qualityTier);
+  const nonSelf = people.filter((p) => !p.isCurrentUser);
+  const onLeaveCount = nonSelf.filter((p) => p.presenceStatus === 'leave').length;
+  const eligible = nonSelf
+    .filter((p) => p.presenceStatus !== 'leave')
+    .map((person, index) => ({ person, index }))
+    .sort((a, b) => {
+      const pa = PRESENCE_RENDER_PRIORITY[a.person.presenceStatus];
+      const pb = PRESENCE_RENDER_PRIORITY[b.person.presenceStatus];
+      return pa !== pb ? pa - pb : a.index - b.index;
+    })
+    .map((item) => item.person);
+
+  const visible = eligible.slice(0, cap);
+  const overflowCount = Math.max(0, eligible.length - visible.length);
+
+  return {
+    visible,
+    overflowCount,
+    onLeaveCount,
+    cap,
+    totalEligibleCount: eligible.length,
+  };
 }
 
 /**

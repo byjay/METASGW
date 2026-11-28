@@ -21,6 +21,7 @@ import type { RuntimeEnv } from '../runtimeEnv';
 import {
   formatNullableKpiValue,
   isNormalModuleStatus,
+  shouldRenderItemSeverityBadge,
   type MetaCablesKeyResponse,
   type MetaClientError,
   type MetaDrawingsKeyResponse,
@@ -757,7 +758,9 @@ export const ShipKeyItemsTab: React.FC<ShipKeyItemsTabProps> = ({
                   {visibleItems.map((item) => {
                     const link = resolveKeyItemLink(item);
                     const relTime = formatRelativeUpdatedAt(item.updatedAt);
-                    const sevLabel = item.severity !== null ? SEVERITY_LABEL_KO[item.severity] : null;
+                    const showSeverity = shouldRenderItemSeverityBadge(item);
+                    const sevLabel =
+                      showSeverity && item.severity !== null ? SEVERITY_LABEL_KO[item.severity] : null;
                     const catLabel = CATEGORY_LABEL_KO[item.category];
                     const rowInner = (
                       <>
@@ -767,7 +770,7 @@ export const ShipKeyItemsTab: React.FC<ShipKeyItemsTabProps> = ({
                             <span className="font-mono text-[11px] font-bold text-sky-200 shrink-0">
                               {item.code}
                             </span>
-                            {item.severity !== null && sevLabel && (
+                            {showSeverity && item.severity !== null && sevLabel && (
                               <span
                                 data-testid={`key-item-severity-${item.id}`}
                                 className={`inline-flex shrink-0 items-center rounded border px-1 py-0.5 text-[10px] font-semibold leading-none ${SEVERITY_BADGE_CLASS[item.severity]}`}

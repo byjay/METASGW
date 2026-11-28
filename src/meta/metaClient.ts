@@ -14,15 +14,15 @@
 
 import { isSafeNavigationUrl, isValidProjectId, SGW_LOGIN_REDIRECT_URL } from '../deepLink';
 import { detectRuntimeEnv, type RuntimeEnv } from '../runtimeEnv';
-import {
-  getPreviewHubRegistry,
-  getPreviewHubSummary,
-  getPreviewKeyCables,
-  getPreviewKeyDrawings,
-  getPreviewReportJson,
-  getPreviewReportMarkdown,
-  getPreviewSearchItems,
-} from './hubFixtures';
+type HubFixturesModule = typeof import('./hubFixtures');
+let previewHubFixturesPromise: Promise<HubFixturesModule> | null = null;
+
+function loadPreviewHubFixtures(): Promise<HubFixturesModule> {
+  if (!previewHubFixturesPromise) {
+    previewHubFixturesPromise = import('./hubFixtures');
+  }
+  return previewHubFixturesPromise;
+}
 import type {
   MetaCablesKeyResponse,
   MetaClientError,
@@ -157,7 +157,7 @@ function normalizeKeyItem(raw: unknown): MetaKeyItem | null {
       ? rawMetric
       : asString(rawMetric, '');
 
-  return {
+  const item: MetaKeyItem = {
     id,
     moduleId,
     category: normalizeCategory(r.category),
@@ -168,6 +168,10 @@ function normalizeKeyItem(raw: unknown): MetaKeyItem | null {
     updatedAt: asNullableString(r.updatedAt),
     deepLinkUrl: sanitizeServerUrl(r.deepLinkUrl),
   };
+  if (typeof r.severityProvided === 'boolean') {
+    item.severityProvided = r.severityProvided;
+  }
+  return item;
 }
 
 function normalizeKeyItems(raw: unknown): MetaKeyItem[] {
@@ -413,7 +417,8 @@ export async function fetchMetaRegistry(
     return abortedError('aborted', options.timeoutMs ?? META_REQUEST_TIMEOUT_MS);
   }
   if (env === 'preview') {
-    return { ok: true, data: getPreviewHubRegistry(), runtimeEnv: 'preview' };
+    const fixtures = await loadPreviewHubFixtures();
+    return { ok: true, data: fixtures.getPreviewHubRegistry(), runtimeEnv: 'preview' };
   }
 
   return fetchMetaJson<MetaRegistryResponse>(
@@ -458,9 +463,10 @@ export async function fetchMetaHubSummary(
     return abortedError('aborted', options.timeoutMs ?? META_REQUEST_TIMEOUT_MS);
   }
   if (env === 'preview') {
+    const fixtures = await loadPreviewHubFixtures();
     return {
       ok: true,
-      data: getPreviewHubSummary(params.project, options?.nowMs),
+      data: fixtures.getPreviewHubSummary(params.project, options?.nowMs),
       runtimeEnv: 'preview',
     };
   }
@@ -509,9 +515,10 @@ export async function fetchMetaKeyDrawings(
   const filter: MetaDrawingsFilter = params.filter ?? 'latest';
 
   if (env === 'preview') {
+    const fixtures = await loadPreviewHubFixtures();
     return {
       ok: true,
-      data: getPreviewKeyDrawings(params.project, { limit, filter, nowMs: options?.nowMs }),
+      data: fixtures.getPreviewKeyDrawings(params.project, { limit, filter, nowMs: options?.nowMs }),
       runtimeEnv: 'preview',
     };
   }
@@ -561,9 +568,10 @@ export async function fetchMetaKeyCables(
   const limit = Math.max(1, Math.min(100, Math.round(params.limit ?? 30)));
 
   if (env === 'preview') {
+    const fixtures = await loadPreviewHubFixtures();
     return {
       ok: true,
-      data: getPreviewKeyCables(params.project, { warnPct, limit, nowMs: options?.nowMs }),
+      data: fixtures.getPreviewKeyCables(params.project, { warnPct, limit, nowMs: options?.nowMs }),
       runtimeEnv: 'preview',
     };
   }
@@ -614,9 +622,10 @@ export async function searchMetaItems(
     .filter((m) => m.length > 0);
 
   if (env === 'preview') {
+    const fixtures = await loadPreviewHubFixtures();
     return {
       ok: true,
-      data: getPreviewSearchItems(params.project, {
+      data: fixtures.getPreviewSearchItems(params.project, {
         q: params.q,
         modules: cleanModules.length > 0 ? cleanModules : undefined,
         nowMs: options?.nowMs,
@@ -671,16 +680,17 @@ export async function generateMetaReport(
   const format: MetaReportFormat = params.format === 'md' ? 'md' : 'json';
 
   if (env === 'preview') {
+    const fixtures = await loadPreviewHubFixtures();
     if (format === 'md') {
       return {
         ok: true,
-        data: { format: 'md', markdown: getPreviewReportMarkdown(params.project, days, options?.nowMs) },
+        data: { format: 'md', markdown: fixtures.getPreviewReportMarkdown(params.project, days, options?.nowMs) },
         runtimeEnv: 'preview',
       };
     }
     return {
       ok: true,
-      data: { format: 'json', report: getPreviewReportJson(params.project, days, options?.nowMs) },
+      data: { format: 'json', report: fixtures.getPreviewReportJson(params.project, days, options?.nowMs) },
       runtimeEnv: 'preview',
     };
   }

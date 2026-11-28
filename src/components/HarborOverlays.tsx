@@ -314,12 +314,16 @@ export const PersonActionModal: React.FC<PersonActionModalProps> = ({
                 </h2>
                 <span
                   className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
-                    person.online
-                      ? 'bg-emerald-500/20 text-emerald-200 border border-emerald-400/40'
-                      : 'bg-slate-700/70 text-slate-300 border border-slate-600'
+                    person.presenceStatus === 'online'
+                      ? 'bg-emerald-950/90 text-emerald-100 border border-emerald-400/50'
+                      : person.presenceStatus === 'away'
+                        ? 'bg-amber-950/90 text-amber-100 border border-amber-400/50'
+                        : person.presenceStatus === 'leave'
+                          ? 'bg-violet-950/90 text-violet-100 border border-violet-400/50'
+                          : 'bg-slate-800 text-slate-200 border border-slate-600'
                   }`}
                 >
-                  {person.online ? '접속 중' : '오프라인'}
+                  {person.presenceLabelKo}
                 </span>
               </div>
               <p className="text-xs text-slate-300">
@@ -344,16 +348,16 @@ export const PersonActionModal: React.FC<PersonActionModalProps> = ({
             onClick={(e) => {
               if (isPreview) {
                 e.preventDefault();
-                onPreviewLinkBlocked(`SGTALK 1:1 대화(${person.name})`);
+                onPreviewLinkBlocked(`메시지(${person.name})`);
               }
             }}
             className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-sky-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-sky-600 focus-visible:outline-2 focus-visible:outline-sky-400"
           >
             <MessageSquare className="h-4 w-4" aria-hidden="true" />
-            SGTALK 1:1 대화하기
+            메시지 보내기
           </a>
 
-          {canFocus3D && !person.isCurrentUser && (
+          {canFocus3D && !person.isCurrentUser && person.presenceStatus !== 'leave' && (
             <button
               type="button"
               onClick={() => {

@@ -59,10 +59,13 @@ export interface SgwEmployee {
   isPartner: boolean;
 }
 
+export type SgwPresenceStatus = 'online' | 'away' | 'leave' | 'offline';
+
 export interface SgwPresenceEntry {
   sub: string;
   lastSeenAt: number;
   online?: boolean;
+  status?: SgwPresenceStatus;
 }
 
 export interface SedmsProject {
@@ -329,8 +332,49 @@ function parseTimestampMs(raw: unknown): number {
   return 0;
 }
 
+function normalizePresenceStatus(
+  rawStatus: unknown,
+  rec?: Record<string, unknown>,
+): SgwPresenceStatus | undefined {
+  if (rec) {
+    if (rec.onLeave === true || rec.on_leave === true || rec.isOnLeave === true || rec.leave === true) {
+      return 'leave';
+    }
+    if (rec.away === true || rec.isAway === true || rec.idle === true) {
+      return 'away';
+    }
+  }
+  if (typeof rawStatus !== 'string') return undefined;
+  const s = rawStatus.trim().toLowerCase();
+  if (!s) return undefined;
+  if (
+    s === 'leave' ||
+    s === 'on_leave' ||
+    s === 'onleave' ||
+    s === 'vacation' ||
+    s === 'annual_leave' ||
+    s === 'pto' ||
+    s === 'day_off' ||
+    s === '연차' ||
+    s === '휴가'
+  ) {
+    return 'leave';
+  }
+  if (s === 'away' || s === 'idle' || s === 'brb' || s === 'afk' || s === '자리비움') {
+    return 'away';
+  }
+  if (s === 'online' || s === 'active' || s === 'available' || s === '온라인' || s === '접속') {
+    return 'online';
+  }
+  if (s === 'offline' || s === '오프라인') {
+    return 'offline';
+  }
+  return undefined;
+}
+
 /**
- * Loads online presence list via `GET /api/presence`.
+ * Loads colleague presence list via `GET /api/presence`.
+ * Supports flat arrays, wrapped `{ items | users | entries }`, and grouped `{ online, away, leave | onLeave }` payloads.
  */
 export async function fetchPresence(
   opts?: AdapterOptions,
@@ -368,34 +412,56 @@ export async function fetchPresence(
     }
 
     const data = (await res.json()) as unknown;
-    const list: unknown[] = Array.isArray(data)
-      ? data
-      : data && typeof data === 'object' && Array.isArray((data as Record<string, unknown>).online)
-        ? ((data as Record<string, unknown>).online as unknown[])
-        : data && typeof data === 'object' && Array.isArray((data as Record<string, unknown>).items)
-          ? ((data as Record<string, unknown>).items as unknown[])
-          : data && typeof data === 'object' && Array.isArray((data as Record<string, unknown>).users)
-            ? ((data as Record<string, unknown>).users as unknown[])
-            : [];
+    const nowFallback = opts?.nowMs ?? Date.now();
+    const bySub = new Map<string, SgwPresenceEntry>();
 
-    const entries: SgwPresenceEntry[] = [];
-    for (const item of list) {
-      if (typeof item === 'string' && item.trim()) {
-        entries.push({ sub: item.trim(), lastSeenAt: Date.now(), online: true });
-        continue;
+    const ingestList = (items: unknown[], defaultStatus?: SgwPresenceStatus) => {
+      for (const item of items) {
+        if (typeof item === 'string' && item.trim()) {
+          const sub = item.trim();
+          const st: SgwPresenceStatus = defaultStatus ?? 'online';
+          bySub.set(sub, {
+            sub,
+            lastSeenAt: st === 'online' || st === 'away' ? nowFallback : 0,
+            online: st === 'online',
+            status: st,
+          });
+          continue;
+        }
+        if (!item || typeof item !== 'object') continue;
+        const rec = item as Record<string, unknown>;
+        const sub = asCleanString(rec.sub);
+        if (!sub) continue;
+        const lastSeenAt = parseTimestampMs(
+          rec.lastSeenAt ?? rec.last_seen_at ?? rec.updated_at ?? rec.ts ?? rec.seenAt,
+        );
+        const status =
+          normalizePresenceStatus(rec.status ?? rec.state ?? rec.presence, rec) ?? defaultStatus;
+        const online =
+          typeof rec.online === 'boolean'
+            ? rec.online
+            : status !== undefined
+              ? status === 'online'
+              : undefined;
+        bySub.set(sub, { sub, lastSeenAt, online, status });
       }
-      if (!item || typeof item !== 'object') continue;
-      const rec = item as Record<string, unknown>;
-      const sub = asCleanString(rec.sub);
-      if (!sub) continue;
-      const lastSeenAt = parseTimestampMs(
-        rec.lastSeenAt ?? rec.last_seen_at ?? rec.updated_at ?? rec.ts ?? rec.seenAt,
-      );
-      const online = typeof rec.online === 'boolean' ? rec.online : undefined;
-      entries.push({ sub, lastSeenAt, online });
+    };
+
+    if (Array.isArray(data)) {
+      ingestList(data);
+    } else if (data && typeof data === 'object') {
+      const obj = data as Record<string, unknown>;
+      if (Array.isArray(obj.entries)) ingestList(obj.entries);
+      if (Array.isArray(obj.items)) ingestList(obj.items);
+      if (Array.isArray(obj.users)) ingestList(obj.users);
+      if (Array.isArray(obj.online)) ingestList(obj.online, 'online');
+      if (Array.isArray(obj.away)) ingestList(obj.away, 'away');
+      if (Array.isArray(obj.leave)) ingestList(obj.leave, 'leave');
+      if (Array.isArray(obj.onLeave)) ingestList(obj.onLeave, 'leave');
+      if (Array.isArray(obj.on_leave)) ingestList(obj.on_leave, 'leave');
     }
 
-    return { status: 'ok', entries };
+    return { status: 'ok', entries: Array.from(bySub.values()) };
   } catch {
     return {
       status: 'error',

@@ -104,7 +104,7 @@ describe('sgwAdapter strict sgw vs preview runtime separation', () => {
     }
   });
 
-  it('in preview mode: returns pseudonym fixtures (user01~user05, dept01~dept03, proj01~proj04) without calling fetch', async () => {
+  it('in preview mode: returns pseudonym fixtures (user01~user06, dept01~dept03, proj01~proj04) without calling fetch', async () => {
     let fetchCalls = 0;
     const forbiddenFetch: FetchLike = async () => {
       fetchCalls += 1;
@@ -121,7 +121,7 @@ describe('sgwAdapter strict sgw vs preview runtime separation', () => {
     const emp = await fetchEmployees({ runtimeEnv: 'preview', fetchImpl: forbiddenFetch });
     assert.equal(emp.status, 'ok');
     if (emp.status === 'ok') {
-      assert.equal(emp.employees.length, 5);
+      assert.equal(emp.employees.length, 6);
       const depts = new Set(emp.employees.map((e) => e.dept));
       assert.deepEqual([...depts].sort(), ['dept01', 'dept02', 'dept03']);
     }
@@ -129,7 +129,9 @@ describe('sgwAdapter strict sgw vs preview runtime separation', () => {
     const pres = await fetchPresence({ runtimeEnv: 'preview', fetchImpl: forbiddenFetch, nowMs: 1_700_000_000_000 });
     assert.equal(pres.status, 'ok');
     if (pres.status === 'ok') {
-      assert.equal(pres.entries.length, 5);
+      assert.equal(pres.entries.length, 6);
+      const statuses = new Set(pres.entries.map((e) => e.status));
+      assert.deepEqual([...statuses].sort(), ['away', 'leave', 'online']);
     }
 
     const proj = await fetchSedmsProjects({ runtimeEnv: 'preview', fetchImpl: forbiddenFetch });

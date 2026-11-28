@@ -277,6 +277,34 @@ describe('Accessibility: WCAG 2.1 AA contrast, aria-labels, keyboard 2D navigati
     );
     assertEveryButtonHasAriaLabel(radialPersonHtml, 'RadialActionMenu(person)');
 
+    const radialHubBuildingHtml = renderToStaticMarkup(
+      React.createElement(RadialActionMenu, {
+        target: {
+          kind: 'hub-building',
+          chip: {
+            moduleId: 's360',
+            name: '360° 현장스캔',
+            status: 'planned',
+            statusLabel: '준비 중',
+            summaryText: '준비 중',
+            tooltipText: '360° 현장스캔 · 준비 중',
+            entryUrl: null,
+            disabled: true,
+            disabledReason: '준비 중 — 연동 예정 시스템입니다.',
+            kpi: {},
+            updatedAt: null,
+          },
+          lotLabel: '서측 안벽 관제 구역',
+          anchor: { x: 400, y: 300 },
+        },
+        runtimeEnv: 'preview',
+        viewportSize: { width: 375, height: 812 },
+        onPreviewLinkBlocked: noop,
+        onClose: noop,
+      }),
+    );
+    assertEveryButtonHasAriaLabel(radialHubBuildingHtml, 'RadialActionMenu(hub-building)');
+
     const drawerHtml = renderToStaticMarkup(
       React.createElement(PeopleFinderDrawer, {
         open: true,

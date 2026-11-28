@@ -2,15 +2,24 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Anchor,
+  Box,
   Building2,
+  Cable,
+  CalendarOff,
+  Clock,
   Compass,
+  ExternalLink,
   FileBarChart2,
+  FileText,
   FolderKanban,
+  HardHat,
+  Layers,
   Mail,
   MessageSquare,
   Pencil,
   RotateCcw,
   RotateCw,
+  Scan,
   Ship,
   Sparkles,
   User,
@@ -26,7 +35,12 @@ import {
   SGW_PORTAL_LINKS,
 } from '../deepLink';
 import type { HarborPerson, HarborShip } from '../mapping';
-import type { MetaRegistryResponse } from '../meta/hubTypes';
+import { getHubChipStyleSpec, type HubModuleChipItem } from '../meta/hubChipModel';
+import {
+  formatNullableKpiValue,
+  type MetaModuleId,
+  type MetaRegistryResponse,
+} from '../meta/hubTypes';
 import type { RuntimeEnv } from '../runtimeEnv';
 import type { ClickedDecorativeShip } from '../scene/harborSceneTypes';
 import { MAX_SHIP_NAME_LENGTH } from '../shipDisplayPrefs';
@@ -37,7 +51,8 @@ export type RadialDirection = 'north' | 'east' | 'south' | 'west';
 export type RadialTarget =
   | { kind: 'person'; person: HarborPerson; anchor: { x: number; y: number } }
   | { kind: 'ship'; ship: HarborShip; anchor: { x: number; y: number } }
-  | { kind: 'decorative-ship'; ship: ClickedDecorativeShip; anchor: { x: number; y: number } };
+  | { kind: 'decorative-ship'; ship: ClickedDecorativeShip; anchor: { x: number; y: number } }
+  | { kind: 'hub-building'; chip: HubModuleChipItem; lotLabel?: string; anchor: { x: number; y: number } };
 
 export interface RadialMenuItem {
   direction: RadialDirection;
@@ -76,7 +91,7 @@ export const RADIAL_DIRECTIONS: readonly RadialDirection[] = ['north', 'east', '
  * Decorative ships return an empty list (strict separation: zero SEDMS/SGW links on scenery!).
  */
 export function buildRadialMenuActions(target: RadialTarget): RadialMenuItem[] {
-  if (target.kind === 'decorative-ship') {
+  if (target.kind === 'decorative-ship' || target.kind === 'hub-building') {
     return [];
   }
 
@@ -209,6 +224,28 @@ const DIRECTION_ICON: Record<RadialDirection, React.ReactNode> = {
   west: <Mail className="h-4 w-4 text-indigo-300 shrink-0" aria-hidden="true" />,
 };
 
+function renderHubModuleIcon(moduleId: MetaModuleId): React.ReactNode {
+  const cls = 'h-4 w-4 shrink-0 text-sky-300';
+  switch (moduleId) {
+    case 'sgw':
+      return <MessageSquare className={cls} aria-hidden="true" />;
+    case 'sedms':
+      return <FolderKanban className={cls} aria-hidden="true" />;
+    case 'secms':
+      return <Cable className={cls} aria-hidden="true" />;
+    case 's360':
+      return <Scan className={cls} aria-hidden="true" />;
+    case 'secad':
+      return <Box className={cls} aria-hidden="true" />;
+    case 'pdf':
+      return <FileText className={cls} aria-hidden="true" />;
+    case 'mail':
+      return <Mail className={cls} aria-hidden="true" />;
+    default:
+      return <Layers className={cls} aria-hidden="true" />;
+  }
+}
+
 /**
  * Unified Single Entity Action Popup (Requirements #6, #15, #18, #19):
  *   - Only ONE popup opens at a time; outside click & Esc dismiss cleanly.
@@ -253,7 +290,9 @@ export const RadialActionMenu: React.FC<RadialActionMenuProps> = ({
         ? `ship:${target.ship.id}`
         : target?.kind === 'decorative-ship'
           ? `deco:${target.ship.id}`
-          : '';
+          : target?.kind === 'hub-building'
+            ? `hub:${target.chip.moduleId}`
+            : '';
 
   useEffect(() => {
     if (!target) return;
@@ -343,14 +382,31 @@ export const RadialActionMenu: React.FC<RadialActionMenuProps> = ({
   const displayTitle =
     target.kind === 'person'
       ? target.person.name
-      : customShipName || originalShipName;
+      : target.kind === 'hub-building'
+        ? target.chip.name
+        : customShipName || originalShipName;
+
+  const personPresenceHint =
+    target.kind === 'person'
+      ? target.person.presenceStatus === 'online'
+        ? '안벽 산책 중'
+        : target.person.presenceStatus === 'away'
+          ? '안벽 벤치 휴식'
+          : target.person.presenceStatus === 'leave'
+            ? '오늘 연차 (항구 미표시)'
+            : '오프라인'
+      : '';
 
   const subLabel =
     target.kind === 'person'
-      ? `${target.person.dept} · ${target.person.online ? '접속 중' : '오프라인'}`
+      ? `${target.person.dept} · ${target.person.presenceLabelKo}`
       : target.kind === 'ship'
         ? `${target.ship.code} · ${target.ship.appearance.statusLabelKo}`
-        : target.ship.subtitle;
+        : target.kind === 'hub-building'
+          ? target.lotLabel
+            ? `${target.lotLabel} · 연동 시스템 건물`
+            : '항구 연동 시스템 건물'
+          : target.ship.subtitle;
 
   const submitRename = (e: React.FormEvent) => {
     e.preventDefault();
@@ -392,17 +448,55 @@ export const RadialActionMenu: React.FC<RadialActionMenuProps> = ({
           <div className="min-w-0">
             <div className="flex items-center gap-1.5">
               {target.kind === 'person' ? (
-                target.person.online ? (
+                target.person.presenceStatus === 'online' ? (
                   <Wifi className="h-4 w-4 text-emerald-400 shrink-0" aria-hidden="true" />
+                ) : target.person.presenceStatus === 'away' ? (
+                  <Clock className="h-4 w-4 text-amber-400 shrink-0" aria-hidden="true" />
+                ) : target.person.presenceStatus === 'leave' ? (
+                  <CalendarOff className="h-4 w-4 text-violet-300 shrink-0" aria-hidden="true" />
                 ) : (
                   <WifiOff className="h-4 w-4 text-slate-400 shrink-0" aria-hidden="true" />
                 )
               ) : target.kind === 'decorative-ship' ? (
                 <Sparkles className="h-4 w-4 text-amber-400 shrink-0" aria-hidden="true" />
+              ) : target.kind === 'hub-building' ? (
+                renderHubModuleIcon(target.chip.moduleId)
               ) : (
                 <Ship className="h-4 w-4 text-sky-400 shrink-0" aria-hidden="true" />
               )}
               <h3 className="truncate text-sm font-bold text-white">{displayTitle}</h3>
+              {target.kind === 'person' && (
+                <span
+                  data-testid="person-card-status-badge"
+                  className={`inline-flex shrink-0 items-center rounded border px-1.5 py-0.5 text-[10px] font-bold ${
+                    target.person.presenceStatus === 'online'
+                      ? 'border-emerald-400/60 bg-emerald-950/85 text-emerald-100'
+                      : target.person.presenceStatus === 'away'
+                        ? 'border-amber-400/60 bg-amber-950/85 text-amber-100'
+                        : target.person.presenceStatus === 'leave'
+                          ? 'border-violet-400/60 bg-violet-950/85 text-violet-100'
+                          : 'border-slate-600 bg-slate-800 text-slate-200'
+                  }`}
+                >
+                  {target.person.presenceLabelKo}
+                </span>
+              )}
+              {target.kind === 'hub-building' && (() => {
+                const styleSpec = getHubChipStyleSpec(target.chip.status);
+                return (
+                  <span
+                    data-testid="hub-building-status-badge"
+                    data-status={target.chip.status}
+                    className={`inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-bold ${styleSpec.containerClass}`}
+                  >
+                    <span
+                      className={`h-1.5 w-1.5 rounded-full shrink-0 ${styleSpec.dotClass}`}
+                      aria-hidden="true"
+                    />
+                    <span>{target.chip.statusLabel}</span>
+                  </span>
+                );
+              })()}
             </div>
 
             {isShipLike && customShipName && customShipName !== originalShipName && (
@@ -412,7 +506,9 @@ export const RadialActionMenu: React.FC<RadialActionMenuProps> = ({
                   : `원래 이름: ${originalShipName}`}
               </p>
             )}
-            <p className="mt-0.5 truncate text-[11px] text-slate-300">{subLabel}</p>
+            <p className="mt-0.5 truncate text-[11px] text-slate-300">
+              {target.kind === 'person' ? `${target.person.dept} · ${personPresenceHint}` : subLabel}
+            </p>
             {target.kind === 'decorative-ship' && (
               <span className="mt-1 inline-flex items-center rounded border border-amber-400/50 bg-amber-950/70 px-1.5 py-0.5 text-[10px] font-semibold text-amber-200">
                 장식 선박 · 업무 데이터 아님
@@ -485,7 +581,113 @@ export const RadialActionMenu: React.FC<RadialActionMenuProps> = ({
           </div>
         )}
 
-        {target.kind === 'ship' && activeTab === 'key-items' ? (
+        {target.kind === 'hub-building' ? (
+          (() => {
+            const { chip } = target;
+            const kpiEntries = Object.entries(chip.kpi);
+            const isPlanned = chip.status === 'planned';
+            const isUnavailable = chip.status === 'unavailable';
+            const isNoSource = chip.status === 'nosource';
+
+            return (
+              <div
+                data-testid="hub-building-card"
+                data-module-id={chip.moduleId}
+                data-status={chip.status}
+                className="space-y-2.5"
+              >
+                {/* Status Summary Box (matches HudHubStatusStrip chip tooltip/status honesty) */}
+                <div
+                  className={`rounded-xl border p-2.5 text-xs ${
+                    isUnavailable
+                      ? 'border-rose-500/70 bg-rose-950/55 text-rose-100'
+                      : isPlanned
+                        ? 'border-dashed border-amber-400/65 bg-amber-950/40 text-amber-100'
+                        : isNoSource
+                          ? 'border-slate-600/80 bg-slate-900/90 text-slate-200'
+                          : 'border-slate-700 bg-slate-900/90 text-slate-100'
+                  }`}
+                >
+                  <div className="flex items-start gap-2">
+                    {isPlanned ? (
+                      <HardHat className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" aria-hidden="true" />
+                    ) : isUnavailable ? (
+                      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-rose-300" aria-hidden="true" />
+                    ) : (
+                      <Building2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-300" aria-hidden="true" />
+                    )}
+                    <div className="min-w-0 space-y-1">
+                      <p className="font-semibold leading-snug">{chip.summaryText}</p>
+                      {chip.disabledReason && chip.disabledReason !== chip.summaryText && (
+                        <p className="text-[11px] leading-snug text-slate-300">
+                          {chip.disabledReason}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Honest Nullable KPI Grid (null -> "—", never fabricated 0) */}
+                {kpiEntries.length > 0 && (
+                  <dl
+                    data-testid="hub-building-kpi-grid"
+                    className="grid grid-cols-2 gap-1.5"
+                  >
+                    {kpiEntries.map(([key, val]) => (
+                      <div
+                        key={key}
+                        className="rounded-lg border border-slate-800 bg-slate-900/85 px-2.5 py-1.5"
+                      >
+                        <dt className="truncate text-[10px] font-medium text-slate-400">
+                          {key}
+                        </dt>
+                        <dd className="mt-0.5 font-mono text-xs font-bold text-slate-100 tabular-nums">
+                          {formatNullableKpiValue(val)}
+                        </dd>
+                      </div>
+                    ))}
+                  </dl>
+                )}
+
+                {/* Entry Link: Strictly Server-Supplied entryUrl Only (null => disabled) */}
+                <div className="pt-0.5">
+                  {!chip.disabled && chip.entryUrl ? (
+                    <a
+                      href={chip.entryUrl}
+                      data-testid="hub-building-entry-link"
+                      aria-label={`${chip.name} 시스템 열기`}
+                      onClick={(e) => {
+                        if (isPreview) {
+                          e.preventDefault();
+                          onPreviewLinkBlocked(chip.name);
+                          onClose();
+                        }
+                      }}
+                      className="inline-flex w-full min-h-[40px] items-center justify-center gap-1.5 rounded-xl bg-sky-700 px-3 py-2 text-xs font-bold text-white hover:bg-sky-600 focus-visible:outline-2 focus-visible:outline-sky-300"
+                    >
+                      <span>{chip.name} 열기</span>
+                      <ExternalLink className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                    </a>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled
+                      data-testid="hub-building-entry-disabled"
+                      aria-label={chip.disabledReason ?? `${chip.name} 이동 불가`}
+                      className="inline-flex w-full min-h-[40px] cursor-not-allowed items-center justify-center gap-1.5 rounded-xl border border-dashed border-slate-600 bg-slate-900/80 px-3 py-2 text-xs font-semibold text-slate-300 opacity-90"
+                    >
+                      <span>
+                        {isPlanned
+                          ? '준비 중 · 연동 예정'
+                          : `${chip.statusLabel} · 이동 불가`}
+                      </span>
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })()
+        ) : target.kind === 'ship' && activeTab === 'key-items' ? (
           <ShipKeyItemsTab
             compact
             projectId={target.ship.id}
@@ -553,20 +755,46 @@ export const RadialActionMenu: React.FC<RadialActionMenuProps> = ({
             </button>
           )}
 
-          {target.kind === 'person' && onFocusPerson3D && (
-            <button
-              type="button"
-              onClick={() => {
-                onFocusPerson3D(target.person.sub);
-                onClose();
-              }}
-              aria-label={`${target.person.name} 3D 항구 위치로 이동`}
-              className="inline-flex flex-1 min-h-[38px] items-center justify-center gap-1.5 whitespace-nowrap rounded-xl border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-100 hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-sky-300"
-            >
-              <Compass className="h-3.5 w-3.5 shrink-0 text-sky-400" aria-hidden="true" />
-              항구 위치 보기
-            </button>
-          )}
+          {target.kind === 'person' && (() => {
+            const rawDm = buildTalkDmUrl(target.person.sub);
+            const safeDmHref = isSafeNavigationUrl(rawDm) ? rawDm : SGW_PORTAL_LINKS.talkHome;
+            return (
+              <a
+                href={safeDmHref}
+                data-testid="person-card-message-btn"
+                aria-label={`${target.person.name}에게 메시지 보내기`}
+                onClick={(e) => {
+                  if (isPreview) {
+                    e.preventDefault();
+                    onPreviewLinkBlocked(`메시지(${target.person.name})`);
+                    onClose();
+                  }
+                }}
+                className="inline-flex flex-1 min-h-[38px] items-center justify-center gap-1.5 whitespace-nowrap rounded-xl bg-sky-700 px-3 py-1.5 text-xs font-bold text-white hover:bg-sky-600 focus-visible:outline-2 focus-visible:outline-sky-300"
+              >
+                <MessageSquare className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                <span>메시지</span>
+              </a>
+            );
+          })()}
+
+          {target.kind === 'person' &&
+            onFocusPerson3D &&
+            target.person.presenceStatus !== 'leave' &&
+            !target.person.isCurrentUser && (
+              <button
+                type="button"
+                onClick={() => {
+                  onFocusPerson3D(target.person.sub);
+                  onClose();
+                }}
+                aria-label={`${target.person.name} 3D 항구 위치로 이동`}
+                className="inline-flex flex-1 min-h-[38px] items-center justify-center gap-1.5 whitespace-nowrap rounded-xl border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-100 hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-sky-300"
+              >
+                <Compass className="h-3.5 w-3.5 shrink-0 text-sky-400" aria-hidden="true" />
+                항구 위치 보기
+              </button>
+            )}
 
           {isShipLike && onRenameShip && (
             <button

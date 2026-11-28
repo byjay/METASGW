@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Compass, Home, X } from 'lucide-react';
 import { PORTAL_BUILDINGS } from '../core/navMeshEngine';
 import type { HarborPerson, HarborShip } from '../mapping';
+import type { HubBuildingPlacement } from '../meta/hubBuildingModel';
 import { HOME_HARBOR_DECORATIVE_VESSELS } from '../scene/sceneryCatalog';
 import type { ShipDisplayPrefsMap } from '../shipDisplayPrefs';
 
@@ -9,6 +10,7 @@ export interface HarborMiniMapProps {
   open: boolean;
   ships: HarborShip[];
   people: HarborPerson[];
+  hubBuildings?: HubBuildingPlacement[];
   playerPose: { x: number; z: number; heading: number };
   cameraWorldTarget?: { x: number; z: number };
   shipDisplayPrefs?: ShipDisplayPrefsMap;
@@ -83,6 +85,7 @@ export const HarborMiniMap: React.FC<HarborMiniMapProps> = ({
   open,
   ships,
   people,
+  hubBuildings = [],
   playerPose,
   cameraWorldTarget,
   shipDisplayPrefs,
@@ -142,6 +145,32 @@ export const HarborMiniMap: React.FC<HarborMiniMapProps> = ({
       if (px < -12 || px > CANVAS_W + 12 || py < -12 || py > CANVAS_H + 12) continue;
       ctx.fillStyle = b.accentHex;
       ctx.fillRect(px - 6, py - 3.5, 12, 7);
+    }
+
+    // 3b. Hub Module Harbor Buildings (planned = dashed amber/slate, active = emerald/accent)
+    for (const hb of hubBuildings) {
+      const { px, py } = worldToMinimap(
+        hb.lot.centerX,
+        hb.lot.centerZ,
+        CANVAS_W,
+        CANVAS_H,
+        viewOffsetX,
+        viewOffsetZ,
+      );
+      if (px < -12 || px > CANVAS_W + 12 || py < -12 || py > CANVAS_H + 12) continue;
+      if (hb.appearance.hasScaffolding) {
+        ctx.fillStyle = 'rgba(100, 116, 139, 0.55)';
+        ctx.fillRect(px - 5, py - 3, 10, 6);
+        ctx.save();
+        ctx.strokeStyle = '#f59e0b';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([2, 1.5]);
+        ctx.strokeRect(px - 5, py - 3, 10, 6);
+        ctx.restore();
+      } else {
+        ctx.fillStyle = hb.appearance.accentHex;
+        ctx.fillRect(px - 5, py - 3, 10, 6);
+      }
     }
 
     // 4. Hero Decorative Landmarks (씨스타호 & FD-01) rendered as subtle amber markers
@@ -216,7 +245,7 @@ export const HarborMiniMap: React.FC<HarborMiniMapProps> = ({
       ctx.arc(camPt.px, camPt.py, 6, 0, Math.PI * 2);
       ctx.stroke();
     }
-  }, [open, ships, people, playerPose, focusedIndex, activeShipId, viewOffsetX, viewOffsetZ, awayFromHome, camX, camZ]);
+  }, [open, ships, people, hubBuildings, playerPose, focusedIndex, activeShipId, viewOffsetX, viewOffsetZ, awayFromHome, camX, camZ]);
 
   const handleCanvasClick = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {

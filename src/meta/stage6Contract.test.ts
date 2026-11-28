@@ -14,8 +14,10 @@ import {
 import {
   formatNullableKpiValue,
   NULL_KPI_PLACEHOLDER,
+  shouldRenderItemSeverityBadge,
   type MetaCablesKeyResponse,
   type MetaDrawingsKeyResponse,
+  type MetaReportJsonResponse,
 } from './hubTypes';
 import {
   countCableItemsByStatus,
@@ -297,5 +299,138 @@ describe('Stage 6: Finalized SEDMS & SEcMS real response contract', () => {
     const md = getPreviewReportMarkdown('proj02', 7, FIXED_NOW_MS);
     assert.ok(md.includes('urgentComments: — (원천 없음)'));
     assert.equal(md.includes(': null'), false);
+  });
+
+  it('5) severityProvided: false suppresses ALL severity badges (including "일반") in ShipKeyItemsTab, ReportModal, and metaClient', async () => {
+    // 5a) Preview fixtures mark SEDMS drawing items with severityProvided: false
+    const previewDrawings = getPreviewKeyDrawings('proj01', { nowMs: FIXED_NOW_MS });
+    assert.ok(previewDrawings.items.length > 0);
+    assert.ok(previewDrawings.items.every((item) => item.severityProvided === false));
+
+    // 5b) Helper strictly rejects severityProvided: false even when severity === 'normal' | 'warn' | 'urgent'
+    assert.equal(shouldRenderItemSeverityBadge({ severity: 'normal', severityProvided: false }), false);
+    assert.equal(shouldRenderItemSeverityBadge({ severity: 'warn', severityProvided: false }), false);
+    assert.equal(shouldRenderItemSeverityBadge({ severity: 'urgent', severityProvided: false }), false);
+    assert.equal(shouldRenderItemSeverityBadge({ severity: null, severityProvided: false }), false);
+    assert.equal(shouldRenderItemSeverityBadge({ severity: 'normal', severityProvided: true }), true);
+    assert.equal(shouldRenderItemSeverityBadge({ severity: 'normal' }), true);
+    assert.equal(shouldRenderItemSeverityBadge({ severity: null }), false);
+
+    // 5c) metaClient preserves severityProvided: false from real SGW server payload (even if severity === 'normal')
+    const mockFetch: MetaFetchLike = async () =>
+      new Response(
+        JSON.stringify({
+          status: 'active',
+          items: [
+            {
+              id: 'DWG-88|rev',
+              moduleId: 'sedms',
+              category: 'drawing',
+              code: 'DWG-88',
+              title: '심각도 미제공 도면',
+              metric: 'Rev.02',
+              severity: 'normal',
+              severityProvided: false,
+              updatedAt: '2026-11-27T10:00:00.000Z',
+              deepLinkUrl: '/api/sedms-sso?return=%2Fproject%2Fproj01',
+            },
+          ],
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+
+    const fetched = await fetchMetaKeyDrawings(
+      { project: 'proj01', filter: 'latest' },
+      { runtimeEnv: 'sgw', fetchImpl: mockFetch },
+    );
+    assert.equal(fetched.ok, true);
+    assert.ok(fetched.ok);
+    assert.equal(fetched.data.items[0].severity, 'normal');
+    assert.equal(fetched.data.items[0].severityProvided, false);
+
+    // 5d) ShipKeyItemsTab renders ZERO severity badge (not even "일반") when severityProvided === false
+    const tabHtml = renderToStaticMarkup(
+      React.createElement(ShipKeyItemsTab, {
+        projectId: 'proj01',
+        runtimeEnv: 'sgw',
+        registry: getPreviewHubRegistry(),
+        initialDrawings: fetched.data,
+        initialCables: { status: 'planned', items: [] },
+        initialFilter: 'drawing',
+        onPreviewLinkBlocked: () => {},
+      }),
+    );
+    assert.match(tabHtml, /DWG-88/);
+    assert.doesNotMatch(tabHtml, /data-testid="key-item-severity-DWG-88\|rev"/);
+    assert.doesNotMatch(tabHtml, />일반</);
+
+    // 5e) ReportModal renders ZERO severity badge (desktop & mobile, not even "일반") for severityProvided === false,
+    //     while still rendering severity badges for items that genuinely provide severity
+    const reportWithUnprovided: MetaReportJsonResponse = {
+      reportVersion: '1.0',
+      projectId: 'proj01',
+      rangeDays: 7,
+      generatedAt: '2026-11-27T12:00:00.000Z',
+      executiveKpi: { drawingRevisionCount: 1, urgentComments: null },
+      sections: [
+        {
+          moduleId: 'sedms',
+          status: 'active',
+          highlights: [
+            {
+              id: 'DWG-88|rev',
+              moduleId: 'sedms',
+              category: 'drawing',
+              code: 'DWG-88',
+              title: '심각도 미제공 도면',
+              metric: 'Rev.02',
+              severity: 'normal',
+              severityProvided: false,
+              updatedAt: '2026-11-27T10:00:00.000Z',
+              deepLinkUrl: '/api/sedms-sso?return=%2Fproject%2Fproj01',
+            },
+          ],
+        },
+        {
+          moduleId: 'sgw',
+          status: 'active',
+          highlights: [
+            {
+              id: 'sgw-task-88',
+              moduleId: 'sgw',
+              category: 'task',
+              code: 'TSK-88',
+              title: '심각도 제공 작업',
+              metric: '진행 중',
+              severity: 'warn',
+              severityProvided: true,
+              updatedAt: '2026-11-27T11:00:00.000Z',
+              deepLinkUrl: '/talk/',
+            },
+          ],
+        },
+      ],
+      unavailableModules: [],
+      integrity: { maskedResidue: 0, sourceHonesty: true },
+    };
+
+    const reportHtml = renderToStaticMarkup(
+      React.createElement(ReportModal, {
+        open: true,
+        projectId: 'proj01',
+        projectName: 'proj01',
+        runtimeEnv: 'sgw',
+        registry: getPreviewHubRegistry(),
+        initialReport: reportWithUnprovided,
+        onClose: () => {},
+        onPreviewLinkBlocked: () => {},
+      }),
+    );
+    assert.match(reportHtml, /DWG-88/);
+    assert.doesNotMatch(reportHtml, /data-testid="report-item-severity-DWG-88\|rev"/);
+    assert.doesNotMatch(reportHtml, /data-testid="report-mobile-item-severity-DWG-88\|rev"/);
+    assert.doesNotMatch(reportHtml, />일반</);
+    assert.match(reportHtml, /data-testid="report-item-severity-sgw-task-88"/);
+    assert.match(reportHtml, /data-testid="report-mobile-item-severity-sgw-task-88"/);
   });
 });

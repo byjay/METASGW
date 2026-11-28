@@ -4,6 +4,7 @@ import {
   Anchor,
   Briefcase,
   Building2,
+  CalendarOff,
   CheckCircle2,
   Clock,
   ExternalLink,
@@ -121,20 +122,44 @@ export const AccessibleListView: React.FC<AccessibleListViewProps> = ({
           ? getErrorDescriptor(projectsErrorCode ?? 'server_error')
           : null;
 
+  const PRESENCE_SORT_ORDER: Record<HarborPerson['presenceStatus'], number> = {
+    online: 0,
+    away: 1,
+    offline: 2,
+    leave: 3,
+  };
+
   const filteredPeople = useMemo(() => {
     const q = query.trim().toLowerCase();
     return people
-      .filter((p) => (onlineOnly ? p.online : true))
+      .filter((p) => (onlineOnly ? p.presenceStatus === 'online' : true))
       .filter((p) => {
         if (!q) return true;
         return (
           p.name.toLowerCase().includes(q) ||
           p.dept.toLowerCase().includes(q) ||
-          p.title.toLowerCase().includes(q)
+          p.title.toLowerCase().includes(q) ||
+          p.presenceLabelKo.toLowerCase().includes(q)
         );
       })
-      .sort((a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name, 'ko'));
+      .sort(
+        (a, b) =>
+          PRESENCE_SORT_ORDER[a.presenceStatus] - PRESENCE_SORT_ORDER[b.presenceStatus] ||
+          a.name.localeCompare(b.name, 'ko'),
+      );
   }, [people, query, onlineOnly]);
+
+  const presenceSummary = useMemo(() => {
+    let online = 0;
+    let away = 0;
+    let leave = 0;
+    for (const p of people) {
+      if (p.presenceStatus === 'online') online += 1;
+      else if (p.presenceStatus === 'away') away += 1;
+      else if (p.presenceStatus === 'leave') leave += 1;
+    }
+    return { online, away, leave };
+  }, [people]);
 
   const safeHref = (url: string) => (isSafeNavigationUrl(url) ? url : '/');
 
@@ -655,7 +680,8 @@ export const AccessibleListView: React.FC<AccessibleListViewProps> = ({
                   직원 · 접속 현황 (SGW)
                 </h2>
                 <p className="text-xs text-slate-300">
-                  아이콘과 텍스트로 접속 상태를 표시하며 1탭으로 대화·메일을 실행합니다.
+                  온라인 {presenceSummary.online} · 자리비움 {presenceSummary.away} · 연차{' '}
+                  {presenceSummary.leave} (전체 {people.length}명)
                 </p>
               </div>
             </div>
@@ -699,13 +725,15 @@ export const AccessibleListView: React.FC<AccessibleListViewProps> = ({
               {filteredPeople.map((person) => (
                 <li
                   key={person.sub}
+                  data-testid={`list-person-${person.sub}`}
+                  data-presence-status={person.presenceStatus}
                   className="flex items-center justify-between gap-2 rounded-xl border border-slate-800 bg-slate-950/90 px-3 py-2.5"
                 >
                   <button
                     type="button"
                     data-kbd-item="true"
                     onClick={() => onSelectPerson(person)}
-                    aria-label={`${person.name} (${person.dept}, ${person.online ? '접속 중' : '오프라인'}) 상세 보기`}
+                    aria-label={`${person.name} (${person.dept}, ${person.presenceLabelKo}) 상세 보기`}
                     className="min-h-[44px] min-w-0 text-left flex-1 rounded px-1 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400"
                   >
                     <div className="flex flex-wrap items-center gap-1.5">
@@ -714,17 +742,25 @@ export const AccessibleListView: React.FC<AccessibleListViewProps> = ({
                       </span>
                       <span
                         className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] font-semibold ${
-                          person.online
+                          person.presenceStatus === 'online'
                             ? 'border-emerald-400/50 bg-emerald-950/80 text-emerald-100'
-                            : 'border-slate-600 bg-slate-800 text-slate-200'
+                            : person.presenceStatus === 'away'
+                              ? 'border-amber-400/50 bg-amber-950/80 text-amber-100'
+                              : person.presenceStatus === 'leave'
+                                ? 'border-violet-400/50 bg-violet-950/80 text-violet-100'
+                                : 'border-slate-600 bg-slate-800 text-slate-200'
                         }`}
                       >
-                        {person.online ? (
+                        {person.presenceStatus === 'online' ? (
                           <Wifi className="h-3 w-3 text-emerald-300 shrink-0" aria-hidden="true" />
+                        ) : person.presenceStatus === 'away' ? (
+                          <Clock className="h-3 w-3 text-amber-300 shrink-0" aria-hidden="true" />
+                        ) : person.presenceStatus === 'leave' ? (
+                          <CalendarOff className="h-3 w-3 text-violet-300 shrink-0" aria-hidden="true" />
                         ) : (
                           <WifiOff className="h-3 w-3 text-slate-300 shrink-0" aria-hidden="true" />
                         )}
-                        <span>{person.online ? '접속 중' : '오프라인'}</span>
+                        <span>{person.presenceLabelKo}</span>
                       </span>
                     </div>
                     <p className="mt-0.5 flex items-center gap-1 truncate text-xs text-slate-300">
@@ -742,12 +778,12 @@ export const AccessibleListView: React.FC<AccessibleListViewProps> = ({
                   <div className="flex shrink-0 items-center gap-1.5">
                     <a
                       href={safeHref(buildTalkDmUrl(person.sub))}
-                      onClick={handleLinkClick(`SGTALK 대화(${person.name})`)}
-                      aria-label={`${person.name}와 SGTALK 1:1 대화`}
+                      onClick={handleLinkClick(`메시지(${person.name})`)}
+                      aria-label={`${person.name}에게 메시지 보내기`}
                       className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center gap-1 rounded-lg bg-sky-700 px-2.5 py-2 text-xs font-semibold text-white hover:bg-sky-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400"
                     >
                       <MessageSquare className="h-4 w-4 shrink-0" aria-hidden="true" />
-                      <span>대화</span>
+                      <span>메시지</span>
                     </a>
 
                     <a

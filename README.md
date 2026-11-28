@@ -38,19 +38,39 @@ SGW 저장소의 `/talk/` 배포 방식과 동일한 정적 번들 구조를 따
    ```
 4. **초기 로딩 최적화 (코드 스플리팅)**
    - `three` 및 3D 장면(`HarborSceneController`)은 동적 `import()` 로 분리되어, 첫 진입 시 로그인 확인·HUD·2D 목록이 먼저 열리고 3D 는 백그라운드에서 로드됩니다.
-   - 통합 허브 UI 중 무거운 패널(`ReportModal`, `RadialActionMenu` + `ShipKeyItemsTab`, `OnboardPanel`, `HarborMiniMap`, `BottomControlDock`, `PeopleFinderDrawer`)도 모두 `React.lazy()` 로 동적 분리되어 초기 진입 JS 용량 증가를 최소화했습니다.
+   - 통합 허브 UI 패널(`ReportModal`, `RadialActionMenu` + `ShipKeyItemsTab`, `OnboardPanel`, `HarborMiniMap`, `BottomControlDock`, `PeopleFinderDrawer`)은 모두 `React.lazy()` 로 분리되고, `preview` 전용 예시 데이터(`src/meta/hubFixtures.ts`)도 `src/meta/metaClient.ts` 에서 동적 `import()` 로 지연 로드되어 `sgw` 운영 진입 시 초기 JS 번들에 포함되지 않습니다.
    - WebGL 미지원·컨텍스트 손실(`webglcontextlost`)·3D 청크 로드 실패 시 자동으로 2D 목록 모드를 유지하며 `"3D 를 다시 시도"` 복구 버튼을 제공합니다.
 5. **통합 허브(`/api/meta/*`) 소비 구조**
    - METASGW 는 시스템별 API 를 개별 호출하지 않고 SGW 동일 오리진 통합 허브 `/api/meta/*` (정본 v1.0) 를 소비합니다.
-   - **데이터 계층**: `src/meta/hubTypes.ts`(공통 DTO), `src/meta/metaClient.ts`(6개 엔드포인트 클라이언트, 4초 타임아웃, 프로젝트 전환 시 `AbortController` 이전 요청 취소), `src/meta/hubFixtures.ts`(`preview` 전용 가명 예시 데이터).
+   - **데이터 계층**: `src/meta/hubTypes.ts`(공통 DTO), `src/meta/metaClient.ts`(6개 엔드포인트 클라이언트, 4초 타임아웃, 프로젝트 전환 시 `AbortController` 이전 요청 취소), `src/meta/hubFixtures.ts`(`preview` 전용 동적 로드 가명 예시 데이터).
    - **뷰 모델 & UI**:
      - `src/meta/hubChipModel.ts` + `src/components/HudHubStatusStrip.tsx`: 상단 HUD 시스템 상태 칩(45초 폴링 + 수동 새로고침, 레지스트리 기반 자동 확장).
-     - `src/meta/keyItemsModel.ts` + `src/components/ShipKeyItemsTab.tsx`: 배 팝업·선상 패널 `[핵심 항목]` 탭(필터 4종 + 300ms 디바운스 검색 + `"검색 안 된 시스템"` 정직 표기).
+     - `src/meta/keyItemsModel.ts` + `src/components/ShipKeyItemsTab.tsx`: 배 팝업·선상 패널 `[핵심 항목]` 탭(필터 4종 + 케이블 포설 상태 서브 필터 + 300ms 디바운스 검색 + `"검색 안 된 시스템"` 정직 표기).
      - `src/meta/reportModel.ts` + `src/ui/ReportModal.tsx`: 통합 리포트 모달(7/14/30일 기간 전환, JSON KPI·시스템별 섹션, Markdown 복사 및 `report-<projectId>-<YYYY-MM-DD>.md` 다운로드).
    - **정직한 상태 표기 규칙**:
      - `active` / `idle` / `warn`: 정상 계열(서버 제공 `entryUrl` / `deepLinkUrl` 이 있을 때만 이동 활성화, 클라이언트 URL 조립 금지).
      - `planned`: `"준비 중"`, `nosource`: `"원천 없음"`, `unavailable`: `"일시 오류"` — 가짜 숫자나 빈 데이터 채우기 금지.
      - 리포트 무결성 배지: `integrity.maskedResidue === 0` 일 때만 `"검증됨"` 표시.
+6. **확정 계약 표시 규칙 (SEDMS · SEcMS)**
+   - **도면 (`GET /api/meta/drawings/key`, SEDMS)**:
+     - KPI(`drawingRevisionCount`, `drawingPendingApproval`, `urgentComments`) 중 `null` 값은 항상 `"—"` 로 표시하고 `"원천 없음"` 툴팁을 제공합니다(절대 `0` 으로 대체하지 않음).
+     - 항목 `severity` 는 SEDMS 확정 계약상 `null` 이며 심각도 배지를 숨깁니다. `updatedAt` 이 `null` 이면 `"날짜 없음"` 을 표시합니다.
+     - `filter=urgent` 응답이 `{ items: [], unsupported: true }` 인 경우 빈 목록 대신 `"SEDMS 에 긴급 구분이 없습니다"` 안내를 별도로 표시합니다.
+     - `item.id`(`"도번|목록종류"` 형식)는 불투명 키로 취급하며 클라이언트에서 파싱·분해하지 않습니다.
+   - **케이블 (`GET /api/meta/cables/key`, SEcMS)**:
+     - KPI(`cablePullProgressPct`, `cablesTotal`, `cablesLaid`, `cableTrayWarningCount`) 중 `null` 값은 `"—"` 로 표시하며, 포설 진척률 바는 `cablesLaid` 와 `cablesTotal` 이 모두 유효 숫자일 때만 렌더링합니다.
+     - 케이블 목록 항목은 `"미포설"` 또는 `"포설 중"` 상태로 표시하며 `severity: null` 배지를 숨깁니다.
+     - `status === 'nosource'` 이고 서버가 `entryUrl`(`/api/secms-link`)을 전달하면 `"SEcMS 계정 연결이 필요합니다"` 카드와 `[SEcMS 연결]` 링크를 표시합니다. `status === 'planned'` 는 `"준비 중"` 으로 표시합니다.
+7. **동료 · 건물 매핑 규칙**
+   - **동료 1:1 접속 표시 (`GET /api/employees` + `GET /api/presence`, `src/mapping.ts`)**:
+     - 모든 직원은 `sub` 키로만 매핑합니다. `online` 은 부두 업무 구역에 배치, `away` 는 안벽 벤치 좌석에 착석 표시, `leave` 는 3D 부두에서 제외하고 2D 목록·동료 찾기 드로어에만 `"연차"` 로 표시합니다.
+     - 3D 부두 동시 렌더링 인원은 그래픽 품질 티어 상한(고 16 · 중 10 · 저 3)을 적용하며, 초과 인원은 `"외 n명"` 배지로 정직하게 안내합니다.
+     - 아바타 클릭 시 이름·부서·상태 카드와 `[메시지]` 딥링크(`/talk/?dm=<sub>`)를 표시합니다.
+   - **허브 모듈 3D 항구 건물 (`GET /api/meta/registry` + `GET /api/meta/hub/summary`, `src/meta/hubBuildingModel.ts`)**:
+     - 기존 SGW 4개 포털(`talk`, `nas`, `bmail`, `admin`) 외의 모든 레지스트리 모듈을 결정론적 항구 부지에 자동 배치(충돌 0, 13개 이상 모듈 자동 확장)하므로 신규 시스템이 추가되어도 화면 코드를 수정할 필요가 없습니다.
+     - `planned` 상태 건물은 3D 건설 비계 + `"준비 중"` 간판 + 미점등 창문 + 비활성 카드로 표시되고, 상태가 `active` 로 전환되면 비계가 자동 제거되며 창문 점등·처마 조명과 서버 제공 `entryUrl` 링크가 활성화됩니다.
+8. **마감 품질 기준**
+   - 외부 CDN·원격 폰트·원격 3D 모델 요청 0건, 콘솔 오류 0건, WCAG AA 명도 대비 4.5:1 이상(`src/a11yContrast.test.ts`), 모바일 `375×812` 가로 오버플로 0px 및 데스크톱 `1440×900` 전경 여백 0 유지.
 
 ---
 
@@ -127,16 +147,19 @@ npm run build:sgw
 
 ---
 
-## 6. 기존 기능 대조표 (허브 연동 전/후 동일 동작)
+## 6. 기존 기능 전/후 대조표 (허브 연동 전/후 동일 동작)
 
-| 기존 기능 | 연동 전 동작 | 연동 후 동작 | 회귀 여부 |
+| 기능 영역 | 연동 전 동작 | 연동 후 동작 (1~9단계 완료) | 회귀 여부 |
 | --- | --- | --- | --- |
-| **3D 항구 전경** | 본항(씨스타호·플로팅 도크 FD-01 + 업무 배·부두·아바타), 3단 품질(고/중/저), 주간/석양/야간 테마 | 동일 유지 (3D 동적 로딩, HUD 아래 여백 0, 전경 선명도 유지) | 동일 |
-| **충돌·회전 규칙** | 부두·선박 간 충돌 검사, 15° 회전·안벽 평행 스냅(`shipPlacement.ts`) | 동일 유지 (기존 단위 테스트 전량 통과) | 동일 |
+| **3D 항구 전경** | 본항(씨스타호·플로팅 도크 FD-01 + 업무 배·부두·아바타), 3단 품질(고/중/저), 주간/석양/야간 테마 | 동일 유지 + 레지스트리 기반 허브 모듈 3D 건물(`planned` 비계 ↔ `active` 점등) 자동 배치 | 동일 |
+| **충돌·회전 규칙** | 부두·선박 간 충돌 검사, 15° 회전·안벽 평행 스냅(`shipPlacement.ts`) | 동일 유지 (선박·포털·허브 건물 간 충돌 0 검증) | 동일 |
 | **배 이름·방향 편집** | 팝업 내 선박 이름 변경·15° 회전·안벽 평행·초기화(`shipDisplayPrefs.ts` 비-PII 로컬 저장) | 동일 유지 (`[개요]` 탭에 그대로 유지) | 동일 |
-| **단일 팝업 규칙** | 배 클릭 시 래디얼 팝업 1개만 표시, 외부 클릭/Esc 로 닫기 | 동일 유지 (업무 배에만 `[개요]` / `[핵심 항목]` 2탭과 `[리포트]` 확장) | 동일 |
+| **단일 팝업 규칙** | 배 클릭 시 래디얼 팝업 1개만 표시, 외부 클릭/Esc 로 닫기 | 동일 유지 (업무 배 `[개요]` / `[핵심 항목]` 2탭 + `[리포트]`, 동료 아바타 카드, 허브 건물 카드 지원) | 동일 |
+| **핵심 항목 · 검색** | 미제공 | SEDMS(`drawings/key`, `null`→`"—"`, `filter=urgent` 미지원 안내) · SEcMS(`cables/key`, 포설 진척률, `nosource` 연결 카드) · 300ms 통합 검색 | 신규 |
+| **통합 리포트 모달** | 미제공 | 7/14/30일 JSON KPI·시스템별 섹션·무결성 `"검증됨"` 배지·Markdown 복사/다운로드(`ReportModal`) | 신규 |
+| **동료 1:1 접속 표시** | 기본 온라인 아바타 표시 | `/api/presence` 기반 `online`·`away`(벤치 착석)·`leave`(3D 제외, 2D 표시), 품질별 상한 + `"외 n명"`, 클릭 시 `[메시지]` | 확장 |
 | **미니맵** | 우하단 항구 미니맵에서 배 클릭·시점 이동·현재 위치 표시 | 동일 유지 | 동일 |
-| **빠른 레이더 (2D 목록)** | WebGL 대체·접근성 2D 목록에서 프로젝트·동료 검색 및 이동 | 동일 유지 + 상단에 통합 허브 상태 칩 동일 반영 | 동일 |
+| **빠른 레이더 (2D 목록)** | WebGL 대체·접근성 2D 목록에서 프로젝트·동료 검색 및 이동 | 동일 유지 + 상단 통합 허브 상태 칩 및 휴가 동료 상태 정직 반영 | 동일 |
 | **SGW 4버튼** | SEDMS·팀 채팅·NAS·메일 딥링크 버튼 (`src/deepLink.ts`) | 동일 유지 (팝업·선상 패널·HUD 빠른 이동 모두 동작) | 동일 |
 | **SEDMS 미연결 배너** | `mapped:false` / `available:false` / `0건` 상태별 정직한 안내 배너 | 동일 유지 (허브 연동과 독립적으로 정상 표시) | 동일 |
 

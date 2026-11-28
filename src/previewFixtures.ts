@@ -1,7 +1,7 @@
 /**
  * Pseudonym-only fixtures used EXCLUSIVELY in 'preview' runtimeEnv.
  * Never imported or returned in 'sgw' runtimeEnv.
- * Strictly uses pseudonyms (user01~user05, dept01~dept03, proj01~proj04) with zero real PII.
+ * Strictly uses pseudonyms (user01~user06, dept01~dept03, proj01~proj04) with zero real PII.
  */
 
 import type {
@@ -63,16 +63,25 @@ export function getPreviewDemoEmployees(): SgwEmployee[] {
       role: 'partner',
       isPartner: true,
     },
+    {
+      sub: 'user06',
+      name: 'user06',
+      dept: 'dept02',
+      title: 'role06',
+      role: 'member',
+      isPartner: false,
+    },
   ];
 }
 
 export function getPreviewDemoPresence(nowMs = Date.now()): SgwPresenceEntry[] {
   return [
-    { sub: 'user01', lastSeenAt: nowMs - 2_000, online: true },
-    { sub: 'user02', lastSeenAt: nowMs - 7_000, online: true },
-    { sub: 'user03', lastSeenAt: nowMs - 48_000, online: false },
-    { sub: 'user04', lastSeenAt: nowMs - 11_000, online: true },
-    { sub: 'user05', lastSeenAt: nowMs - 4_000, online: true },
+    { sub: 'user01', lastSeenAt: nowMs - 2_000, online: true, status: 'online' },
+    { sub: 'user02', lastSeenAt: nowMs - 6_000, online: true, status: 'online' },
+    { sub: 'user03', lastSeenAt: nowMs - 9_000, online: true, status: 'online' },
+    { sub: 'user04', lastSeenAt: nowMs - 18_000, online: false, status: 'away' },
+    { sub: 'user05', lastSeenAt: nowMs - 22_000, online: false, status: 'away' },
+    { sub: 'user06', lastSeenAt: 0, online: false, status: 'leave' },
   ];
 }
 

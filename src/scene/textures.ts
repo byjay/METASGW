@@ -18,6 +18,12 @@ export interface HarborTexturePack {
   cloudPuff: THREE.CanvasTexture;
   usedOffscreenCanvas: boolean;
   createSignboard: (title: string, subtitle: string, accentHex: string) => THREE.CanvasTexture;
+  createHubBuildingSignboard: (
+    title: string,
+    statusBanner: string,
+    accentHex: string,
+    isPlanned: boolean,
+  ) => THREE.CanvasTexture;
   createAvatarBillboardIcon: (accentHex: string, online: boolean, isCurrentUser: boolean) => THREE.CanvasTexture;
   dispose: () => void;
 }
@@ -499,6 +505,89 @@ export function createHarborTextures(maxAnisotropy: number): HarborTexturePack {
     return tex;
   };
 
+  // 12b. Stage 8 Hub Module Building Signboard ("준비 중" construction board vs illuminated operational fascia)
+  const createHubBuildingSignboard = (
+    title: string,
+    statusBanner: string,
+    accentHex: string,
+    isPlanned: boolean,
+  ): THREE.CanvasTexture => {
+    const surface = makeProceduralCanvas(512, 160);
+    const ctx = surface.ctx;
+
+    if (isPlanned) {
+      // High-contrast construction hazard frame + bold "준비 중" banner
+      ctx.fillStyle = '#0f172a';
+      ctx.fillRect(0, 0, 512, 160);
+
+      // Top yellow/black diagonal hazard stripe header
+      ctx.fillStyle = '#f59e0b';
+      ctx.fillRect(0, 0, 512, 26);
+      ctx.fillStyle = '#0f172a';
+      for (let x = -32; x < 544; x += 36) {
+        ctx.beginPath();
+        ctx.moveTo(x, 26);
+        ctx.lineTo(x + 16, 26);
+        ctx.lineTo(x + 30, 0);
+        ctx.lineTo(x + 14, 0);
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      // Bottom hazard border
+      ctx.fillStyle = '#f59e0b';
+      ctx.fillRect(0, 146, 512, 14);
+
+      // Module title
+      ctx.fillStyle = '#f8fafc';
+      ctx.font = '800 38px system-ui, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(title.slice(0, 16), 24, 72);
+
+      // Prominent "준비 중" badge pill
+      ctx.fillStyle = '#f59e0b';
+      ctx.fillRect(24, 102, 148, 34);
+      ctx.fillStyle = '#0f172a';
+      ctx.font = '900 22px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(statusBanner || '준비 중', 98, 120);
+
+      ctx.fillStyle = '#cbd5e1';
+      ctx.font = '600 20px system-ui, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillText('공사 중 · 연동 예정', 186, 120);
+    } else {
+      ctx.fillStyle = '#0b1322';
+      ctx.fillRect(0, 0, 512, 160);
+      ctx.fillStyle = accentHex;
+      ctx.fillRect(0, 0, 18, 160);
+      ctx.fillRect(0, 148, 512, 12);
+      ctx.strokeStyle = 'rgba(148, 163, 184, 0.4)';
+      ctx.lineWidth = 4;
+      ctx.strokeRect(2, 2, 508, 156);
+
+      ctx.fillStyle = '#f8fafc';
+      ctx.font = '800 40px system-ui, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(title.slice(0, 16), 34, 62);
+
+      // Status pill bar
+      ctx.fillStyle = accentHex;
+      ctx.fillRect(34, 98, 134, 34);
+      ctx.fillStyle = '#0b1322';
+      ctx.font = '800 20px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(statusBanner, 101, 116);
+    }
+
+    const tex = toCanvasTexture(surface.canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = anisotropy;
+    return tex;
+  };
+
   // 13. Minimal Circular Billboard Icon for Distant Avatar LOD (zero clutter)
   const createAvatarBillboardIcon = (
     accentHex: string,
@@ -562,6 +651,7 @@ export function createHarborTextures(maxAnisotropy: number): HarborTexturePack {
     cloudPuff,
     usedOffscreenCanvas,
     createSignboard,
+    createHubBuildingSignboard,
     createAvatarBillboardIcon,
     dispose: () => {
       concreteAlbedo.dispose();

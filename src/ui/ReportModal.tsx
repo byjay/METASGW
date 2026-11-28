@@ -15,6 +15,7 @@ import { SGW_LOGIN_REDIRECT_URL } from '../deepLink';
 import type { RuntimeEnv } from '../runtimeEnv';
 import {
   getMetaModuleStatusLabel,
+  shouldRenderItemSeverityBadge,
   type MetaClientError,
   type MetaItemSeverity,
   type MetaModuleStatus,
@@ -678,8 +679,11 @@ export const ReportModal: React.FC<ReportModalProps> = ({
                                   <tbody className="divide-y divide-slate-800/70">
                                     {section.highlights.map((item) => {
                                       const link = resolveKeyItemLink(item);
+                                      const showSeverity = shouldRenderItemSeverityBadge(item);
                                       const sevLabel =
-                                        item.severity !== null ? SEVERITY_LABEL_KO[item.severity] : null;
+                                        showSeverity && item.severity !== null
+                                          ? SEVERITY_LABEL_KO[item.severity]
+                                          : null;
                                       return (
                                         <tr key={item.id} className="hover:bg-slate-900/60">
                                           <td className="px-3 py-2 font-mono font-bold text-sky-200 whitespace-nowrap">
@@ -692,7 +696,7 @@ export const ReportModal: React.FC<ReportModalProps> = ({
                                             {String(item.metric || '-')}
                                           </td>
                                           <td className="px-3 py-2 whitespace-nowrap">
-                                            {item.severity !== null && sevLabel ? (
+                                            {showSeverity && item.severity !== null && sevLabel ? (
                                               <span
                                                 data-testid={`report-item-severity-${item.id}`}
                                                 className={`inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-semibold leading-none ${SEVERITY_BADGE_CLASS[item.severity]}`}
@@ -747,8 +751,11 @@ export const ReportModal: React.FC<ReportModalProps> = ({
                               <ul className="sm:hidden divide-y divide-slate-800/80">
                                 {section.highlights.map((item) => {
                                   const link = resolveKeyItemLink(item);
+                                  const showSeverity = shouldRenderItemSeverityBadge(item);
                                   const sevLabel =
-                                    item.severity !== null ? SEVERITY_LABEL_KO[item.severity] : null;
+                                    showSeverity && item.severity !== null
+                                      ? SEVERITY_LABEL_KO[item.severity]
+                                      : null;
                                   return (
                                     <li key={item.id} className="px-3 py-2 space-y-1">
                                       <div className="flex items-center justify-between gap-2">
@@ -756,8 +763,9 @@ export const ReportModal: React.FC<ReportModalProps> = ({
                                           <span className="font-mono text-[11px] font-bold text-sky-200 shrink-0">
                                             {item.code}
                                           </span>
-                                          {item.severity !== null && sevLabel && (
+                                          {showSeverity && item.severity !== null && sevLabel && (
                                             <span
+                                              data-testid={`report-mobile-item-severity-${item.id}`}
                                               className={`inline-flex shrink-0 items-center rounded border px-1 py-0.5 text-[10px] font-semibold leading-none ${SEVERITY_BADGE_CLASS[item.severity]}`}
                                             >
                                               {sevLabel}

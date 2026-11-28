@@ -61,6 +61,8 @@ export interface MetaKeyItem {
   metric: string | number;
   /** Null when the source system (SEDMS/SEcMS) has no severity concept — hide badge when null. */
   severity: MetaItemSeverity | null;
+  /** False when the source system (e.g. SEDMS) provides no severity; suppress all severity badges including '일반'. */
+  severityProvided?: boolean;
   /** Null when source lacks a date — render "날짜 없음". */
   updatedAt: string | null;
   deepLinkUrl: string | null;
@@ -219,3 +221,15 @@ export function formatNullableKpiValue(
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : NULL_KPI_PLACEHOLDER;
 }
+
+/**
+ * Returns true ONLY when the source system actually provides severity (`severityProvided !== false`)
+ * AND `severity` is non-null. Suppresses all badges (including '일반') when `severityProvided === false`.
+ */
+export function shouldRenderItemSeverityBadge(
+  item: Pick<MetaKeyItem, 'severity' | 'severityProvided'>,
+): boolean {
+  if (item.severityProvided === false) return false;
+  return item.severity !== null;
+}
+

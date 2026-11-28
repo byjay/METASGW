@@ -1,5 +1,7 @@
 import type { PortalBuildingSpec } from '../core/navMeshEngine';
 import type { HarborPerson, HarborShip } from '../mapping';
+import type { HubModuleChipItem } from '../meta/hubChipModel';
+import type { MetaModuleStatus } from '../meta/hubTypes';
 import type { ShipDisplayPrefsMap } from '../shipDisplayPrefs';
 
 export type CameraPreset = 'harbor' | 'overview' | 'quay';
@@ -16,9 +18,11 @@ export interface ProjectedLabel {
     | 'ship'
     | 'deco-ship'
     | 'person-online'
+    | 'person-away'
     | 'person-offline'
     | 'person-partner'
-    | 'portal';
+    | 'portal'
+    | 'hub-building';
   accentHex?: string;
   x: number;
   y: number;
@@ -74,6 +78,7 @@ export interface HarborSceneCallbacks {
   onDecorativeShipClicked?: (ship: ClickedDecorativeShip, screenPos: ScreenAnchorPoint) => void;
   onPersonClicked: (sub: string, screenPos: ScreenAnchorPoint) => void;
   onPortalClicked: (portalId: PortalBuildingSpec['id']) => void;
+  onHubBuildingClicked?: (moduleId: string, screenPos: ScreenAnchorPoint) => void;
   onLabelsUpdated: (labels: ProjectedLabel[]) => void;
   onPlayerPoseUpdated?: (pose: { x: number; z: number; heading: number }) => void;
   onCameraTargetUpdated?: (target: { x: number; z: number }) => void;
@@ -99,6 +104,30 @@ export interface AvatarSceneGraphAudit {
   avatarSpriteCount: number;
   cameraDistanceToPlayer: number;
   allAvatarsVisible: boolean;
+  renderedColleagueCount: number;
+  walkingCount: number;
+  sittingCount: number;
+  overflowCount: number;
+  onLeaveExcludedCount: number;
+  simplifiedMaterialActive: boolean;
+}
+
+export interface HubBuildingSceneAuditEntry {
+  moduleId: string;
+  name: string;
+  status: MetaModuleStatus;
+  lotId: string;
+  x: number;
+  z: number;
+  hasScaffolding: boolean;
+  lightsOn: boolean;
+  signText: string;
+  entryUrl: string | null;
+}
+
+export interface HubBuildingSceneAudit {
+  count: number;
+  buildings: HubBuildingSceneAuditEntry[];
 }
 
 export interface HarborSceneHandle {
@@ -111,6 +140,7 @@ export interface HarborSceneHandle {
   getRenderMetrics(): RenderMetrics;
   setProjects(ships: HarborShip[]): void;
   setPeople(people: HarborPerson[]): void;
+  setHubBuildings(chips: HubModuleChipItem[]): void;
   setCameraPreset(preset: CameraPreset): void;
   returnToHomeHarbor(): void;
   panCameraToWorld(x: number, z: number): void;
@@ -118,6 +148,7 @@ export interface HarborSceneHandle {
   setZoomDistance(distance: number): void;
   focusPlayerCloseUp(distance?: number): void;
   inspectAvatarSceneGraph(): AvatarSceneGraphAudit;
+  inspectHubBuildings(): HubBuildingSceneAudit;
   focusShip(projectId: string): void;
   boardShip(projectId: string, durationMs?: number): void;
   disembarkToHarbor(durationMs?: number): void;

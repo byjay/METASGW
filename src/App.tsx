@@ -1,5 +1,5 @@
 import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Anchor, ExternalLink, Info } from 'lucide-react';
+import { Anchor, ExternalLink, Info, Users } from 'lucide-react';
 import {
   BOARDING_TRANSITION_MS,
   createInitialProjectSessionState,
@@ -50,12 +50,18 @@ import {
   assertValidShipBerths,
   mapEmployeesToHarborPeople,
   mapProjectsToHarborShips,
+  selectVisibleQuayColleagues,
   type HarborPerson,
   type HarborShip,
 } from './mapping';
 import {
+  assignHubBuildingSlots,
+  type HubBuildingPlacement,
+} from './meta/hubBuildingModel';
+import {
   HUB_POLL_INTERVAL_MS,
   mergeHubModuleChips,
+  type HubModuleChipItem,
 } from './meta/hubChipModel';
 import type { MetaHubSummaryResponse, MetaRegistryResponse } from './meta/hubTypes';
 import {
@@ -322,6 +328,15 @@ export function App() {
 
   const mappedShips = useMemo(() => mapProjectsToHarborShips(projects), [projects]);
 
+  const quaySelection = useMemo(
+    () => selectVisibleQuayColleagues(mappedPeople, qualityTier),
+    [mappedPeople, qualityTier],
+  );
+  const visibleQuaySubs = useMemo(
+    () => new Set(quaySelection.visible.map((p) => p.sub)),
+    [quaySelection.visible],
+  );
+
   const peopleBySub = useMemo(
     () => new Map(mappedPeople.map((p) => [p.sub, p])),
     [mappedPeople],
@@ -530,6 +545,26 @@ export function App() {
     return peopleBySub.get(projectSession.selectedPersonSub) ?? null;
   }, [projectSession.selectedPersonSub, peopleBySub]);
 
+  const hubChips = useMemo(
+    () => mergeHubModuleChips(hubRegistry, hubSummary),
+    [hubRegistry, hubSummary],
+  );
+  const hubBuildingPlacements = useMemo(
+    () => assignHubBuildingSlots(hubChips),
+    [hubChips],
+  );
+  const hubPlacementById = useMemo(
+    () => new Map<string, HubBuildingPlacement>(hubBuildingPlacements.map((p) => [p.moduleId, p])),
+    [hubBuildingPlacements],
+  );
+  const hubChipsRef = useRef<HubModuleChipItem[]>(hubChips);
+  const hubPlacementByIdRef = useRef<Map<string, HubBuildingPlacement>>(hubPlacementById);
+
+  useEffect(() => {
+    hubChipsRef.current = hubChips;
+    hubPlacementByIdRef.current = hubPlacementById;
+  }, [hubChips, hubPlacementById]);
+
   const radialTarget = useMemo<RadialTarget | null>(() => {
     const snap = projectSession.radialTarget;
     if (!snap) return null;
@@ -541,9 +576,22 @@ export function App() {
       const deco = decorativeById.get(snap.targetId);
       return deco ? { kind: 'decorative-ship', ship: deco, anchor: snap.anchor } : null;
     }
+    if (snap.kind === 'hub-building') {
+      const placed = hubPlacementById.get(snap.targetId);
+      if (placed) {
+        return {
+          kind: 'hub-building',
+          chip: placed.chip,
+          lotLabel: placed.lot.labelKo,
+          anchor: snap.anchor,
+        };
+      }
+      const chip = hubChips.find((c) => c.moduleId === snap.targetId);
+      return chip ? { kind: 'hub-building', chip, anchor: snap.anchor } : null;
+    }
     const person = peopleBySub.get(snap.targetId);
     return person ? { kind: 'person', person, anchor: snap.anchor } : null;
-  }, [projectSession.radialTarget, shipsById, decorativeById, peopleBySub]);
+  }, [projectSession.radialTarget, shipsById, decorativeById, peopleBySub, hubPlacementById, hubChips]);
 
   // Clear rotation warning when popup closes or target switches
   useEffect(() => {
@@ -578,11 +626,6 @@ export function App() {
     if (!ship) return hubTargetProjectId;
     return shipDisplayPrefs[ship.id]?.customName || ship.name || ship.code;
   }, [hubTargetProjectId, shipsById, shipDisplayPrefs]);
-
-  const hubChips = useMemo(
-    () => mergeHubModuleChips(hubRegistry, hubSummary),
-    [hubRegistry, hubSummary],
-  );
 
   const loadHubRegistry = useCallback(async () => {
     const res = await fetchMetaRegistry({ runtimeEnv });
@@ -995,6 +1038,16 @@ export function App() {
             onPortalClicked: (portalId) => {
               handlePortalNavigate(portalId);
             },
+            onHubBuildingClicked: (moduleId, screenPos) => {
+              if (hubPlacementByIdRef.current.has(moduleId)) {
+                setProjectSession((prev) =>
+                  transitionProjectSessionState(prev, {
+                    type: 'OPEN_RADIAL',
+                    target: { kind: 'hub-building', targetId: moduleId, anchor: screenPos },
+                  }),
+                );
+              }
+            },
             onLabelsUpdated: (nextLabels) => {
               setLabels(nextLabels);
             },
@@ -1047,6 +1100,7 @@ export function App() {
         sceneRef.current = controller;
         controller.setProjects(Array.from(shipsByIdRef.current.values()));
         controller.setPeople(Array.from(peopleBySubRef.current.values()));
+        controller.setHubBuildings(hubChipsRef.current);
         controller.setShipDisplayPrefs(shipDisplayPrefsRef.current);
         setSceneLoading3D(false);
         setSceneReady3D(true);
@@ -1079,6 +1133,10 @@ export function App() {
   useEffect(() => {
     sceneRef.current?.setPeople(mappedPeople);
   }, [mappedPeople]);
+
+  useEffect(() => {
+    sceneRef.current?.setHubBuildings(hubChips);
+  }, [hubChips]);
 
   useEffect(() => {
     sceneRef.current?.setQualityTier(qualityTier, userSelectedQuality);
@@ -1141,6 +1199,19 @@ export function App() {
           );
         }
       },
+      openPersonPopup: (sub: string) => {
+        if (peopleBySubRef.current.has(sub)) {
+          setProjectSession((prev) =>
+            transitionProjectSessionState(prev, {
+              type: 'OPEN_RADIAL',
+              target: { kind: 'person', targetId: sub, anchor: { x: 640, y: 400 } },
+            }),
+          );
+        }
+      },
+      focusPerson: (sub: string) => {
+        sceneRef.current?.focusPerson(sub);
+      },
       closePopup: () => {
         setProjectSession((prev) =>
           transitionProjectSessionState(prev, { type: 'CLOSE_RADIAL' }),
@@ -1155,6 +1226,24 @@ export function App() {
       renameShip: (shipId: string, name: string) => handleRenameShip(shipId, name),
       rotateShipStep: (shipId: string, steps: number) => handleRotateShipStep(shipId, steps),
       snapShipParallel: (shipId: string) => handleSnapShipParallel(shipId),
+      inspectHubBuildings: () => sceneRef.current?.inspectHubBuildings() ?? null,
+      openHubBuildingPopup: (moduleId: string) => {
+        if (hubPlacementByIdRef.current.has(moduleId)) {
+          setProjectSession((prev) =>
+            transitionProjectSessionState(prev, {
+              type: 'OPEN_RADIAL',
+              target: { kind: 'hub-building', targetId: moduleId, anchor: { x: 640, y: 400 } },
+            }),
+          );
+        }
+      },
+      setMockHubStateForQA: (
+        nextRegistry: MetaRegistryResponse,
+        nextSummary: MetaHubSummaryResponse | null,
+      ) => {
+        setHubRegistry(nextRegistry);
+        setHubSummary(nextSummary);
+      },
     };
     return () => {
       delete win.__METASGW_QA__;
@@ -1279,6 +1368,16 @@ export function App() {
       } else if (label.id.startsWith('portal:')) {
         const portalId = label.id.slice(7) as PortalBuildingSpec['id'];
         handlePortalNavigate(portalId);
+      } else if (label.id.startsWith('hub:')) {
+        const modId = label.id.slice(4);
+        if (hubPlacementByIdRef.current.has(modId)) {
+          setProjectSession((prev) =>
+            transitionProjectSessionState(prev, {
+              type: 'OPEN_RADIAL',
+              target: { kind: 'hub-building', targetId: modId, anchor: { x: label.x, y: label.y } },
+            }),
+          );
+        }
       }
     },
     [decorativeById, handlePortalNavigate],
@@ -1413,9 +1512,11 @@ export function App() {
                         ? '#fbbf24'
                         : label.kind === 'person-online'
                           ? '#34d399'
-                          : label.kind === 'person-partner'
-                            ? '#f59e0b'
-                            : '#94a3b8';
+                          : label.kind === 'person-away'
+                            ? '#fbbf24'
+                            : label.kind === 'person-partner'
+                              ? '#f59e0b'
+                              : '#94a3b8';
                   return (
                     <button
                       key={label.id}
@@ -1447,29 +1548,37 @@ export function App() {
                       transform: `translate3d(${Math.round(label.x)}px, ${Math.round(label.y)}px, 0) translate(-50%, -100%)`,
                     }}
                     className={`pointer-events-auto absolute left-0 top-0 inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px] font-semibold leading-tight shadow-md transition hover:scale-105 focus-visible:outline-2 focus-visible:outline-sky-400 whitespace-nowrap ${
-                      label.kind === 'ship'
+                        label.kind === 'ship'
                         ? 'border-sky-400/70 bg-slate-950/90 text-white'
                         : label.kind === 'deco-ship'
                           ? 'border-amber-400/70 bg-slate-950/90 text-amber-100'
-                          : label.kind === 'portal'
-                            ? 'border-slate-500/70 bg-slate-950/88 text-slate-100'
-                            : label.kind === 'person-partner'
-                              ? 'border-amber-400/70 bg-slate-950/90 text-amber-100'
-                              : label.kind === 'person-online'
-                                ? 'border-emerald-400/70 bg-slate-950/90 text-emerald-100'
-                                : 'border-slate-600/70 bg-slate-950/85 text-slate-200'
+                          : label.kind === 'hub-building'
+                            ? 'border-amber-400/75 bg-slate-950/92 text-slate-100'
+                            : label.kind === 'portal'
+                              ? 'border-slate-500/70 bg-slate-950/88 text-slate-100'
+                              : label.kind === 'person-away'
+                                ? 'border-amber-400/70 bg-slate-950/92 text-amber-100'
+                                : label.kind === 'person-partner'
+                                  ? 'border-amber-400/70 bg-slate-950/90 text-amber-100'
+                                  : label.kind === 'person-online'
+                                    ? 'border-emerald-400/70 bg-slate-950/90 text-emerald-100'
+                                    : 'border-slate-600/70 bg-slate-950/85 text-slate-200'
                     }`}
                   >
                     {label.kind === 'person-online' && (
                       <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 shrink-0" aria-hidden="true" />
                     )}
-                    {(label.kind === 'ship' || label.kind === 'deco-ship') && label.accentHex && (
-                      <span
-                        className="h-2 w-2 rounded-full shrink-0"
-                        style={{ backgroundColor: label.accentHex }}
-                        aria-hidden="true"
-                      />
+                    {label.kind === 'person-away' && (
+                      <span className="h-1.5 w-1.5 rounded-full bg-amber-400 shrink-0" aria-hidden="true" />
                     )}
+                    {(label.kind === 'ship' || label.kind === 'deco-ship' || label.kind === 'hub-building') &&
+                      label.accentHex && (
+                        <span
+                          className="h-2 w-2 rounded-full shrink-0"
+                          style={{ backgroundColor: label.accentHex }}
+                          aria-hidden="true"
+                        />
+                      )}
                     <span>{label.text}</span>
                     {label.subText && (
                       <span className="text-[10px] font-normal text-slate-300">{label.subText}</span>
@@ -1543,12 +1652,33 @@ export function App() {
               </div>
             )}
 
+          {/* Quality-tier colleague cap overflow sign ("외 n명") — opens PeopleFinderDrawer */}
+          {viewMode === '3d' &&
+            sceneReady3D &&
+            boardingState.phase === 'harbor' &&
+            quaySelection.overflowCount > 0 &&
+            !peopleDrawerOpen && (
+              <div className="pointer-events-none fixed left-3 bottom-32 sm:bottom-20 z-30">
+                <button
+                  type="button"
+                  data-testid="quay-overflow-badge"
+                  onClick={handleTogglePeopleDrawer}
+                  aria-label={`안벽 표시 상한 초과 동료 외 ${quaySelection.overflowCount}명 전체 목록 열기`}
+                  className="pointer-events-auto inline-flex min-h-[36px] items-center gap-1.5 rounded-xl border border-amber-400/60 bg-slate-950/95 px-3 py-1.5 text-xs font-bold text-amber-100 shadow-xl hover:border-amber-300 hover:bg-slate-900 focus-visible:outline-2 focus-visible:outline-sky-300"
+                >
+                  <Users className="h-3.5 w-3.5 text-amber-300 shrink-0" aria-hidden="true" />
+                  <span>외 {quaySelection.overflowCount}명</span>
+                </button>
+              </div>
+            )}
+
           {viewMode === '3d' && sceneReady3D && (
             <Suspense fallback={null}>
               <HarborMiniMap
                 open={minimapOpen && boardingState.phase === 'harbor'}
                 ships={mappedShips}
                 people={mappedPeople}
+                hubBuildings={hubBuildingPlacements}
                 playerPose={playerPose}
                 cameraWorldTarget={cameraWorldTarget}
                 shipDisplayPrefs={shipDisplayPrefs}
@@ -1564,6 +1694,8 @@ export function App() {
                 open={peopleDrawerOpen}
                 runtimeEnv={runtimeEnv}
                 people={mappedPeople}
+                visibleQuaySubs={visibleQuaySubs}
+                overflowCount={quaySelection.overflowCount}
                 onClose={() => setPeopleDrawerOpen(false)}
                 onFocusPerson={handleFocusPerson3D}
                 onSelectPerson={handleSelectPersonFromDrawer}

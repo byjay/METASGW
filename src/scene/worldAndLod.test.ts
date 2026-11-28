@@ -38,6 +38,7 @@ function createHeadlessTextureStub(): HarborTexturePack {
     cloudPuff: make(),
     usedOffscreenCanvas: false,
     createSignboard: () => make(),
+    createHubBuildingSignboard: () => make(),
     createAvatarBillboardIcon: () => make(),
     dispose: () => {
       for (const t of created) t.dispose();
