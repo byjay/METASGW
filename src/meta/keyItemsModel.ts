@@ -1,16 +1,19 @@
 /**
- * Pure presentation, filtering, relative-time, and module-honesty helpers
- * for the Ship "핵심 항목" tab (Stage 3/5 of METASGW x SGW `/api/meta/*` Hub).
+ * Pure presentation, filtering, relative-time, cable-progress, and module-honesty helpers
+ * for the Ship "핵심 항목" tab (Stage 3 + Stage 6 finalized SEDMS/SEcMS contract).
  *
  * Strictly data-driven:
  *   - Never fabricates placeholder rows for `planned` / `nosource` / `unavailable` modules.
- *   - Never constructs `deepLinkUrl` client-side; validates server-supplied URLs only.
+ *   - Never fabricates 0 for `null` KPI numbers (renders "—").
+ *   - Never parses opaque `item.id` strings (e.g. SEDMS `"도번|목록종류"`).
+ *   - Never constructs `deepLinkUrl` / `entryUrl` client-side; validates server-supplied URLs only.
  */
 
 import { isSafeNavigationUrl } from '../deepLink';
 import {
   getMetaModuleStatusLabel,
   isNormalModuleStatus,
+  NULL_KPI_PLACEHOLDER,
   type MetaCablesKeyResponse,
   type MetaDrawingsKeyResponse,
   type MetaItemCategory,
@@ -22,6 +25,9 @@ import {
 } from './hubTypes';
 
 export const KEY_ITEMS_SEARCH_DEBOUNCE_MS = 300;
+export const DRAWINGS_URGENT_UNSUPPORTED_MESSAGE = 'SEDMS 에 긴급 구분이 없습니다';
+export const SECMS_LINK_REQUIRED_MESSAGE = 'SEcMS 계정 연결이 필요합니다';
+export const SECMS_LINK_BUTTON_LABEL = 'SEcMS 연결';
 
 export type KeyItemsFilter = 'all' | 'drawing' | 'cable' | 'urgent';
 
@@ -36,6 +42,36 @@ export const KEY_ITEMS_FILTER_OPTIONS: readonly KeyItemsFilterOption[] = [
   { id: 'cable', label: '케이블' },
   { id: 'urgent', label: '긴급' },
 ];
+
+export type CableStatusSubFilter = 'all' | 'unlaid' | 'laying';
+
+export interface CableStatusSubFilterOption {
+  id: CableStatusSubFilter;
+  label: string;
+}
+
+export const CABLE_STATUS_SUBFILTER_OPTIONS: readonly CableStatusSubFilterOption[] = [
+  { id: 'all', label: '전체' },
+  { id: 'unlaid', label: '미포설' },
+  { id: 'laying', label: '포설 중' },
+];
+
+export interface CableProgressSummary {
+  /** True ONLY when both cablesLaid and cablesTotal are non-null finite numbers with cablesTotal > 0. */
+  hasNumbers: boolean;
+  cablesLaid: number | null;
+  cablesTotal: number | null;
+  progressPct: number | null;
+  /** Formatted ratio string (e.g. "82 / 120 (68%)") or "—" when missing. */
+  displayText: string;
+}
+
+export interface SecmsLinkRequirement {
+  required: boolean;
+  entryUrl: string | null;
+  message: string;
+  buttonLabel: string;
+}
 
 export interface ModuleStatusNotice {
   moduleId: MetaModuleId;
@@ -59,7 +95,7 @@ export interface CombinedKeyItemsResult {
 const DEFAULT_MODULE_NAMES: Readonly<Record<string, string>> = {
   sgw: 'SGW 그룹웨어',
   sedms: 'SEDMS 도면관리',
-  secms: 'SECMS 케이블',
+  secms: 'SEcMS 케이블',
   s360: '360° 현장스캔',
   secad: '3D CAD 뷰어',
   pdf: 'PDF 검토실',
@@ -113,11 +149,12 @@ function parseTimestampMs(iso: string | null): number {
 
 /**
  * Formats an ISO timestamp into concise Korean relative time (`방금 전`, `12분 전`, `3시간 전`, `2일 전`).
+ * When `updatedAt` is null or invalid, returns `"날짜 없음"` per finalized Stage 6 contract.
  */
 export function formatRelativeUpdatedAt(updatedAt: string | null, nowMs = Date.now()): string {
-  if (!updatedAt) return '시각 없음';
+  if (!updatedAt) return '날짜 없음';
   const ts = Date.parse(updatedAt);
-  if (!Number.isFinite(ts)) return '시각 없음';
+  if (!Number.isFinite(ts)) return '날짜 없음';
 
   const diffSec = Math.max(0, Math.floor((nowMs - ts) / 1000));
   if (diffSec < 60) return '방금 전';
@@ -132,12 +169,17 @@ export function formatRelativeUpdatedAt(updatedAt: string | null, nowMs = Date.n
   return `${Math.floor(diffDays / 365)}년 전`;
 }
 
+function getSeverityRank(severity: MetaItemSeverity | null): number {
+  if (severity === null) return 3;
+  return SEVERITY_PRIORITY[severity] ?? 3;
+}
+
 /**
- * Sorts `MetaKeyItem` entries by severity (`urgent` > `warn` > `normal`), then newest `updatedAt`.
+ * Sorts `MetaKeyItem` entries by severity (`urgent` > `warn` > `normal` > `null`), then newest `updatedAt`.
  */
 export function sortKeyItems(items: readonly MetaKeyItem[]): MetaKeyItem[] {
   return [...items].sort((a, b) => {
-    const sevDiff = SEVERITY_PRIORITY[a.severity] - SEVERITY_PRIORITY[b.severity];
+    const sevDiff = getSeverityRank(a.severity) - getSeverityRank(b.severity);
     if (sevDiff !== 0) return sevDiff;
     const timeDiff = parseTimestampMs(b.updatedAt) - parseTimestampMs(a.updatedAt);
     if (timeDiff !== 0) return timeDiff;
@@ -148,6 +190,7 @@ export function sortKeyItems(items: readonly MetaKeyItem[]): MetaKeyItem[] {
 /**
  * Combines `/api/meta/drawings/key` and `/api/meta/cables/key` responses without fabricating items.
  * Non-normal module responses emit zero items and record their honest status in `moduleStatuses`.
+ * Treats every `item.id` as an opaque deduplication key (never parses `"도번|목록종류"`).
  */
 export function combineKeyItemSources(
   drawings: MetaDrawingsKeyResponse | null,
@@ -198,6 +241,108 @@ export function filterKeyItems(
   if (filter === 'drawing') return items.filter((item) => item.category === 'drawing');
   if (filter === 'cable') return items.filter((item) => item.category === 'cable');
   return items.filter((item) => item.severity === 'urgent');
+}
+
+/**
+ * Filters cable items by SEcMS status (`전체` / `미포설` / `포설 중`).
+ */
+export function filterCableItemsByStatus(
+  items: readonly MetaKeyItem[],
+  subFilter: CableStatusSubFilter,
+): MetaKeyItem[] {
+  if (subFilter === 'all') return [...items];
+  const target = subFilter === 'unlaid' ? '미포설' : '포설 중';
+  return items.filter(
+    (item) => item.category === 'cable' && String(item.metric).trim() === target,
+  );
+}
+
+/**
+ * Counts cable items by SEcMS metric status (`미포설` / `포설 중`).
+ */
+export function countCableItemsByStatus(
+  items: readonly MetaKeyItem[],
+): Record<CableStatusSubFilter, number> {
+  let all = 0;
+  let unlaid = 0;
+  let laying = 0;
+  for (const item of items) {
+    if (item.category !== 'cable') continue;
+    all += 1;
+    const metric = String(item.metric).trim();
+    if (metric === '미포설') unlaid += 1;
+    else if (metric === '포설 중') laying += 1;
+  }
+  return { all, unlaid, laying };
+}
+
+/**
+ * Extracts cable laying progress strictly from `cablesLaid` and `cablesTotal`.
+ * If either value is `null` (or `cablesTotal <= 0`), returns `hasNumbers: false` and `displayText: "—"`
+ * so the UI renders "—" instead of a progress bar (never fabricates 0).
+ */
+export function extractCableProgressSummary(
+  cables: MetaCablesKeyResponse | null | undefined,
+): CableProgressSummary {
+  const kpi = cables?.kpi;
+  const rawLaid = kpi?.cablesLaid;
+  const rawTotal = kpi?.cablesTotal;
+  const rawPct = kpi?.cablePullProgressPct;
+
+  const cablesLaid =
+    typeof rawLaid === 'number' && Number.isFinite(rawLaid) && rawLaid >= 0 ? rawLaid : null;
+  const cablesTotal =
+    typeof rawTotal === 'number' && Number.isFinite(rawTotal) && rawTotal >= 0 ? rawTotal : null;
+
+  if (cablesLaid === null || cablesTotal === null || cablesTotal <= 0) {
+    return {
+      hasNumbers: false,
+      cablesLaid,
+      cablesTotal,
+      progressPct: null,
+      displayText: NULL_KPI_PLACEHOLDER,
+    };
+  }
+
+  const computedPct =
+    typeof rawPct === 'number' && Number.isFinite(rawPct)
+      ? Math.round(Math.max(0, Math.min(100, rawPct)))
+      : Math.round(Math.max(0, Math.min(100, (cablesLaid / cablesTotal) * 100)));
+
+  return {
+    hasNumbers: true,
+    cablesLaid,
+    cablesTotal,
+    progressPct: computedPct,
+    displayText: `${cablesLaid.toLocaleString('ko-KR')} / ${cablesTotal.toLocaleString('ko-KR')} (${computedPct}%)`,
+  };
+}
+
+/**
+ * Detects SEcMS account-linking requirement strictly when `status === 'nosource'`
+ * AND server supplied a safe `entryUrl` (e.g. `'/api/secms-link'`).
+ */
+export function getSecmsLinkRequirement(
+  cables: MetaCablesKeyResponse | null | undefined,
+): SecmsLinkRequirement {
+  const rawUrl = typeof cables?.entryUrl === 'string' ? cables.entryUrl.trim() : '';
+  const validUrl = rawUrl && isSafeNavigationUrl(rawUrl) ? rawUrl : null;
+
+  if (cables?.status === 'nosource' && validUrl) {
+    return {
+      required: true,
+      entryUrl: validUrl,
+      message: SECMS_LINK_REQUIRED_MESSAGE,
+      buttonLabel: SECMS_LINK_BUTTON_LABEL,
+    };
+  }
+
+  return {
+    required: false,
+    entryUrl: null,
+    message: SECMS_LINK_REQUIRED_MESSAGE,
+    buttonLabel: SECMS_LINK_BUTTON_LABEL,
+  };
 }
 
 /**

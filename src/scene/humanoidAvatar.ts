@@ -1,138 +1,140 @@
 import * as THREE from 'three';
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
-import { VRMLoaderPlugin, type VRM } from '@pixiv/three-vrm';
-import { mergeColoredParts } from './meshBatching';
 
 export type AvatarActionState = 'idle' | 'run' | 'wave';
-export type AvatarLodLevel = 'detailed' | 'simple' | 'billboard';
+/**
+ * 3D-only LOD levels for harbor personnel.
+ * 2D billboard sprites are strictly prohibited: avatars remain shaded volumetric
+ * 3D humanoids at every camera distance and quality tier.
+ */
+export type AvatarLodLevel = 'detailed' | 'mid';
+
+export interface HumanoidAvatarOptions {
+  isPartner: boolean;
+  shirtHex: string;
+  contactShadowTex?: THREE.CanvasTexture;
+  isCurrentUser?: boolean;
+  skipContactShadow?: boolean;
+  modelVariantIndex?: number;
+}
 
 export interface BuiltHumanoidRig {
   group: THREE.Group;
-  updateAnimation: (dt: number, elapsed: number, action: AvatarActionState, reducedMotion: boolean) => void;
+  meshCount: number;
+  updateAnimation: (
+    dt: number,
+    elapsed: number,
+    action: AvatarActionState,
+    reducedMotion: boolean,
+  ) => void;
   updateLod: (cameraDistance: number) => AvatarLodLevel;
   dispose: () => void;
 }
 
 /**
- * Pure distance-based LOD classifier for 3D avatars:
- *   - Near (< 215m): detailed CC0 VRM / GLB / articulated 3D humanoid (2.85m diorama-readable height)
- *   - Mid  (215m .. 300m): simplified low-poly silhouette
- *   - Far  (>= 300m): unobtrusive 2D billboard icon sprite (never blocks harbor scenery)
+ * Pure distance-based 3D LOD classifier for avatars:
+ *   - Near/Overview (< 240m): full detailed 3D articulated engineer with shadow casting & wrist hologram
+ *   - Far (>= 240m): same volumetric 3D articulated engineer with distance-adaptive scale floor
+ *     and lighter shadow/detail flags (NEVER a 2D billboard sprite or flat card)
  */
 export function resolveAvatarLodLevel(cameraDistance: number): AvatarLodLevel {
-  if (!Number.isFinite(cameraDistance) || cameraDistance < 215) return 'detailed';
-  if (cameraDistance < 300) return 'simple';
-  return 'billboard';
+  if (!Number.isFinite(cameraDistance) || cameraDistance < 240) return 'detailed';
+  return 'mid';
 }
 
-interface SharedAvatarGeos {
-  shadow: THREE.PlaneGeometry;
+interface SharedEngineerGeos {
+  contactShadow: THREE.PlaneGeometry;
+  groundRing: THREE.RingGeometry;
   pelvis: THREE.CylinderGeometry;
   belt: THREE.CylinderGeometry;
-  torsoUpper: THREE.CylinderGeometry;
-  vestOverlay: THREE.BoxGeometry;
-  vestStripe: THREE.BoxGeometry;
+  beltBuckle: THREE.BoxGeometry;
+  beltPouch: THREE.BoxGeometry;
+  jacketTorso: THREE.CylinderGeometry;
+  jacketCollar: THREE.CylinderGeometry;
+  jacketZipper: THREE.BoxGeometry;
+  safetyVest: THREE.BoxGeometry;
+  reflectiveBand: THREE.BoxGeometry;
+  reflectiveStrap: THREE.BoxGeometry;
+  idBadge: THREE.BoxGeometry;
+  radioBody: THREE.BoxGeometry;
+  radioAntenna: THREE.CylinderGeometry;
   neck: THREE.CylinderGeometry;
   head: THREE.SphereGeometry;
-  eyeIris: THREE.SphereGeometry;
   hairCap: THREE.SphereGeometry;
+  eye: THREE.SphereGeometry;
+  ear: THREE.SphereGeometry;
   helmetDome: THREE.SphereGeometry;
-  helmetBrim: THREE.CylinderGeometry;
+  helmetRidge: THREE.BoxGeometry;
+  helmetVisor: THREE.CylinderGeometry;
+  helmetChinStrap: THREE.TorusGeometry;
+  headlampHousing: THREE.BoxGeometry;
+  headlampLens: THREE.CylinderGeometry;
+  shoulderCap: THREE.SphereGeometry;
   upperArm: THREE.CapsuleGeometry;
+  elbowJoint: THREE.SphereGeometry;
   forearm: THREE.CapsuleGeometry;
-  palm: THREE.BoxGeometry;
+  cuffStripe: THREE.CylinderGeometry;
+  hand: THREE.BoxGeometry;
+  tabletStrap: THREE.CylinderGeometry;
+  tabletFrame: THREE.BoxGeometry;
+  tabletScreen: THREE.BoxGeometry;
   thigh: THREE.CapsuleGeometry;
+  kneeJoint: THREE.SphereGeometry;
   shin: THREE.CapsuleGeometry;
-  boot: THREE.BoxGeometry;
-  simpleBody: THREE.CapsuleGeometry;
-  simpleHead: THREE.SphereGeometry;
+  ankleBand: THREE.CylinderGeometry;
+  bootUpper: THREE.BoxGeometry;
+  bootSole: THREE.BoxGeometry;
 }
 
-let _sharedGeo: SharedAvatarGeos | null = null;
-function getSharedGeos(): SharedAvatarGeos {
+let _sharedGeo: SharedEngineerGeos | null = null;
+function getSharedGeos(): SharedEngineerGeos {
   if (_sharedGeo) return _sharedGeo;
+  const groundRing = new THREE.RingGeometry(0.38, 0.46, 24);
+  groundRing.rotateX(-Math.PI / 2);
+
   _sharedGeo = {
-    shadow: new THREE.PlaneGeometry(2.2, 2.2),
-    pelvis: new THREE.CylinderGeometry(0.18, 0.17, 0.2, 10),
-    belt: new THREE.CylinderGeometry(0.19, 0.19, 0.05, 10),
-    torsoUpper: new THREE.CylinderGeometry(0.21, 0.17, 0.42, 12),
-    vestOverlay: new THREE.BoxGeometry(0.42, 0.36, 0.27),
-    vestStripe: new THREE.BoxGeometry(0.44, 0.045, 0.28),
-    neck: new THREE.CylinderGeometry(0.06, 0.072, 0.1, 8),
-    head: new THREE.SphereGeometry(0.16, 14, 12),
-    eyeIris: new THREE.SphereGeometry(0.018, 6, 6),
-    hairCap: new THREE.SphereGeometry(0.168, 12, 10, 0, Math.PI * 2, 0, Math.PI * 0.6),
-    helmetDome: new THREE.SphereGeometry(0.184, 12, 10, 0, Math.PI * 2, 0, Math.PI * 0.56),
-    helmetBrim: new THREE.CylinderGeometry(0.196, 0.208, 0.02, 12),
-    upperArm: new THREE.CapsuleGeometry(0.052, 0.2, 4, 8),
-    forearm: new THREE.CapsuleGeometry(0.045, 0.18, 4, 8),
-    palm: new THREE.BoxGeometry(0.06, 0.07, 0.032),
-    thigh: new THREE.CapsuleGeometry(0.074, 0.27, 4, 8),
-    shin: new THREE.CapsuleGeometry(0.06, 0.26, 4, 8),
-    boot: new THREE.BoxGeometry(0.11, 0.1, 0.2),
-    simpleBody: new THREE.CapsuleGeometry(0.24, 0.85, 4, 8),
-    simpleHead: new THREE.SphereGeometry(0.17, 8, 8),
+    contactShadow: new THREE.PlaneGeometry(1.9, 1.9),
+    groundRing,
+    pelvis: new THREE.CylinderGeometry(0.175, 0.165, 0.19, 12),
+    belt: new THREE.CylinderGeometry(0.186, 0.186, 0.048, 12),
+    beltBuckle: new THREE.BoxGeometry(0.068, 0.056, 0.032),
+    beltPouch: new THREE.BoxGeometry(0.075, 0.11, 0.058),
+    jacketTorso: new THREE.CylinderGeometry(0.215, 0.168, 0.46, 14),
+    jacketCollar: new THREE.CylinderGeometry(0.095, 0.118, 0.068, 12),
+    jacketZipper: new THREE.BoxGeometry(0.028, 0.42, 0.018),
+    safetyVest: new THREE.BoxGeometry(0.435, 0.37, 0.275),
+    reflectiveBand: new THREE.BoxGeometry(0.452, 0.044, 0.292),
+    reflectiveStrap: new THREE.BoxGeometry(0.052, 0.375, 0.288),
+    idBadge: new THREE.BoxGeometry(0.068, 0.088, 0.014),
+    radioBody: new THREE.BoxGeometry(0.052, 0.115, 0.038),
+    radioAntenna: new THREE.CylinderGeometry(0.006, 0.008, 0.11, 6),
+    neck: new THREE.CylinderGeometry(0.058, 0.07, 0.095, 10),
+    head: new THREE.SphereGeometry(0.15, 16, 14),
+    hairCap: new THREE.SphereGeometry(0.157, 14, 12, 0, Math.PI * 2, 0, Math.PI * 0.62),
+    eye: new THREE.SphereGeometry(0.018, 8, 8),
+    ear: new THREE.SphereGeometry(0.028, 8, 8),
+    helmetDome: new THREE.SphereGeometry(0.182, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.56),
+    helmetRidge: new THREE.BoxGeometry(0.048, 0.042, 0.29),
+    helmetVisor: new THREE.CylinderGeometry(0.194, 0.214, 0.022, 16, 1, false, -Math.PI * 0.45, Math.PI * 0.9),
+    helmetChinStrap: new THREE.TorusGeometry(0.152, 0.011, 6, 16, Math.PI),
+    headlampHousing: new THREE.BoxGeometry(0.076, 0.048, 0.046),
+    headlampLens: new THREE.CylinderGeometry(0.021, 0.021, 0.014, 12),
+    shoulderCap: new THREE.SphereGeometry(0.068, 10, 8),
+    upperArm: new THREE.CapsuleGeometry(0.052, 0.18, 4, 10),
+    elbowJoint: new THREE.SphereGeometry(0.054, 10, 8),
+    forearm: new THREE.CapsuleGeometry(0.045, 0.17, 4, 10),
+    cuffStripe: new THREE.CylinderGeometry(0.049, 0.049, 0.028, 10),
+    hand: new THREE.BoxGeometry(0.058, 0.076, 0.044),
+    tabletStrap: new THREE.CylinderGeometry(0.052, 0.052, 0.045, 10),
+    tabletFrame: new THREE.BoxGeometry(0.092, 0.125, 0.026),
+    tabletScreen: new THREE.BoxGeometry(0.076, 0.104, 0.012),
+    thigh: new THREE.CapsuleGeometry(0.068, 0.24, 4, 10),
+    kneeJoint: new THREE.SphereGeometry(0.064, 10, 8),
+    shin: new THREE.CapsuleGeometry(0.056, 0.23, 4, 10),
+    ankleBand: new THREE.CylinderGeometry(0.061, 0.061, 0.032, 10),
+    bootUpper: new THREE.BoxGeometry(0.108, 0.095, 0.198),
+    bootSole: new THREE.BoxGeometry(0.118, 0.028, 0.218),
   };
   return _sharedGeo;
-}
-
-interface MergedRigGeos {
-  hips: THREE.BufferGeometry;
-  torso: THREE.BufferGeometry;
-  head: THREE.BufferGeometry;
-  arm: THREE.BufferGeometry;
-  leg: THREE.BufferGeometry;
-}
-
-const _mergedRigCache = new Map<string, MergedRigGeos>();
-
-function getMergedRigGeos(jacketHex: number, vestHex: number, helmetHex: number): MergedRigGeos {
-  const key = `${jacketHex}_${vestHex}_${helmetHex}`;
-  const existing = _mergedRigCache.get(key);
-  if (existing) return existing;
-
-  const g = getSharedGeos();
-  const SKIN = 0xf2c8a4;
-  const HAIR = 0x26211d;
-  const EYE = 0x1e293b;
-  const PANTS = 0x1e293b;
-  const BOOT = 0x18181b;
-  const STRIPE = 0xe2e8f0;
-
-  const rig: MergedRigGeos = {
-    hips: mergeColoredParts([
-      { geometry: g.pelvis, colorHex: PANTS, scale: [1.04, 1, 0.72] },
-      { geometry: g.belt, colorHex: BOOT, position: [0, 0.088, 0], scale: [1.04, 1, 0.74] },
-    ]),
-    torso: mergeColoredParts([
-      { geometry: g.torsoUpper, colorHex: jacketHex, position: [0, 0.3, 0], scale: [1.1, 1.12, 0.72] },
-      { geometry: g.vestOverlay, colorHex: vestHex, position: [0, 0.29, 0] },
-      { geometry: g.vestStripe, colorHex: STRIPE, position: [0, 0.23, 0] },
-    ]),
-    head: mergeColoredParts([
-      { geometry: g.neck, colorHex: SKIN, position: [0, -0.01, 0] },
-      { geometry: g.head, colorHex: SKIN, position: [0, 0.14, 0], scale: [0.94, 1.05, 0.98] },
-      { geometry: g.eyeIris, colorHex: EYE, position: [-0.052, 0.15, 0.142] },
-      { geometry: g.eyeIris, colorHex: EYE, position: [0.052, 0.15, 0.142] },
-      { geometry: g.hairCap, colorHex: HAIR, position: [0, 0.155, -0.014] },
-      { geometry: g.helmetDome, colorHex: helmetHex, position: [0, 0.185, 0] },
-      { geometry: g.helmetBrim, colorHex: helmetHex, position: [0, 0.19, 0.042] },
-    ]),
-    arm: mergeColoredParts([
-      { geometry: g.upperArm, colorHex: jacketHex, position: [0, -0.14, 0] },
-      { geometry: g.forearm, colorHex: jacketHex, position: [0, -0.39, 0.036], rotation: [-0.15, 0, 0] },
-      { geometry: g.palm, colorHex: SKIN, position: [0, -0.53, 0.054] },
-    ]),
-    leg: mergeColoredParts([
-      { geometry: g.thigh, colorHex: PANTS, position: [0, -0.19, 0] },
-      { geometry: g.shin, colorHex: PANTS, position: [0, -0.55, 0] },
-      { geometry: g.boot, colorHex: BOOT, position: [0, -0.71, 0.022] },
-    ]),
-  };
-
-  _mergedRigCache.set(key, rig);
-  return rig;
 }
 
 const _sharedMatCache = new Map<string, THREE.Material>();
@@ -144,473 +146,610 @@ function getCachedMat<T extends THREE.Material>(key: string, factory: () => T): 
   return created;
 }
 
-// ============================================================================
-// LOCAL CC0 VRM & RIGGED GLB LOADER CACHE (public/models/, ZERO EXTERNAL CDN)
-// ============================================================================
-
-const LOCAL_MODEL_BASE =
-  (typeof import.meta !== 'undefined' && import.meta.env?.BASE_URL ? import.meta.env.BASE_URL : '/').replace(
-    /\/?$/,
-    '/',
-  ) + 'models/';
-
-const MODEL_SLOTS = [
-  { kind: 'vrm' as const, file: 'vrm_engineer_cc0.vrm' },
-  { kind: 'glb' as const, file: 'cesium_man_cc0.glb' },
-  { kind: 'glb' as const, file: 'rigged_figure_cc0.glb' },
-  { kind: 'vrm' as const, file: 'vrm_orion_cc0.vrm' },
-];
-
-interface LoadedGlbTemplate {
-  scene: THREE.Group;
-  animations: THREE.AnimationClip[];
-}
-
-const _glbCache = new Map<string, Promise<LoadedGlbTemplate | null>>();
-
-function loadLocalGlbTemplate(url: string): Promise<LoadedGlbTemplate | null> {
-  if (typeof window === 'undefined' || typeof fetch === 'undefined') {
-    return Promise.resolve(null);
-  }
-  const cached = _glbCache.get(url);
-  if (cached) return cached;
-
-  const promise = new Promise<LoadedGlbTemplate | null>((resolve) => {
-    const loader = new GLTFLoader();
-    loader.load(
-      url,
-      (gltf) => {
-        resolve({ scene: gltf.scene, animations: gltf.animations ?? [] });
-      },
-      undefined,
-      () => resolve(null),
-    );
-  });
-  _glbCache.set(url, promise);
-  return promise;
-}
-
-function loadLocalVrmInstance(url: string): Promise<VRM | null> {
-  if (typeof window === 'undefined' || typeof fetch === 'undefined') {
-    return Promise.resolve(null);
-  }
-  return new Promise<VRM | null>((resolve) => {
-    const loader = new GLTFLoader();
-    loader.register((parser) => new VRMLoaderPlugin(parser));
-    loader.load(
-      url,
-      (gltf) => {
-        const vrm = (gltf.userData as { vrm?: VRM }).vrm ?? null;
-        resolve(vrm);
-      },
-      undefined,
-      () => resolve(null),
-    );
-  });
-}
-
-function normalizeModelHeight(root: THREE.Object3D, targetHeight = 1.75): void {
-  root.updateMatrixWorld(true);
-  const box = new THREE.Box3().setFromObject(root);
-  const size = new THREE.Vector3();
-  box.getSize(size);
-  if (size.y > 0.05 && Number.isFinite(size.y)) {
-    const scale = targetHeight / size.y;
-    root.scale.multiplyScalar(scale);
-    root.updateMatrixWorld(true);
-    const scaledBox = new THREE.Box3().setFromObject(root);
-    root.position.y -= scaledBox.min.y;
-  }
-}
-
-function addSafetyHelmetProp(
-  parent: THREE.Object3D,
-  helmetHex: number,
-  headY: number,
-  helmetScale = 1.48,
-): void {
-  const g = getSharedGeos();
-  const helmetMat = new THREE.MeshStandardMaterial({
-    color: helmetHex,
-    roughness: 0.36,
-    metalness: 0.22,
-  });
-  const helmetGroup = new THREE.Group();
-  helmetGroup.position.set(0, headY, 0);
-  helmetGroup.scale.setScalar(helmetScale);
-  const dome = new THREE.Mesh(g.helmetDome, helmetMat);
-  dome.castShadow = true;
-  helmetGroup.add(dome);
-  const brim = new THREE.Mesh(g.helmetBrim, helmetMat);
-  brim.position.set(0, 0.005, 0.04);
-  helmetGroup.add(brim);
-  parent.add(helmetGroup);
-}
-
 /**
- * Builds a high-craft CC0 humanoid avatar with 3-tier distance-based LOD:
- *   1) Detailed LOD (< 36m): Loads local CC0 VRM/GLB from `public/models/` (with instant articulated PBR rig fallback)
- *      + safety helmet / workwear tint + walk / idle / wave animation + realistic 1.75m human height.
- *   2) Simple LOD (36m..68m): Lightweight capsule silhouette.
- *   3) Billboard LOD (>= 68m): Tiny crisp 2D icon sprite so distant avatars NEVER block the harbor vista!
+ * Builds the procedural 3D volumetric marine engineer humanoid avatar (24+ sculpted 3D meshes):
+ *   - Safety helmet with glossy shell, crown ridge, front visor, chin strap & glowing LED headlamp
+ *   - Sculpted head (skin, eyes, ears, hair cap, neck)
+ *   - High-visibility reflective work jacket (collar, zipper, vest overlay, horizontal & vertical
+ *     reflective safety stripes, chest ID badge, VHF walkie-talkie, utility belt, metallic buckle, tool pouch)
+ *   - Articulated shoulders, upper arms, elbow joints, forearms, reflective cuffs, hands & wrist holographic tablet
+ *   - Articulated hips, thighs, reinforced knee joints, shins with ankle reflective bands & rugged safety boots
+ *   - Ground status ring + optional soft contact shadow
+ *
+ * Strictly 3D volumetric at every camera distance and quality tier (ZERO 2D sprites, ZERO VRM white-mannequin swap).
  */
-export function buildHarborAvatar(options: {
-  isPartner: boolean;
-  shirtHex: string;
-  contactShadowTex: THREE.CanvasTexture;
-  billboardIconTex?: THREE.CanvasTexture;
-  isCurrentUser?: boolean;
-  skipContactShadow?: boolean;
-  modelVariantIndex?: number;
-  enableExternalCc0Model?: boolean;
-}): BuiltHumanoidRig {
+export function buildHumanoidEngineerAvatar(options: HumanoidAvatarOptions): BuiltHumanoidRig {
   const g = getSharedGeos();
   const group = new THREE.Group();
+  group.name = options.isCurrentUser ? 'avatar_current_user' : 'avatar_colleague';
 
-  const jacketColor = new THREE.Color(options.shirtHex).getHex();
-  const helmetColor = options.isPartner ? 0xfbbf24 : options.isCurrentUser ? 0x38bdf8 : 0xf8fafc;
-  const vestColor = options.isPartner ? 0xea580c : 0x0284c7;
+  const jacketHex = new THREE.Color(options.shirtHex).getHex();
+  const collarHex = new THREE.Color(options.shirtHex).multiplyScalar(0.76).getHex();
+  const helmetHex = options.isPartner ? 0xfbbf24 : options.isCurrentUser ? 0x38bdf8 : 0xf8fafc;
+  const vestHex = options.isPartner ? 0xea580c : options.isCurrentUser ? 0x0284c7 : 0x0369a1;
+  const ringHex = options.isCurrentUser ? 0x38bdf8 : options.isPartner ? 0xf59e0b : 0x10b981;
 
-  // Root containers for each LOD tier
-  const detailedRoot = new THREE.Group();
-  const simpleRoot = new THREE.Group();
-  simpleRoot.visible = false;
-  group.add(detailedRoot, simpleRoot);
+  // Skin/hair slight deterministic variation per colleague index for natural shipyard crew diversity
+  const variant = Math.abs(options.modelVariantIndex ?? 0) % 4;
+  const skinPalette = [0xf1c29b, 0xe8b48a, 0xf4caa6, 0xdfa67b];
+  const hairPalette = [0x1f1b18, 0x2b2420, 0x18181b, 0x362a22];
+  const skinHex = skinPalette[variant];
+  const hairHex = hairPalette[variant];
 
-  // 1) Contact Shadow (when not externally batched)
-  if (!options.skipContactShadow) {
+  // Shared PBR Materials with crisp material contrast (matte cloth vs glossy helmet vs metallic buckle vs glowing lamp/tablet)
+  const jacketMat = getCachedMat(
+    `eng_jacket_${jacketHex}`,
+    () => new THREE.MeshStandardMaterial({ color: jacketHex, roughness: 0.7, metalness: 0.05 }),
+  );
+  const collarMat = getCachedMat(
+    `eng_collar_${collarHex}`,
+    () => new THREE.MeshStandardMaterial({ color: collarHex, roughness: 0.74, metalness: 0.04 }),
+  );
+  const vestMat = getCachedMat(
+    `eng_vest_${vestHex}`,
+    () => new THREE.MeshStandardMaterial({ color: vestHex, roughness: 0.52, metalness: 0.08 }),
+  );
+  const reflectiveMat = getCachedMat(
+    'eng_reflective_stripe',
+    () =>
+      new THREE.MeshStandardMaterial({
+        color: 0xf1f5f9,
+        emissive: 0xcbd5e1,
+        emissiveIntensity: 0.24,
+        roughness: 0.22,
+        metalness: 0.52,
+      }),
+  );
+  const trousersMat = getCachedMat(
+    'eng_trousers',
+    () => new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.78, metalness: 0.04 }),
+  );
+  const jointPadMat = getCachedMat(
+    'eng_joint_pad',
+    () => new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.6, metalness: 0.12 }),
+  );
+  const leatherDarkMat = getCachedMat(
+    'eng_dark_gear',
+    () => new THREE.MeshStandardMaterial({ color: 0x111827, roughness: 0.48, metalness: 0.18 }),
+  );
+  const bootUpperMat = getCachedMat(
+    'eng_boot_upper',
+    () => new THREE.MeshStandardMaterial({ color: 0x18181b, roughness: 0.5, metalness: 0.16 }),
+  );
+  const bootSoleMat = getCachedMat(
+    'eng_boot_sole',
+    () => new THREE.MeshStandardMaterial({ color: 0x09090b, roughness: 0.82, metalness: 0.06 }),
+  );
+  const metalBuckleMat = getCachedMat(
+    'eng_metal_buckle',
+    () => new THREE.MeshStandardMaterial({ color: 0xdbeafe, roughness: 0.22, metalness: 0.85 }),
+  );
+  const skinMat = getCachedMat(
+    `eng_skin_${skinHex}`,
+    () => new THREE.MeshStandardMaterial({ color: skinHex, roughness: 0.6, metalness: 0.02 }),
+  );
+  const hairMat = getCachedMat(
+    `eng_hair_${hairHex}`,
+    () => new THREE.MeshStandardMaterial({ color: hairHex, roughness: 0.76, metalness: 0.04 }),
+  );
+  const eyeMat = getCachedMat(
+    'eng_eye',
+    () => new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.16, metalness: 0.05 }),
+  );
+  const helmetMat = getCachedMat(
+    `eng_helmet_${helmetHex}`,
+    () => new THREE.MeshStandardMaterial({ color: helmetHex, roughness: 0.22, metalness: 0.2 }),
+  );
+  const headlampHousingMat = getCachedMat(
+    'eng_headlamp_housing',
+    () => new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.34, metalness: 0.5 }),
+  );
+  const headlampLensMat = getCachedMat(
+    'eng_headlamp_lens',
+    () =>
+      new THREE.MeshStandardMaterial({
+        color: 0xfef9c3,
+        emissive: 0xfde047,
+        emissiveIntensity: 1.15,
+        roughness: 0.12,
+        metalness: 0.08,
+      }),
+  );
+  const idBadgeMat = getCachedMat(
+    'eng_id_badge',
+    () => new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.3, metalness: 0.08 }),
+  );
+  const tabletFrameMat = getCachedMat(
+    'eng_tablet_frame',
+    () => new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.32, metalness: 0.58 }),
+  );
+  const tabletScreenMat = getCachedMat(
+    'eng_tablet_screen',
+    () =>
+      new THREE.MeshStandardMaterial({
+        color: 0x7dd3fc,
+        emissive: 0x0ea5e9,
+        emissiveIntensity: 0.92,
+        roughness: 0.14,
+        metalness: 0.12,
+      }),
+  );
+  const groundRingMat = getCachedMat(
+    `eng_ring_${ringHex}`,
+    () =>
+      new THREE.MeshBasicMaterial({
+        color: ringHex,
+        transparent: true,
+        opacity: 0.45,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+        polygonOffset: true,
+        polygonOffsetFactor: -1,
+        polygonOffsetUnits: -1,
+      }),
+  );
+
+  // Soft contact shadow when not externally instanced
+  if (!options.skipContactShadow && options.contactShadowTex) {
     const shadowMat = getCachedMat(
-      `shadow_${options.contactShadowTex.uuid}`,
+      `eng_shadow_${options.contactShadowTex.uuid}`,
       () =>
         new THREE.MeshBasicMaterial({
           map: options.contactShadowTex,
           transparent: true,
-          opacity: 0.62,
+          opacity: 0.58,
           depthWrite: false,
         }),
     );
-    const shadow = new THREE.Mesh(g.shadow, shadowMat);
-    shadow.rotation.x = -Math.PI / 2;
-    shadow.position.y = 0.03;
-    group.add(shadow);
+    const shadowMesh = new THREE.Mesh(g.contactShadow, shadowMat);
+    shadowMesh.name = 'avatar_contact_shadow';
+    shadowMesh.rotation.x = -Math.PI / 2;
+    shadowMesh.position.y = 0.025;
+    group.add(shadowMesh);
   }
 
-  // 2) Instant Articulated Procedural Humanoid Rig (2.85m diorama-readable base scale)
-  const fallbackRigGroup = new THREE.Group();
-  fallbackRigGroup.scale.setScalar(1.62);
-  const rigGeos = getMergedRigGeos(jacketColor, vestColor, helmetColor);
-  const bodyMat = getCachedMat(
-    'avatar_vertex_pbr',
-    () => new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.46, metalness: 0.12 }),
+  // Root container scaled smoothly by camera distance (always 3D volumetric)
+  const rigContainer = new THREE.Group();
+  rigContainer.name = 'engineer_rig_container';
+  group.add(rigContainer);
+
+  // Base diorama scale: ~2.78m height up close (natural beside quay gantries & ships)
+  const rigRoot = new THREE.Group();
+  rigRoot.name = 'engineer_humanoid_root';
+  rigRoot.scale.setScalar(1.45);
+  rigContainer.add(rigRoot);
+
+  const shadowCasters: THREE.Mesh[] = [];
+  const registerMesh = (mesh: THREE.Mesh, name: string, castsShadow = true): THREE.Mesh => {
+    mesh.name = name;
+    mesh.castShadow = castsShadow;
+    mesh.receiveShadow = true;
+    if (castsShadow) shadowCasters.push(mesh);
+    return mesh;
+  };
+
+  // 1) Ground status ring (flat on quay)
+  const groundRing = registerMesh(
+    new THREE.Mesh(g.groundRing, groundRingMat),
+    'ground_status_ring',
+    false,
   );
+  groundRing.position.y = 0.032;
+  rigRoot.add(groundRing);
 
+  // 2) Pelvis & Utility Belt (y = 0.88 -> legs drop exactly 0.88 to y = 0.000)
   const hips = new THREE.Group();
-  hips.position.y = 0.92;
-  fallbackRigGroup.add(hips);
-  const hipsMesh = new THREE.Mesh(rigGeos.hips, bodyMat);
-  hipsMesh.castShadow = true;
-  hips.add(hipsMesh);
+  hips.name = 'hips_joint';
+  hips.position.y = 0.88;
+  rigRoot.add(hips);
 
+  const pelvisMesh = registerMesh(new THREE.Mesh(g.pelvis, trousersMat), 'pelvis');
+  pelvisMesh.position.y = 0.02;
+  pelvisMesh.scale.set(1.06, 1.0, 0.72);
+  hips.add(pelvisMesh);
+
+  const beltMesh = registerMesh(new THREE.Mesh(g.belt, leatherDarkMat), 'utility_belt', false);
+  beltMesh.position.y = 0.1;
+  beltMesh.scale.set(1.06, 1.0, 0.74);
+  hips.add(beltMesh);
+
+  const beltBuckleMesh = registerMesh(new THREE.Mesh(g.beltBuckle, metalBuckleMat), 'belt_buckle', false);
+  beltBuckleMesh.position.set(0, 0.1, 0.138);
+  hips.add(beltBuckleMesh);
+
+  const beltPouchMesh = registerMesh(new THREE.Mesh(g.beltPouch, jointPadMat), 'belt_tool_pouch', false);
+  beltPouchMesh.position.set(0.185, 0.075, 0.02);
+  hips.add(beltPouchMesh);
+
+  // 3) Spine, Marine Work Jacket, High-Vis Vest & Reflective Stripes
   const spine = new THREE.Group();
-  spine.position.y = 0.12;
+  spine.name = 'spine_joint';
+  spine.position.y = 0.11;
   hips.add(spine);
-  const torsoMesh = new THREE.Mesh(rigGeos.torso, bodyMat);
-  torsoMesh.castShadow = true;
-  spine.add(torsoMesh);
 
+  const jacketTorsoMesh = registerMesh(new THREE.Mesh(g.jacketTorso, jacketMat), 'marine_work_jacket');
+  jacketTorsoMesh.position.y = 0.25;
+  jacketTorsoMesh.scale.set(1.08, 1.0, 0.68);
+  spine.add(jacketTorsoMesh);
+
+  const jacketCollarMesh = registerMesh(new THREE.Mesh(g.jacketCollar, collarMat), 'jacket_collar', false);
+  jacketCollarMesh.position.y = 0.485;
+  spine.add(jacketCollarMesh);
+
+  const jacketZipperMesh = registerMesh(new THREE.Mesh(g.jacketZipper, leatherDarkMat), 'jacket_zipper', false);
+  jacketZipperMesh.position.set(0, 0.25, 0.142);
+  spine.add(jacketZipperMesh);
+
+  const safetyVestMesh = registerMesh(new THREE.Mesh(g.safetyVest, vestMat), 'high_vis_safety_vest');
+  safetyVestMesh.position.set(0, 0.245, 0);
+  spine.add(safetyVestMesh);
+
+  const reflectiveLower = registerMesh(
+    new THREE.Mesh(g.reflectiveBand, reflectiveMat),
+    'reflective_stripe_lower',
+    false,
+  );
+  reflectiveLower.position.set(0, 0.14, 0);
+  spine.add(reflectiveLower);
+
+  const reflectiveUpper = registerMesh(
+    new THREE.Mesh(g.reflectiveBand, reflectiveMat),
+    'reflective_stripe_upper',
+    false,
+  );
+  reflectiveUpper.position.set(0, 0.245, 0);
+  spine.add(reflectiveUpper);
+
+  const reflectiveLeftStrap = registerMesh(
+    new THREE.Mesh(g.reflectiveStrap, reflectiveMat),
+    'reflective_strap_left',
+    false,
+  );
+  reflectiveLeftStrap.position.set(-0.115, 0.25, 0);
+  spine.add(reflectiveLeftStrap);
+
+  const reflectiveRightStrap = registerMesh(
+    new THREE.Mesh(g.reflectiveStrap, reflectiveMat),
+    'reflective_strap_right',
+    false,
+  );
+  reflectiveRightStrap.position.set(0.115, 0.25, 0);
+  spine.add(reflectiveRightStrap);
+
+  const chestIdBadge = registerMesh(new THREE.Mesh(g.idBadge, idBadgeMat), 'chest_id_badge', false);
+  chestIdBadge.position.set(-0.115, 0.34, 0.146);
+  spine.add(chestIdBadge);
+
+  const chestRadio = registerMesh(new THREE.Mesh(g.radioBody, leatherDarkMat), 'chest_vhf_radio', false);
+  chestRadio.position.set(0.125, 0.345, 0.145);
+  spine.add(chestRadio);
+
+  const radioAntenna = registerMesh(
+    new THREE.Mesh(g.radioAntenna, leatherDarkMat),
+    'chest_radio_antenna',
+    false,
+  );
+  radioAntenna.position.set(0.142, 0.445, 0.145);
+  spine.add(radioAntenna);
+
+  // 4) Sculpted Head & Industrial Safety Helmet with Visor + Glowing Headlamp
   const headGroup = new THREE.Group();
-  headGroup.position.y = 0.58;
+  headGroup.name = 'head_joint';
+  headGroup.position.y = 0.51;
   spine.add(headGroup);
-  const headMesh = new THREE.Mesh(rigGeos.head, bodyMat);
-  headMesh.castShadow = true;
+
+  const neckMesh = registerMesh(new THREE.Mesh(g.neck, skinMat), 'neck', false);
+  neckMesh.position.y = 0.025;
+  headGroup.add(neckMesh);
+
+  const headMesh = registerMesh(new THREE.Mesh(g.head, skinMat), 'head_sculpt');
+  headMesh.position.y = 0.17;
+  headMesh.scale.set(0.93, 1.06, 0.96);
   headGroup.add(headMesh);
 
-  const leftArm = new THREE.Group();
-  leftArm.position.set(-0.27, 0.46, 0);
-  const laMesh = new THREE.Mesh(rigGeos.arm, bodyMat);
-  laMesh.castShadow = true;
-  leftArm.add(laMesh);
-  spine.add(leftArm);
+  const hairCapMesh = registerMesh(new THREE.Mesh(g.hairCap, hairMat), 'hair_cap', false);
+  hairCapMesh.position.set(0, 0.18, -0.02);
+  hairCapMesh.rotation.x = -0.22;
+  headGroup.add(hairCapMesh);
 
-  const rightArm = new THREE.Group();
-  rightArm.position.set(0.27, 0.46, 0);
-  const raMesh = new THREE.Mesh(rigGeos.arm, bodyMat);
-  raMesh.castShadow = true;
-  rightArm.add(raMesh);
-  spine.add(rightArm);
+  const leftEyeMesh = registerMesh(new THREE.Mesh(g.eye, eyeMat), 'eye_left', false);
+  leftEyeMesh.position.set(-0.048, 0.165, 0.138);
+  headGroup.add(leftEyeMesh);
 
-  const leftLeg = new THREE.Group();
-  leftLeg.position.set(-0.12, -0.05, 0);
-  const llMesh = new THREE.Mesh(rigGeos.leg, bodyMat);
-  llMesh.castShadow = true;
-  leftLeg.add(llMesh);
-  hips.add(leftLeg);
+  const rightEyeMesh = registerMesh(new THREE.Mesh(g.eye, eyeMat), 'eye_right', false);
+  rightEyeMesh.position.set(0.048, 0.165, 0.138);
+  headGroup.add(rightEyeMesh);
 
-  const rightLeg = new THREE.Group();
-  rightLeg.position.set(0.12, -0.05, 0);
-  const rlMesh = new THREE.Mesh(rigGeos.leg, bodyMat);
-  rlMesh.castShadow = true;
-  rightLeg.add(rlMesh);
-  hips.add(rightLeg);
+  const leftEarMesh = registerMesh(new THREE.Mesh(g.ear, skinMat), 'ear_left', false);
+  leftEarMesh.position.set(-0.138, 0.168, -0.006);
+  leftEarMesh.scale.set(0.55, 1.0, 0.85);
+  headGroup.add(leftEarMesh);
 
-  detailedRoot.add(fallbackRigGroup);
+  const rightEarMesh = registerMesh(new THREE.Mesh(g.ear, skinMat), 'ear_right', false);
+  rightEarMesh.position.set(0.138, 0.168, -0.006);
+  rightEarMesh.scale.set(0.55, 1.0, 0.85);
+  headGroup.add(rightEarMesh);
 
-  // 3) Mid-distance Simplified Silhouette LOD
-  const simpleInner = new THREE.Group();
-  simpleInner.scale.setScalar(1.62);
-  const simpleMat = new THREE.MeshStandardMaterial({
-    color: vestColor,
-    roughness: 0.48,
-    metalness: 0.12,
+  const helmetDomeMesh = registerMesh(new THREE.Mesh(g.helmetDome, helmetMat), 'safety_helmet_dome');
+  helmetDomeMesh.position.set(0, 0.232, 0);
+  headGroup.add(helmetDomeMesh);
+
+  const helmetRidgeMesh = registerMesh(new THREE.Mesh(g.helmetRidge, helmetMat), 'safety_helmet_ridge', false);
+  helmetRidgeMesh.position.set(0, 0.394, -0.005);
+  headGroup.add(helmetRidgeMesh);
+
+  const helmetVisorMesh = registerMesh(new THREE.Mesh(g.helmetVisor, helmetMat), 'safety_helmet_visor', false);
+  helmetVisorMesh.position.set(0, 0.228, 0.046);
+  helmetVisorMesh.rotation.x = 0.08;
+  headGroup.add(helmetVisorMesh);
+
+  const helmetChinStrap = registerMesh(
+    new THREE.Mesh(g.helmetChinStrap, leatherDarkMat),
+    'helmet_chin_strap',
+    false,
+  );
+  helmetChinStrap.position.set(0, 0.228, 0.008);
+  helmetChinStrap.rotation.x = Math.PI;
+  headGroup.add(helmetChinStrap);
+
+  const headlampHousing = registerMesh(
+    new THREE.Mesh(g.headlampHousing, headlampHousingMat),
+    'helmet_headlamp_housing',
+    false,
+  );
+  headlampHousing.position.set(0, 0.308, 0.168);
+  headGroup.add(headlampHousing);
+
+  const headlampLens = registerMesh(
+    new THREE.Mesh(g.headlampLens, headlampLensMat),
+    'helmet_headlamp_lens',
+    false,
+  );
+  headlampLens.rotation.x = Math.PI / 2;
+  headlampLens.position.set(0, 0.308, 0.193);
+  headGroup.add(headlampLens);
+
+  // 5) Articulated Arms (Shoulder -> Upper Arm -> Elbow Joint -> Forearm -> Cuff -> Hand + Left Wrist Hologram Tablet)
+  const buildArm = (side: 'left' | 'right') => {
+    const sign = side === 'left' ? -1 : 1;
+    const shoulder = new THREE.Group();
+    shoulder.name = `${side}_shoulder_joint`;
+    shoulder.position.set(sign * 0.275, 0.42, 0);
+    spine.add(shoulder);
+
+    const shoulderCap = registerMesh(
+      new THREE.Mesh(g.shoulderCap, jacketMat),
+      `${side}_shoulder_cap`,
+      false,
+    );
+    shoulder.add(shoulderCap);
+
+    const upperArm = registerMesh(new THREE.Mesh(g.upperArm, jacketMat), `${side}_upper_arm`);
+    upperArm.position.set(0, -0.14, 0);
+    shoulder.add(upperArm);
+
+    const elbow = new THREE.Group();
+    elbow.name = `${side}_elbow_joint`;
+    elbow.position.set(0, -0.28, 0);
+    shoulder.add(elbow);
+
+    const elbowJointMesh = registerMesh(
+      new THREE.Mesh(g.elbowJoint, jointPadMat),
+      `${side}_elbow_pad`,
+      false,
+    );
+    elbow.add(elbowJointMesh);
+
+    const forearm = registerMesh(new THREE.Mesh(g.forearm, jacketMat), `${side}_forearm`);
+    forearm.position.set(0, -0.135, 0.01);
+    elbow.add(forearm);
+
+    const cuff = registerMesh(new THREE.Mesh(g.cuffStripe, reflectiveMat), `${side}_cuff_stripe`, false);
+    cuff.position.set(0, -0.22, 0.012);
+    elbow.add(cuff);
+
+    const hand = registerMesh(new THREE.Mesh(g.hand, skinMat), `${side}_hand`, false);
+    hand.position.set(0, -0.278, 0.016);
+    elbow.add(hand);
+
+    return { shoulder, elbow };
+  };
+
+  const leftArm = buildArm('left');
+  const rightArm = buildArm('right');
+
+  // Left Wrist Holographic Engineering Tablet
+  const wristTabletGroup = new THREE.Group();
+  wristTabletGroup.name = 'wrist_hologram_tablet';
+  wristTabletGroup.position.set(-0.022, -0.175, 0.056);
+  wristTabletGroup.rotation.set(-0.28, -0.25, 0.08);
+  leftArm.elbow.add(wristTabletGroup);
+
+  const tabletStrap = registerMesh(
+    new THREE.Mesh(g.tabletStrap, leatherDarkMat),
+    'wrist_tablet_strap',
+    false,
+  );
+  tabletStrap.position.set(0.022, 0, -0.044);
+  wristTabletGroup.add(tabletStrap);
+
+  const tabletFrame = registerMesh(
+    new THREE.Mesh(g.tabletFrame, tabletFrameMat),
+    'wrist_tablet_frame',
+    false,
+  );
+  wristTabletGroup.add(tabletFrame);
+
+  const tabletScreen = registerMesh(
+    new THREE.Mesh(g.tabletScreen, tabletScreenMat),
+    'wrist_tablet_hologram_screen',
+    false,
+  );
+  tabletScreen.position.set(0, 0, 0.012);
+  wristTabletGroup.add(tabletScreen);
+
+  // 6) Articulated Legs (Hip -> Thigh -> Knee Joint Pad -> Shin -> Ankle Band -> Rugged Safety Boot)
+  const buildLeg = (side: 'left' | 'right') => {
+    const sign = side === 'left' ? -1 : 1;
+    const hip = new THREE.Group();
+    hip.name = `${side}_hip_joint`;
+    hip.position.set(sign * 0.112, -0.04, 0);
+    hips.add(hip);
+
+    const thigh = registerMesh(new THREE.Mesh(g.thigh, trousersMat), `${side}_thigh`);
+    thigh.position.set(0, -0.19, 0);
+    hip.add(thigh);
+
+    const knee = new THREE.Group();
+    knee.name = `${side}_knee_joint`;
+    knee.position.set(0, -0.39, 0);
+    hip.add(knee);
+
+    const kneePad = registerMesh(new THREE.Mesh(g.kneeJoint, jointPadMat), `${side}_knee_pad`, false);
+    kneePad.position.set(0, 0, 0.014);
+    knee.add(kneePad);
+
+    const shin = registerMesh(new THREE.Mesh(g.shin, trousersMat), `${side}_shin`);
+    shin.position.set(0, -0.185, 0);
+    knee.add(shin);
+
+    const ankleBand = registerMesh(
+      new THREE.Mesh(g.ankleBand, reflectiveMat),
+      `${side}_ankle_reflective`,
+      false,
+    );
+    ankleBand.position.set(0, -0.295, 0);
+    knee.add(ankleBand);
+
+    const bootUpper = registerMesh(new THREE.Mesh(g.bootUpper, bootUpperMat), `${side}_boot_upper`);
+    bootUpper.position.set(0, -0.378, 0.032);
+    knee.add(bootUpper);
+
+    const bootSole = registerMesh(new THREE.Mesh(g.bootSole, bootSoleMat), `${side}_boot_sole`, false);
+    bootSole.position.set(0, -0.436, 0.034);
+    knee.add(bootSole);
+
+    return { hip, knee };
+  };
+
+  const leftLeg = buildLeg('left');
+  const rightLeg = buildLeg('right');
+
+  // Count distinct 3D meshes built into this humanoid rig
+  let meshCount = 0;
+  group.traverse((obj) => {
+    if ((obj as THREE.Mesh).isMesh) meshCount += 1;
   });
-  const simpleBody = new THREE.Mesh(g.simpleBody, simpleMat);
-  simpleBody.position.y = 0.85;
-  simpleBody.castShadow = true;
-  simpleInner.add(simpleBody);
-  const simpleHelmetMat = new THREE.MeshStandardMaterial({ color: helmetColor, roughness: 0.36 });
-  const simpleHead = new THREE.Mesh(g.simpleHead, simpleHelmetMat);
-  simpleHead.position.y = 1.56;
-  simpleHead.castShadow = true;
-  simpleInner.add(simpleHead);
-  simpleRoot.add(simpleInner);
 
-  // 4) Far-distance Billboard Icon Sprite LOD (guarantees minimum legible screen size at overview/far zoom)
-  let billboardSprite: THREE.Sprite | null = null;
-  if (options.billboardIconTex) {
-    const bbMat = new THREE.SpriteMaterial({
-      map: options.billboardIconTex,
-      transparent: true,
-      depthTest: true,
-      depthWrite: false,
-    });
-    billboardSprite = new THREE.Sprite(bbMat);
-    billboardSprite.position.set(0, 2.8, 0);
-    billboardSprite.scale.set(4.5, 4.5, 1);
-    billboardSprite.visible = false;
-    group.add(billboardSprite);
-  }
-
-  // 5) Async upgrade to local CC0 VRM / Rigged GLB from public/models/ (Requirements #7, #10, #14)
-  let loadedVrm: VRM | null = null;
-  let glbMixer: THREE.AnimationMixer | null = null;
-  let glbWalkAction: THREE.AnimationAction | null = null;
-  let externalModelRoot: THREE.Object3D | null = null;
-  let disposed = false;
-
-  if (options.enableExternalCc0Model !== false && typeof window !== 'undefined') {
-    const slotIdx = Math.abs(options.modelVariantIndex ?? 0) % MODEL_SLOTS.length;
-    const slot = MODEL_SLOTS[slotIdx];
-    const url = `${LOCAL_MODEL_BASE}${slot.file}`;
-
-    if (slot.kind === 'vrm') {
-      void loadLocalVrmInstance(url).then((vrm) => {
-        if (disposed || !vrm) return;
-        loadedVrm = vrm;
-        const vrmScene = vrm.scene;
-        const wrapper = new THREE.Group();
-        vrmScene.rotation.y = Math.PI; // VRM0/1 front faces +Z in HarborScene
-        normalizeModelHeight(vrmScene, 2.85);
-        vrmScene.traverse((obj) => {
-          const m = obj as THREE.Mesh;
-          if (m.isMesh) {
-            m.castShadow = true;
-            m.receiveShadow = true;
-          }
-        });
-        wrapper.add(vrmScene);
-        addSafetyHelmetProp(wrapper, helmetColor, 2.68, 1.48);
-        const hum = vrm.humanoid;
-        const lArm = hum?.getNormalizedBoneNode('leftUpperArm');
-        const rArm = hum?.getNormalizedBoneNode('rightUpperArm');
-        if (lArm) lArm.rotation.set(0, 0, 1.18);
-        if (rArm) rArm.rotation.set(0, 0, -1.18);
-        vrm.update(0);
-        externalModelRoot = wrapper;
-        detailedRoot.add(wrapper);
-        fallbackRigGroup.visible = false;
-      });
-    } else {
-      void loadLocalGlbTemplate(url).then((tpl) => {
-        if (disposed || !tpl) return;
-        const wrapper = new THREE.Group();
-        const cloned = SkeletonUtils.clone(tpl.scene);
-        normalizeModelHeight(cloned, 2.82);
-        const tint = new THREE.Color(options.shirtHex);
-        cloned.traverse((obj) => {
-          const m = obj as THREE.Mesh;
-          if (m.isMesh) {
-            m.castShadow = true;
-            m.receiveShadow = true;
-            if (m.material && !Array.isArray(m.material)) {
-              const clonedMat = m.material.clone();
-              if ('color' in clonedMat && clonedMat.color instanceof THREE.Color) {
-                clonedMat.color.lerp(tint, 0.35);
-              }
-              m.material = clonedMat;
-            }
-          }
-        });
-        wrapper.add(cloned);
-        addSafetyHelmetProp(wrapper, helmetColor, 2.64, 1.46);
-        if (tpl.animations.length > 0) {
-          glbMixer = new THREE.AnimationMixer(cloned);
-          glbWalkAction = glbMixer.clipAction(tpl.animations[0]);
-          glbWalkAction.play();
-        }
-        externalModelRoot = wrapper;
-        detailedRoot.add(wrapper);
-        fallbackRigGroup.visible = false;
-      });
-    }
-  }
-
-  let currentLod: AvatarLodLevel = 'detailed';
+  let lastLod: AvatarLodLevel = 'detailed';
 
   return {
     group,
+    meshCount,
     updateLod: (cameraDistance: number) => {
       const nextLod = resolveAvatarLodLevel(cameraDistance);
-      currentLod = nextLod;
-      detailedRoot.visible = nextLod === 'detailed';
-      simpleRoot.visible = nextLod === 'simple';
-
-      // Distance-adaptive scale floor guarantees avatars stay clearly readable in Harbor Overview
-      // while remaining natural human proportion up close (d <= 45m).
       const safeDist = Number.isFinite(cameraDistance) ? cameraDistance : 160;
-      const distBoost =
-        safeDist <= 45
-          ? 1.0
-          : THREE.MathUtils.clamp(1.0 + ((safeDist - 45) / 130) * 1.25, 1.0, 2.35);
-      detailedRoot.scale.setScalar(distBoost);
-      simpleRoot.scale.setScalar(distBoost);
 
-      if (billboardSprite) {
-        billboardSprite.visible = nextLod === 'billboard';
-        if (nextLod === 'billboard') {
-          // Minimum legible screen-space billboard icon at far distances
-          const iconSize = THREE.MathUtils.clamp(safeDist * 0.032, 4.4, 9.8);
-          billboardSprite.scale.set(iconSize, iconSize, 1);
-          billboardSprite.position.y = Math.max(2.6, iconSize * 0.55);
+      // Distance-adaptive minimum screen-size scale floor:
+      // Keeps natural 1.0x human proportion close-up (d <= 40m) and scales smoothly up to 3.25x
+      // at maximum harbor zoom-out (d = 450..800m) so volumetric 3D engineers stay legible everywhere.
+      const distScale =
+        safeDist <= 40
+          ? 1.0
+          : THREE.MathUtils.clamp(1.0 + ((safeDist - 40) / 145) * 1.18, 1.0, 3.25);
+      rigContainer.scale.setScalar(distScale);
+
+      if (nextLod !== lastLod) {
+        lastLod = nextLod;
+        const enableShadows = nextLod === 'detailed';
+        for (let i = 0; i < shadowCasters.length; i += 1) {
+          shadowCasters[i].castShadow = enableShadows;
         }
-      } else {
-        simpleRoot.visible = nextLod !== 'detailed';
+        // Keep tiny sub-pixel hologram bezel hidden only at extreme far zoom while preserving full 3D body
+        wristTabletGroup.visible = nextLod === 'detailed';
       }
+
       return nextLod;
     },
-    updateAnimation: (dt, elapsed, action, reducedMotion) => {
-      if (currentLod === 'simple') {
-        if (!reducedMotion && action === 'run') {
-          simpleInner.position.y = Math.abs(Math.sin(elapsed * 9.5)) * 0.14;
-          simpleInner.rotation.z = Math.sin(elapsed * 4.75) * 0.07;
-        } else {
-          simpleInner.position.y = 0;
-          simpleInner.rotation.z = 0;
-        }
-        return;
-      }
-      if (currentLod !== 'detailed') return;
-
-      // Animate loaded VRM humanoid bones (walk / idle / wave)
-      if (loadedVrm) {
-        const hum = loadedVrm.humanoid;
-        const lArm = hum?.getNormalizedBoneNode('leftUpperArm');
-        const rArm = hum?.getNormalizedBoneNode('rightUpperArm');
-        const lLeg = hum?.getNormalizedBoneNode('leftUpperLeg');
-        const rLeg = hum?.getNormalizedBoneNode('rightUpperLeg');
-        const headBone = hum?.getNormalizedBoneNode('head');
-
-        if (reducedMotion) {
-          if (lArm) lArm.rotation.set(0, 0, 1.15);
-          if (rArm) rArm.rotation.set(0, 0, -1.15);
-          if (lLeg) lLeg.rotation.set(0, 0, 0);
-          if (rLeg) rLeg.rotation.set(0, 0, 0);
-        } else if (action === 'run') {
-          const stride = Math.sin(elapsed * 9.5);
-          if (lLeg) lLeg.rotation.x = stride * 0.55;
-          if (rLeg) rLeg.rotation.x = -stride * 0.55;
-          if (lArm) lArm.rotation.set(-stride * 0.45, 0, 1.15);
-          if (rArm) rArm.rotation.set(stride * 0.45, 0, -1.15);
-        } else if (action === 'wave') {
-          if (lArm) lArm.rotation.set(0, 0, 1.15);
-          if (rArm) rArm.rotation.set(0, 0, 0.8 + Math.sin(elapsed * 7.5) * 0.35);
-          if (lLeg) lLeg.rotation.x = 0;
-          if (rLeg) rLeg.rotation.x = 0;
-        } else {
-          if (lArm) lArm.rotation.set(Math.sin(elapsed * 1.4) * 0.05, 0, 1.18);
-          if (rArm) rArm.rotation.set(-Math.sin(elapsed * 1.4) * 0.05, 0, -1.18);
-          if (lLeg) lLeg.rotation.x = 0;
-          if (rLeg) rLeg.rotation.x = 0;
-          if (headBone) headBone.rotation.y = Math.sin(elapsed * 0.8) * 0.14;
-        }
-        loadedVrm.update(dt);
-        return;
-      }
-
-      // Animate loaded rigged GLB
-      if (glbMixer && glbWalkAction) {
-        if (reducedMotion) {
-          glbWalkAction.timeScale = 0;
-        } else {
-          glbWalkAction.timeScale = action === 'run' ? 1.35 : 0.16;
-          glbMixer.update(dt);
-        }
-        return;
-      }
-
-      // Animate instant articulated fallback rig (walk / idle / wave)
+    updateAnimation: (_dt, elapsed, action, reducedMotion) => {
       if (reducedMotion) {
-        hips.position.y = 0.92;
-        spine.rotation.x = 0;
-        leftLeg.rotation.x = 0;
-        rightLeg.rotation.x = 0;
-        leftArm.rotation.set(0, 0, 0);
-        rightArm.rotation.set(0, 0, 0);
-        headGroup.rotation.y = 0;
+        hips.position.y = 0.88;
+        hips.rotation.y = 0;
+        spine.rotation.set(0.02, 0, 0);
+        headGroup.rotation.set(0, 0, 0);
+        leftLeg.hip.rotation.x = 0;
+        rightLeg.hip.rotation.x = 0;
+        leftLeg.knee.rotation.x = 0.03;
+        rightLeg.knee.rotation.x = 0.03;
+        leftArm.shoulder.rotation.set(-0.28, 0.1, 0.08);
+        leftArm.elbow.rotation.x = -0.52;
+        rightArm.shoulder.rotation.set(0, 0, -0.08);
+        rightArm.elbow.rotation.x = -0.18;
         return;
       }
+
       if (action === 'run') {
-        const stride = Math.sin(elapsed * 10.5);
-        hips.position.y = 0.92 + Math.abs(Math.cos(elapsed * 10.5)) * 0.05;
-        spine.rotation.x = 0.1;
-        leftLeg.rotation.x = stride * 0.58;
-        rightLeg.rotation.x = -stride * 0.58;
-        leftArm.rotation.set(-stride * 0.46, 0, 0);
-        rightArm.rotation.set(stride * 0.46, 0, 0);
+        const stride = Math.sin(elapsed * 9.8);
+        const lift = Math.abs(Math.cos(elapsed * 9.8));
+        hips.position.y = 0.88 + lift * 0.045;
+        hips.rotation.y = stride * 0.07;
+        spine.rotation.set(0.085, -stride * 0.11, 0);
+
+        leftLeg.hip.rotation.x = stride * 0.56;
+        rightLeg.hip.rotation.x = -stride * 0.56;
+        leftLeg.knee.rotation.x = Math.max(0, -stride) * 0.68 + 0.06;
+        rightLeg.knee.rotation.x = Math.max(0, stride) * 0.68 + 0.06;
+
+        leftArm.shoulder.rotation.set(-stride * 0.46, 0, 0.08);
+        rightArm.shoulder.rotation.set(stride * 0.46, 0, -0.08);
+        leftArm.elbow.rotation.x = -0.32 - Math.max(0, stride) * 0.26;
+        rightArm.elbow.rotation.x = -0.26 - Math.max(0, -stride) * 0.28;
+
+        headGroup.rotation.set(-0.04, Math.sin(elapsed * 1.1) * 0.07, 0);
       } else if (action === 'wave') {
-        hips.position.y = 0.92 + Math.sin(elapsed * 2.2) * 0.012;
-        spine.rotation.x = 0;
-        leftLeg.rotation.x = 0;
-        rightLeg.rotation.x = 0;
-        leftArm.rotation.set(0, 0, 0);
-        rightArm.rotation.set(-2.5, 0, Math.sin(elapsed * 8.0) * 0.28);
-        headGroup.rotation.y = Math.sin(elapsed * 1.4) * 0.14;
+        hips.position.y = 0.88 + Math.sin(elapsed * 2.2) * 0.012;
+        hips.rotation.y = 0;
+        spine.rotation.set(0.02, Math.sin(elapsed * 1.4) * 0.06, 0);
+
+        leftLeg.hip.rotation.x = 0;
+        rightLeg.hip.rotation.x = 0;
+        leftLeg.knee.rotation.x = 0.04;
+        rightLeg.knee.rotation.x = 0.04;
+
+        leftArm.shoulder.rotation.set(-0.44, 0.18, 0.12);
+        leftArm.elbow.rotation.x = -0.78;
+        rightArm.shoulder.rotation.set(-2.25, 0, -0.34 + Math.sin(elapsed * 7.6) * 0.24);
+        rightArm.elbow.rotation.x = -0.45 - Math.sin(elapsed * 7.6) * 0.22;
+
+        headGroup.rotation.set(Math.sin(elapsed * 2.4) * 0.06, Math.sin(elapsed * 1.6) * 0.16, 0);
       } else {
-        hips.position.y = 0.92 + Math.sin(elapsed * 2.0) * 0.012;
-        spine.rotation.x = 0.02;
-        leftLeg.rotation.x = 0;
-        rightLeg.rotation.x = 0;
-        leftArm.rotation.set(Math.sin(elapsed * 1.4) * 0.04, 0, 0);
-        rightArm.rotation.set(-Math.sin(elapsed * 1.4) * 0.04, 0, 0);
-        headGroup.rotation.y = Math.sin(elapsed * 0.85) * 0.12;
+        // Standing / inspecting holographic wrist tablet
+        hips.position.y = 0.88 + Math.sin(elapsed * 2.0) * 0.012;
+        hips.rotation.y = 0;
+        spine.rotation.set(0.025, Math.sin(elapsed * 0.7) * 0.035, 0);
+
+        leftLeg.hip.rotation.x = 0;
+        rightLeg.hip.rotation.x = 0;
+        leftLeg.knee.rotation.x = 0.03;
+        rightLeg.knee.rotation.x = 0.03;
+
+        leftArm.shoulder.rotation.set(-0.36 + Math.sin(elapsed * 1.3) * 0.04, 0.14, 0.1);
+        leftArm.elbow.rotation.x = -0.68 + Math.sin(elapsed * 1.3) * 0.05;
+        rightArm.shoulder.rotation.set(Math.sin(elapsed * 1.2) * 0.04, 0, -0.09);
+        rightArm.elbow.rotation.x = -0.22;
+
+        headGroup.rotation.set(0.04, Math.sin(elapsed * 0.85) * 0.16, 0);
       }
     },
     dispose: () => {
-      disposed = true;
-      if (glbMixer) glbMixer.stopAllAction();
-      if (externalModelRoot) {
-        externalModelRoot.traverse((obj) => {
-          const m = obj as THREE.Mesh;
-          if (m.isMesh && m.material && !Array.isArray(m.material)) {
-            m.material.dispose();
-          }
-        });
-      }
-      simpleMat.dispose();
-      simpleHelmetMat.dispose();
-      if (billboardSprite) {
-        (billboardSprite.material as THREE.SpriteMaterial).dispose();
-      }
+      // Geometries and PBR materials are cached & shared across avatars to minimize GPU overhead.
       group.clear();
     },
   };
 }
+
+/**
+ * Alias preserved for HarborScene and existing callers — always delegates to the
+ * 3D volumetric articulated engineer builder.
+ */
+export const buildHarborAvatar = buildHumanoidEngineerAvatar;

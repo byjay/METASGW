@@ -9,6 +9,7 @@ import { isSafeNavigationUrl } from '../deepLink';
 import {
   getMetaModuleStatusLabel,
   type MetaHubSummaryResponse,
+  type MetaKpiMap,
   type MetaModuleId,
   type MetaModuleStatus,
   type MetaRegistryResponse,
@@ -27,7 +28,7 @@ export interface HubModuleChipItem {
   entryUrl: string | null;
   disabled: boolean;
   disabledReason: string | null;
-  kpi: Record<string, number | string>;
+  kpi: MetaKpiMap;
   updatedAt: string | null;
 }
 
@@ -89,7 +90,7 @@ function toChipItem(
   status: MetaModuleStatus,
   summaryText: string,
   entryUrlRaw: string | null,
-  kpi: Record<string, number | string>,
+  kpi: MetaKpiMap,
   updatedAt: string | null,
 ): HubModuleChipItem {
   const entryUrl = resolveValidEntryUrl(entryUrlRaw);

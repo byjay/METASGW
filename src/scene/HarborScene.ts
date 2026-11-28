@@ -25,6 +25,7 @@ import {
 import { assertValidShipBerths, type HarborPerson, type HarborShip } from '../mapping';
 import type { ShipDisplayPrefsMap } from '../shipDisplayPrefs';
 import type {
+  AvatarSceneGraphAudit,
   CameraPreset,
   ClickedDecorativeShip,
   HarborSceneCallbacks,
@@ -36,7 +37,7 @@ import type {
   RenderMetrics,
   ScreenAnchorPoint,
 } from './harborSceneTypes';
-import { buildHarborAvatar, type BuiltHumanoidRig } from './humanoidAvatar';
+import { buildHumanoidEngineerAvatar, type BuiltHumanoidRig } from './humanoidAvatar';
 import { InfiniteWorldChunkManager } from './infiniteWorldChunks';
 import {
   collectSceneBatchStats,
@@ -380,11 +381,10 @@ export class HarborSceneController implements HarborSceneHandle {
 
     this.scene.add(this.peopleRoot);
 
-    this.playerRig = buildHarborAvatar({
+    this.playerRig = buildHumanoidEngineerAvatar({
       isPartner: false,
       shirtHex: '#0284c7',
       contactShadowTex: this.textures.contactShadow,
-      billboardIconTex: this.textures.createAvatarBillboardIcon('#38bdf8', true, true),
       isCurrentUser: true,
       modelVariantIndex: 0,
     });
@@ -751,15 +751,10 @@ export class HarborSceneController implements HarborSceneHandle {
     const shadowPositions: Array<{ x: number; y: number; z: number; scale: number }> = [];
 
     separated.forEach((person, idx) => {
-      const rig = buildHarborAvatar({
+      const rig = buildHumanoidEngineerAvatar({
         isPartner: person.isPartner,
         shirtHex: person.shirtHex,
         contactShadowTex: this.textures.contactShadow,
-        billboardIconTex: this.textures.createAvatarBillboardIcon(
-          person.shirtHex,
-          person.online,
-          false,
-        ),
         skipContactShadow: true,
         modelVariantIndex: idx + 1,
       });
@@ -868,8 +863,82 @@ export class HarborSceneController implements HarborSceneHandle {
     const clamped = clampCameraCollision(this.camera.position);
     this.camera.position.set(clamped.x, clamped.y, clamped.z);
     this.controls.update();
+    this.syncAvatarLodsNow();
     this.emitLabels();
     this.renderFrame();
+  }
+
+  public setZoomDistance(distance: number): void {
+    this.cameraTween = null;
+    _scratchOffset.subVectors(this.camera.position, this.controls.target);
+    if (_scratchOffset.lengthSq() < 1e-4) {
+      _scratchOffset.set(0, 58, 140);
+    }
+    const len = THREE.MathUtils.clamp(distance, 8, 800);
+    _scratchOffset.setLength(len);
+    this.camera.position.copy(this.controls.target).add(_scratchOffset);
+    const clamped = clampCameraCollision(this.camera.position);
+    this.camera.position.set(clamped.x, clamped.y, clamped.z);
+    this.controls.update();
+    this.syncAvatarLodsNow();
+    this.emitLabels();
+    this.renderFrame();
+  }
+
+  public focusPlayerCloseUp(distance = 8.0): void {
+    this.cameraTween = null;
+    const d = THREE.MathUtils.clamp(distance, 8, 60);
+    const px = this.playerPos.x;
+    const py = this.playerPos.y;
+    const pz = this.playerPos.z;
+    this.controls.target.set(px, py + 1.45, pz);
+    this.camera.position.set(px + d * 0.34, py + 1.45 + d * 0.24, pz + d * 0.91);
+    this.controls.update();
+    this.syncAvatarLodsNow();
+    this.emitLabels();
+    this.renderFrame();
+  }
+
+  private syncAvatarLodsNow(): void {
+    const pDist = this.camera.position.distanceTo(this.playerRig.group.position);
+    this.playerRig.updateLod(pDist);
+    for (const rt of this.personRuntimes) {
+      const dist = this.camera.position.distanceTo(rt.rig.group.position);
+      rt.rig.updateLod(dist);
+    }
+  }
+
+  public inspectAvatarSceneGraph(): AvatarSceneGraphAudit {
+    let avatarSpriteCount = 0;
+    const countSpritesAndMeshes = (root: THREE.Object3D) => {
+      let meshes = 0;
+      root.traverse((obj) => {
+        if ((obj as THREE.Sprite).isSprite) avatarSpriteCount += 1;
+        if ((obj as THREE.Mesh).isMesh) meshes += 1;
+      });
+      return meshes;
+    };
+
+    const playerMeshCount = countSpritesAndMeshes(this.playerRig.group);
+    let minColleagueMeshCount = Number.POSITIVE_INFINITY;
+    let allAvatarsVisible = this.playerRig.group.visible;
+
+    for (const rt of this.personRuntimes) {
+      const c = countSpritesAndMeshes(rt.rig.group);
+      if (c < minColleagueMeshCount) minColleagueMeshCount = c;
+      if (!rt.rig.group.visible) allAvatarsVisible = false;
+    }
+
+    return {
+      avatarCount: 1 + this.personRuntimes.length,
+      playerMeshCount,
+      minColleagueMeshCount: Number.isFinite(minColleagueMeshCount) ? minColleagueMeshCount : playerMeshCount,
+      avatarSpriteCount,
+      cameraDistanceToPlayer: Number(
+        this.camera.position.distanceTo(this.playerRig.group.position).toFixed(2),
+      ),
+      allAvatarsVisible,
+    };
   }
 
   public focusShip(projectId: string): void {

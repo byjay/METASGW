@@ -580,12 +580,28 @@ export const ReportModal: React.FC<ReportModalProps> = ({
                       <div
                         key={card.key}
                         data-testid={`report-kpi-${card.key}`}
+                        data-null={card.isNull ? 'true' : 'false'}
+                        title={card.tooltip ?? undefined}
                         className="rounded-xl border border-slate-800 bg-slate-950/85 px-3 py-2.5"
                       >
-                        <p className="truncate text-[11px] font-medium text-slate-300">
-                          {card.label}
-                        </p>
-                        <p className="mt-1 font-mono text-base font-bold text-white tabular-nums">
+                        <div className="flex items-center justify-between gap-1">
+                          <p className="truncate text-[11px] font-medium text-slate-300">
+                            {card.label}
+                          </p>
+                          {card.isNull && (
+                            <span
+                              data-testid={`report-kpi-nosource-${card.key}`}
+                              className="shrink-0 rounded border border-slate-700 bg-slate-900 px-1 py-0.5 text-[9px] font-medium text-slate-300"
+                            >
+                              원천 없음
+                            </span>
+                          )}
+                        </div>
+                        <p
+                          className={`mt-1 font-mono text-base font-bold tabular-nums ${
+                            card.isNull ? 'text-slate-300' : 'text-white'
+                          }`}
+                        >
                           {card.value}
                         </p>
                       </div>
@@ -662,7 +678,8 @@ export const ReportModal: React.FC<ReportModalProps> = ({
                                   <tbody className="divide-y divide-slate-800/70">
                                     {section.highlights.map((item) => {
                                       const link = resolveKeyItemLink(item);
-                                      const sevLabel = SEVERITY_LABEL_KO[item.severity];
+                                      const sevLabel =
+                                        item.severity !== null ? SEVERITY_LABEL_KO[item.severity] : null;
                                       return (
                                         <tr key={item.id} className="hover:bg-slate-900/60">
                                           <td className="px-3 py-2 font-mono font-bold text-sky-200 whitespace-nowrap">
@@ -675,11 +692,18 @@ export const ReportModal: React.FC<ReportModalProps> = ({
                                             {String(item.metric || '-')}
                                           </td>
                                           <td className="px-3 py-2 whitespace-nowrap">
-                                            <span
-                                              className={`inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-semibold leading-none ${SEVERITY_BADGE_CLASS[item.severity]}`}
-                                            >
-                                              {sevLabel}
-                                            </span>
+                                            {item.severity !== null && sevLabel ? (
+                                              <span
+                                                data-testid={`report-item-severity-${item.id}`}
+                                                className={`inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-semibold leading-none ${SEVERITY_BADGE_CLASS[item.severity]}`}
+                                              >
+                                                {sevLabel}
+                                              </span>
+                                            ) : (
+                                              <span className="text-slate-400" aria-label="등급 없음">
+                                                —
+                                              </span>
+                                            )}
                                           </td>
                                           <td className="px-3 py-2 text-slate-300 whitespace-nowrap">
                                             {formatRelativeUpdatedAt(item.updatedAt)}
@@ -723,7 +747,8 @@ export const ReportModal: React.FC<ReportModalProps> = ({
                               <ul className="sm:hidden divide-y divide-slate-800/80">
                                 {section.highlights.map((item) => {
                                   const link = resolveKeyItemLink(item);
-                                  const sevLabel = SEVERITY_LABEL_KO[item.severity];
+                                  const sevLabel =
+                                    item.severity !== null ? SEVERITY_LABEL_KO[item.severity] : null;
                                   return (
                                     <li key={item.id} className="px-3 py-2 space-y-1">
                                       <div className="flex items-center justify-between gap-2">
@@ -731,11 +756,13 @@ export const ReportModal: React.FC<ReportModalProps> = ({
                                           <span className="font-mono text-[11px] font-bold text-sky-200 shrink-0">
                                             {item.code}
                                           </span>
-                                          <span
-                                            className={`inline-flex shrink-0 items-center rounded border px-1 py-0.5 text-[10px] font-semibold leading-none ${SEVERITY_BADGE_CLASS[item.severity]}`}
-                                          >
-                                            {sevLabel}
-                                          </span>
+                                          {item.severity !== null && sevLabel && (
+                                            <span
+                                              className={`inline-flex shrink-0 items-center rounded border px-1 py-0.5 text-[10px] font-semibold leading-none ${SEVERITY_BADGE_CLASS[item.severity]}`}
+                                            >
+                                              {sevLabel}
+                                            </span>
+                                          )}
                                         </div>
                                         <span className="text-[10px] text-slate-300 shrink-0">
                                           {formatRelativeUpdatedAt(item.updatedAt)}

@@ -1,8 +1,8 @@
 /**
- * METASGW x SGW Unified Hub (`/api/meta/*`) DTO Contract (v1.0).
+ * METASGW x SGW Unified Hub (`/api/meta/*`) DTO Contract (v1.0 + Stage 6 finalized SEDMS/SEcMS rules).
  *
- * Pure type definitions & status honesty helpers shared across the hub client,
- * preview fixtures, and upcoming UI views.
+ * Pure type definitions & status/null honesty helpers shared across the hub client,
+ * preview fixtures, and UI views.
  */
 
 import type { RuntimeEnv } from '../runtimeEnv';
@@ -36,23 +36,32 @@ export type MetaItemCategory =
 
 export type MetaItemSeverity = 'normal' | 'warn' | 'urgent';
 
+/** Null KPI numbers must be rendered as em-dash ("—"), never fabricated as 0. */
+export const NULL_KPI_PLACEHOLDER = '—';
+
+export type MetaKpiValue = number | string | null;
+export type MetaKpiMap = Record<string, MetaKpiValue>;
+
 export interface ModuleStatusSummary {
   moduleId: MetaModuleId;
   status: MetaModuleStatus;
   summaryText: string;
-  kpi: Record<string, number | string>;
+  kpi: MetaKpiMap;
   updatedAt: string | null;
   entryUrl: string | null;
 }
 
 export interface MetaKeyItem {
+  /** Opaque server-supplied identifier (e.g. SEDMS "도번|목록종류"); never parse client-side. */
   id: string;
   moduleId: MetaModuleId;
   category: MetaItemCategory;
   code: string;
   title: string;
   metric: string | number;
-  severity: MetaItemSeverity;
+  /** Null when the source system (SEDMS/SEcMS) has no severity concept — hide badge when null. */
+  severity: MetaItemSeverity | null;
+  /** Null when source lacks a date — render "날짜 없음". */
   updatedAt: string | null;
   deepLinkUrl: string | null;
 }
@@ -80,15 +89,36 @@ export interface MetaHubSummaryResponse {
 /** GET /api/meta/drawings/key?project=&limit=20&filter=latest|pending|urgent */
 export type MetaDrawingsFilter = 'latest' | 'pending' | 'urgent';
 
+export interface MetaDrawingsKeyKpi {
+  drawingRevisionCount?: number | null;
+  drawingPendingApproval?: number | null;
+  urgentComments?: number | null;
+  [key: string]: MetaKpiValue | undefined;
+}
+
 export interface MetaDrawingsKeyResponse {
   status: MetaModuleStatus;
   items: MetaKeyItem[];
+  kpi?: MetaDrawingsKeyKpi;
+  /** True when the source (SEDMS) does not support the requested filter (e.g. filter=urgent). */
+  unsupported?: boolean;
 }
 
 /** GET /api/meta/cables/key?project=&warnPct=85&limit=30 */
+export interface MetaCablesKeyKpi {
+  cablePullProgressPct?: number | null;
+  cablesTotal?: number | null;
+  cablesLaid?: number | null;
+  cableTrayWarningCount?: number | null;
+  [key: string]: MetaKpiValue | undefined;
+}
+
 export interface MetaCablesKeyResponse {
   status: MetaModuleStatus;
   items: MetaKeyItem[];
+  kpi?: MetaCablesKeyKpi;
+  /** Server-supplied account-link or entry URL (e.g. '/api/secms-link' when status==='nosource'). */
+  entryUrl?: string | null;
 }
 
 /** GET /api/meta/items/search?project=&q=&modules=sgw,sedms */
@@ -116,7 +146,7 @@ export interface MetaReportJsonResponse {
   projectId: string;
   rangeDays: number;
   generatedAt: string;
-  executiveKpi: Record<string, number | string>;
+  executiveKpi: MetaKpiMap;
   sections: MetaReportSection[];
   unavailableModules: MetaModuleId[];
   integrity: MetaReportIntegrity;
@@ -171,4 +201,21 @@ export function getMetaModuleStatusLabel(status: MetaModuleStatus): string {
 
 export function isNormalModuleStatus(status: MetaModuleStatus): boolean {
   return status === 'active' || status === 'idle' || status === 'warn';
+}
+
+/**
+ * Formats a nullable KPI value honestly: `null`/`undefined`/non-finite => "—", never 0.
+ */
+export function formatNullableKpiValue(
+  value: MetaKpiValue | undefined,
+  options?: { suffix?: string },
+): string {
+  if (value === null || value === undefined) return NULL_KPI_PLACEHOLDER;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return NULL_KPI_PLACEHOLDER;
+    const formatted = value.toLocaleString('ko-KR');
+    return options?.suffix ? `${formatted}${options.suffix}` : formatted;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : NULL_KPI_PLACEHOLDER;
 }

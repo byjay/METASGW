@@ -31,7 +31,7 @@ describe('METASGW /api/meta/* Hub Client (Stage 1/5)', () => {
 
     const opts = { runtimeEnv: 'preview' as const, fetchImpl: forbiddenFetch, nowMs: Date.parse('2026-11-27T00:00:00.000Z') };
 
-    // 1. Registry (7 modules: sgw/sedms active/warn, 5 modules planned)
+    // 1. Registry (7 modules: sgw/sedms/secms active/warn, 4 modules planned)
     const reg = await fetchMetaRegistry(opts);
     assert.equal(reg.ok, true);
     if (!reg.ok) return;
@@ -40,13 +40,14 @@ describe('METASGW /api/meta/* Hub Client (Stage 1/5)', () => {
     const byId = new Map(reg.data.modules.map((m) => [m.moduleId, m]));
     assert.equal(byId.get('sgw')?.status, 'active');
     assert.equal(byId.get('sedms')?.status, 'warn');
-    for (const plannedId of ['secms', 's360', 'secad', 'pdf', 'mail']) {
+    assert.equal(byId.get('secms')?.status, 'active');
+    for (const plannedId of ['s360', 'secad', 'pdf', 'mail']) {
       assert.equal(byId.get(plannedId)?.status, 'planned');
       assert.equal(byId.get(plannedId)?.entryUrl, null);
     }
 
-    // 2. Hub summary for both preview projects (proj01 & proj02)
-    assert.deepEqual([...PREVIEW_HUB_PROJECT_IDS], ['proj01', 'proj02']);
+    // 2. Hub summary across preview projects (proj01..proj04)
+    assert.deepEqual([...PREVIEW_HUB_PROJECT_IDS], ['proj01', 'proj02', 'proj03', 'proj04']);
     const sum1 = await fetchMetaHubSummary({ project: 'proj01', refresh: 0 }, opts);
     const sum2 = await fetchMetaHubSummary({ project: 'proj02', refresh: 1 }, opts);
     assert.equal(sum1.ok, true);
@@ -67,24 +68,37 @@ describe('METASGW /api/meta/* Hub Client (Stage 1/5)', () => {
       }
     }
 
-    // 3. Key drawings (latest / pending / urgent filters)
-    const dwgUrgent = await fetchMetaKeyDrawings({ project: 'proj01', limit: 20, filter: 'urgent' }, opts);
-    assert.equal(dwgUrgent.ok, true);
-    if (!dwgUrgent.ok) return;
-    assert.ok(dwgUrgent.data.items.length >= 1);
-    assert.ok(dwgUrgent.data.items.every((item) => item.severity === 'urgent'));
+    // 3. Key drawings (latest items have severity:null & SEDMS links; filter=urgent -> unsupported:true)
+    const dwgLatest = await fetchMetaKeyDrawings({ project: 'proj01', limit: 20, filter: 'latest' }, opts);
+    assert.equal(dwgLatest.ok, true);
+    if (!dwgLatest.ok) return;
+    assert.ok(dwgLatest.data.items.length >= 1);
+    assert.ok(dwgLatest.data.items.every((item) => item.severity === null));
     assert.ok(
-      dwgUrgent.data.items.every(
+      dwgLatest.data.items.every(
         (item) => item.deepLinkUrl === null || item.deepLinkUrl.startsWith('/api/sedms-sso?return='),
       ),
     );
 
-    // 4. Key cables (honestly planned -> empty items, zero fake counts)
-    const cables = await fetchMetaKeyCables({ project: 'proj01', warnPct: 85, limit: 30 }, opts);
-    assert.equal(cables.ok, true);
-    if (!cables.ok) return;
-    assert.equal(cables.data.status, 'planned');
-    assert.deepEqual(cables.data.items, []);
+    const dwgUrgent = await fetchMetaKeyDrawings({ project: 'proj01', limit: 20, filter: 'urgent' }, opts);
+    assert.equal(dwgUrgent.ok, true);
+    if (!dwgUrgent.ok) return;
+    assert.deepEqual(dwgUrgent.data.items, []);
+    assert.equal(dwgUrgent.data.unsupported, true);
+
+    // 4. Key cables (proj01 normal with progress, proj04 planned -> empty items)
+    const cablesNormal = await fetchMetaKeyCables({ project: 'proj01', warnPct: 85, limit: 30 }, opts);
+    assert.equal(cablesNormal.ok, true);
+    if (!cablesNormal.ok) return;
+    assert.equal(cablesNormal.data.status, 'active');
+    assert.ok(cablesNormal.data.items.length >= 1);
+    assert.ok(cablesNormal.data.items.every((item) => item.severity === null));
+
+    const cablesPlanned = await fetchMetaKeyCables({ project: 'proj04', warnPct: 85, limit: 30 }, opts);
+    assert.equal(cablesPlanned.ok, true);
+    if (!cablesPlanned.ok) return;
+    assert.equal(cablesPlanned.data.status, 'planned');
+    assert.deepEqual(cablesPlanned.data.items, []);
 
     // 5. Search items across modules
     const search = await searchMetaItems({ project: 'proj01', q: 'DWG', modules: ['sgw', 'sedms'] }, opts);

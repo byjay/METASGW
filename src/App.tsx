@@ -1117,6 +1117,13 @@ export function App() {
       returnHome: () => {
         sceneRef.current?.returnToHomeHarbor();
       },
+      setZoomDistance: (distance: number) => {
+        sceneRef.current?.setZoomDistance(distance);
+      },
+      focusPlayerCloseUp: (distance?: number) => {
+        sceneRef.current?.focusPlayerCloseUp(distance);
+      },
+      inspectAvatarSceneGraph: () => sceneRef.current?.inspectAvatarSceneGraph() ?? null,
       openShipPopup: (shipId: string) => {
         if (shipsByIdRef.current.has(shipId)) {
           setProjectSession((prev) =>

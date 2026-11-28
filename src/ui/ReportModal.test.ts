@@ -83,7 +83,7 @@ test('Stage 4: buildReportDownloadFilename follows report-<projectId>-<YYYY-MM-D
 test('Stage 4: resolveUnavailableModuleNames maps registry names and preserves unknown module IDs', () => {
   const registry = getPreviewHubRegistry();
   const names = resolveUnavailableModuleNames(['sedms', 'secms', 'futuremod', 'sedms'], registry);
-  assert.deepEqual(names, ['SEDMS 도면관리', 'SECMS 케이블', 'futuremod']);
+  assert.deepEqual(names, ['SEDMS 도면관리', 'SEcMS 케이블', 'futuremod']);
   assert.deepEqual(resolveUnavailableModuleNames([], registry), []);
 });
 

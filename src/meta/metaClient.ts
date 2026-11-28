@@ -35,6 +35,7 @@ import type {
   MetaItemSeverity,
   MetaItemsSearchResponse,
   MetaKeyItem,
+  MetaKpiMap,
   MetaModuleId,
   MetaModuleStatus,
   MetaRegistryModule,
@@ -118,18 +119,23 @@ function normalizeCategory(value: unknown): MetaItemCategory {
   return 'notice';
 }
 
-function normalizeSeverity(value: unknown): MetaItemSeverity {
+function normalizeSeverity(value: unknown): MetaItemSeverity | null {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
   if (typeof value === 'string' && VALID_ITEM_SEVERITIES.has(value as MetaItemSeverity)) {
     return value as MetaItemSeverity;
   }
-  return 'normal';
+  return null;
 }
 
-function normalizeKpiMap(raw: unknown): Record<string, number | string> {
+function normalizeKpiMap(raw: unknown): MetaKpiMap {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
-  const out: Record<string, number | string> = {};
+  const out: MetaKpiMap = {};
   for (const [key, val] of Object.entries(raw as Record<string, unknown>)) {
-    if (typeof val === 'number' && Number.isFinite(val)) {
+    if (val === null) {
+      out[key] = null;
+    } else if (typeof val === 'number' && Number.isFinite(val)) {
       out[key] = val;
     } else if (typeof val === 'string') {
       out[key] = val;
@@ -520,10 +526,17 @@ export async function fetchMetaKeyDrawings(
     `/api/meta/drawings/key?${qs.toString()}`,
     (raw) => {
       if (!Array.isArray(raw.items)) return null;
-      return {
+      const out: MetaDrawingsKeyResponse = {
         status: normalizeStatus(raw.status),
         items: normalizeKeyItems(raw.items),
       };
+      if (raw.kpi && typeof raw.kpi === 'object' && !Array.isArray(raw.kpi)) {
+        out.kpi = normalizeKpiMap(raw.kpi);
+      }
+      if (raw.unsupported === true) {
+        out.unsupported = true;
+      }
+      return out;
     },
     options,
   );
@@ -565,10 +578,17 @@ export async function fetchMetaKeyCables(
     `/api/meta/cables/key?${qs.toString()}`,
     (raw) => {
       if (!Array.isArray(raw.items)) return null;
-      return {
+      const out: MetaCablesKeyResponse = {
         status: normalizeStatus(raw.status),
         items: normalizeKeyItems(raw.items),
       };
+      if (raw.kpi && typeof raw.kpi === 'object' && !Array.isArray(raw.kpi)) {
+        out.kpi = normalizeKpiMap(raw.kpi);
+      }
+      if ('entryUrl' in raw) {
+        out.entryUrl = sanitizeServerUrl(raw.entryUrl);
+      }
+      return out;
     },
     options,
   );

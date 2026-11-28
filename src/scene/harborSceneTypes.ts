@@ -92,6 +92,15 @@ export interface HarborSceneInitOptions {
   shipDisplayPrefs?: ShipDisplayPrefsMap;
 }
 
+export interface AvatarSceneGraphAudit {
+  avatarCount: number;
+  playerMeshCount: number;
+  minColleagueMeshCount: number;
+  avatarSpriteCount: number;
+  cameraDistanceToPlayer: number;
+  allAvatarsVisible: boolean;
+}
+
 export interface HarborSceneHandle {
   setThemeMode(dark: boolean): void;
   setReducedMotion(enabled: boolean): void;
@@ -106,6 +115,9 @@ export interface HarborSceneHandle {
   returnToHomeHarbor(): void;
   panCameraToWorld(x: number, z: number): void;
   zoomBy(factor: number): void;
+  setZoomDistance(distance: number): void;
+  focusPlayerCloseUp(distance?: number): void;
+  inspectAvatarSceneGraph(): AvatarSceneGraphAudit;
   focusShip(projectId: string): void;
   boardShip(projectId: string, durationMs?: number): void;
   disembarkToHarbor(durationMs?: number): void;

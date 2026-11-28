@@ -38,17 +38,16 @@ function assertEveryButtonHasAriaLabel(html: string, context: string): void {
   }
 }
 
-test('Stage 3: combineKeyItemSources sorts urgent -> warn -> normal and emits 0 fake rows for planned modules', () => {
+test('Stage 3: combineKeyItemSources combines SEDMS drawings + SEcMS cables and emits 0 fake rows for planned modules', () => {
   const drawings = getPreviewKeyDrawings('proj01', { nowMs: FIXED_NOW_MS });
   const cables = getPreviewKeyCables('proj01', { nowMs: FIXED_NOW_MS });
 
   const combined = combineKeyItemSources(drawings, cables);
   assert.equal(combined.moduleStatuses.sedms, 'warn');
-  assert.equal(combined.moduleStatuses.secms, 'planned');
-  assert.equal(combined.items.length, 4);
-  assert.equal(combined.items[0].severity, 'urgent');
+  assert.equal(combined.moduleStatuses.secms, 'active');
+  assert.equal(combined.items.length, 7); // 4 drawings + 3 cables
   assert.equal(combined.items[0].code, 'DWG-01');
-  assert.equal(combined.items[combined.items.length - 1].severity, 'normal');
+  assert.equal(combined.items[0].severity, null);
 
   // Even if a faulty non-normal response carried stray items, honest combiner drops them
   const fakePlannedCables: MetaCablesKeyResponse = {
@@ -60,8 +59,8 @@ test('Stage 3: combineKeyItemSources sorts urgent -> warn -> normal and emits 0 
         category: 'cable',
         code: 'CBL-01',
         title: 'should not render',
-        metric: '92%',
-        severity: 'urgent',
+        metric: '미포설',
+        severity: null,
         updatedAt: '2026-05-01T10:00:00.000Z',
         deepLinkUrl: null,
       },
@@ -117,13 +116,13 @@ test('Stage 3: filterKeyItems & countKeyItemsByFilter accurately handle 전체/�
   assert.equal(KEY_ITEMS_SEARCH_DEBOUNCE_MS, 300);
 });
 
-test('Stage 3: formatRelativeUpdatedAt renders accurate Korean relative timestamps', () => {
+test('Stage 3: formatRelativeUpdatedAt renders accurate Korean relative timestamps and 날짜 없음 for null', () => {
   assert.equal(formatRelativeUpdatedAt('2026-05-01T11:59:35.000Z', FIXED_NOW_MS), '방금 전');
   assert.equal(formatRelativeUpdatedAt('2026-05-01T11:42:00.000Z', FIXED_NOW_MS), '18분 전');
   assert.equal(formatRelativeUpdatedAt('2026-05-01T09:00:00.000Z', FIXED_NOW_MS), '3시간 전');
   assert.equal(formatRelativeUpdatedAt('2026-04-29T12:00:00.000Z', FIXED_NOW_MS), '2일 전');
-  assert.equal(formatRelativeUpdatedAt(null, FIXED_NOW_MS), '시각 없음');
-  assert.equal(formatRelativeUpdatedAt('invalid-date', FIXED_NOW_MS), '시각 없음');
+  assert.equal(formatRelativeUpdatedAt(null, FIXED_NOW_MS), '날짜 없음');
+  assert.equal(formatRelativeUpdatedAt('invalid-date', FIXED_NOW_MS), '날짜 없음');
 });
 
 test('Stage 3: getNonNormalModuleNotices surfaces honest status cards and unsearched systems', () => {
@@ -163,8 +162,8 @@ test('Stage 3: getNonNormalModuleNotices surfaces honest status cards and unsear
     { ...searchRes.modules, futuremod: 'planned' },
     { isSearchMode: true, registry },
   );
-  assert.equal(unsearched.length, 6);
-  assert.ok(unsearched.some((n) => n.moduleId === 'secms' && n.statusLabel === '준비 중'));
+  assert.equal(unsearched.length, 5); // s360, secad, pdf, mail, futuremod
+  assert.ok(unsearched.some((n) => n.moduleId === 's360' && n.statusLabel === '준비 중'));
   assert.ok(unsearched.some((n) => n.moduleId === 'futuremod' && n.moduleName === 'futuremod'));
 });
 
