@@ -14,9 +14,14 @@ import {
   type Vec2,
 } from '../core/navMeshEngine';
 import {
+  AVATAR_PROP_MIN_CLEARANCE,
+  CAMERA_MIN_DISTANCE,
+  CAMERA_PERSON_FOCUS_DEFAULT_DIST,
   clampCameraCollision,
-  HARBOR_STATIC_COLLIDERS,
+  computePersonFocusCameraPose,
+  HARBOR_ALL_OBSTACLES,
   resolveAvatarPhysicsMovement,
+  resolveAvatarPropClearance,
   resolveAvatarSpawnOverlaps,
   sampleHarborElevation,
 } from '../core/physicsCollision';
@@ -64,6 +69,7 @@ import {
 } from './meshBatching';
 import { createMaritimeOcean, type OceanWaterSystem } from './oceanShader';
 import { buildShipyardWorld, type ShipyardWorldHandles } from './shipyardWorld';
+import { SuperstructureOcclusionController } from './superstructureOcclusion';
 import { createHarborTextures, type HarborTexturePack } from './textures';
 
 export type {
@@ -272,12 +278,15 @@ export class HarborSceneController implements HarborSceneHandle {
   private textures: HarborTexturePack;
   private envRT: THREE.WebGLRenderTarget | null = null;
   private sunKeyLight!: THREE.DirectionalLight;
+  private closeUpFillLight!: THREE.PointLight;
+  private closeRangeShadowActive = false;
   private hemiFillLight!: THREE.HemisphereLight;
   private ambientLight!: THREE.AmbientLight;
 
   private ocean: OceanWaterSystem;
   private world: ShipyardWorldHandles;
   private chunkManager: InfiniteWorldChunkManager;
+  private occlusionController = new SuperstructureOcclusionController();
 
   private playerRig: BuiltHumanoidRig;
   private playerPos = { x: 0, y: 1.61, z: -7.5, heading: 0, speed: 0 };
@@ -287,7 +296,8 @@ export class HarborSceneController implements HarborSceneHandle {
 
   private allPeople: HarborPerson[] = [];
   private hubPlacements: HubBuildingPlacement[] = [];
-  private activeColliders: ObstacleBox2D[] = [...HARBOR_STATIC_COLLIDERS];
+  private activeColliders: ObstacleBox2D[] = [...HARBOR_ALL_OBSTACLES];
+  private focusedPersonSub: string | null = null;
   private lastOverflowCount = 0;
   private lastOnLeaveCount = 0;
   private lastSimplifiedMaterial = false;
@@ -368,15 +378,15 @@ export class HarborSceneController implements HarborSceneHandle {
     this.skyDome = createMaritimeSkyDome();
     this.scene.add(this.skyDome.mesh);
 
-    this.camera = new THREE.PerspectiveCamera(50, w / h, 0.5, 3600);
+    this.camera = new THREE.PerspectiveCamera(50, w / h, 0.25, 3600);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = !this.isSoftwareGl && !this.reducedMotion;
     this.controls.dampingFactor = 0.08;
     this.controls.enablePan = true;
     this.controls.screenSpacePanning = false;
-    this.controls.maxPolarAngle = Math.PI * 0.46;
+    this.controls.maxPolarAngle = Math.PI * 0.485;
     this.controls.minPolarAngle = 0.14;
-    this.controls.minDistance = 8;
+    this.controls.minDistance = CAMERA_MIN_DISTANCE;
     // Unlocked infinite-world zoom range (Requirement #11)
     this.controls.maxDistance = 800;
     this.controls.addEventListener('start', () => {
@@ -415,6 +425,14 @@ export class HarborSceneController implements HarborSceneHandle {
       modelVariantIndex: 0,
       simplifiedMaterial: this.lastSimplifiedMaterial,
     });
+    const safePlayerSpawn = resolveAvatarPropClearance(
+      { x: this.playerPos.x, z: this.playerPos.z },
+      this.activeColliders,
+      [],
+      AVATAR_PROP_MIN_CLEARANCE,
+    );
+    this.playerPos.x = safePlayerSpawn.x;
+    this.playerPos.z = safePlayerSpawn.z;
     this.playerPos.y = sampleHarborElevation(this.playerPos.x, this.playerPos.z);
     this.playerRig.group.position.set(this.playerPos.x, this.playerPos.y, this.playerPos.z);
     this.scene.add(this.playerRig.group);
@@ -552,12 +570,110 @@ export class HarborSceneController implements HarborSceneHandle {
     this.sunKeyLight.shadow.bias = -0.0005;
     this.sunKeyLight.shadow.normalBias = 0.02;
     this.scene.add(this.sunKeyLight);
+    this.scene.add(this.sunKeyLight.target);
+
+    // Subtle non-shadow-casting camera-side fill light activated ONLY at close range (<= 18m)
+    // so facial features, hands, and workwear shading read clearly during close-up inspection.
+    this.closeUpFillLight = new THREE.PointLight(0xfff7ed, 0, 14, 1.6);
+    this.closeUpFillLight.castShadow = false;
+    this.scene.add(this.closeUpFillLight);
 
     this.hemiFillLight = new THREE.HemisphereLight(0xebf6ff, 0x5c6d7e, 1.3);
     this.scene.add(this.hemiFillLight);
 
     this.ambientLight = new THREE.AmbientLight(0xffffff, 0.35);
     this.scene.add(this.ambientLight);
+  }
+
+  /**
+   * Tightens directional shadow frustum & boosts shadow resolution ONLY at close range
+   * (<= 18m or active person focus; exits at >= 22m) so worker close-ups get crisp self-shadows
+   * without taxing far-range harbor overview performance.
+   */
+  private updateCloseRangeShadowRig(force = false): void {
+    if (!this.sunKeyLight || !this.closeUpFillLight) return;
+
+    const shadowsEnabled = this.qualityTier !== 'low';
+    const camDist = this.camera.position.distanceTo(this.controls.target);
+    let nextActive = this.closeRangeShadowActive;
+    if (!shadowsEnabled) {
+      nextActive = false;
+    } else if (this.focusedPersonSub !== null || camDist <= 18) {
+      nextActive = true;
+    } else if (camDist >= 22) {
+      nextActive = false;
+    }
+
+    const changed = nextActive !== this.closeRangeShadowActive;
+    this.closeRangeShadowActive = nextActive;
+
+    if (nextActive) {
+      this.sunKeyLight.target.position.copy(this.controls.target);
+      this.sunKeyLight.target.updateMatrixWorld();
+      this.sunKeyLight.position.copy(this.controls.target).addScaledVector(_sunVec, 55);
+
+      // Position gentle fill light on camera side of subject for crisp face/workwear readability
+      this.closeUpFillLight.position
+        .copy(this.controls.target)
+        .lerp(this.camera.position, 0.48);
+      this.closeUpFillLight.position.y += 1.35;
+      this.closeUpFillLight.intensity = this.darkTheme ? 0.65 : 0.52;
+
+      if (changed || force) {
+        const d = 14;
+        this.sunKeyLight.shadow.camera.left = -d;
+        this.sunKeyLight.shadow.camera.right = d;
+        this.sunKeyLight.shadow.camera.top = d;
+        this.sunKeyLight.shadow.camera.bottom = -d;
+        this.sunKeyLight.shadow.camera.near = 4;
+        this.sunKeyLight.shadow.camera.far = 130;
+        this.sunKeyLight.shadow.bias = -0.0002;
+        this.sunKeyLight.shadow.normalBias = 0.008;
+        this.sunKeyLight.shadow.camera.updateProjectionMatrix();
+
+        const boostSize =
+          this.qualityTier === 'high' && !this.isSoftwareGl ? 4096 : 2048;
+        if (
+          this.sunKeyLight.shadow.mapSize.x !== boostSize ||
+          this.sunKeyLight.shadow.mapSize.y !== boostSize
+        ) {
+          this.sunKeyLight.shadow.mapSize.set(boostSize, boostSize);
+          this.sunKeyLight.shadow.map?.dispose();
+          this.sunKeyLight.shadow.map = null;
+        }
+      }
+      return;
+    }
+
+    this.closeUpFillLight.intensity = 0;
+    if (changed || force) {
+      this.sunKeyLight.target.position.set(0, 0, 0);
+      this.sunKeyLight.target.updateMatrixWorld();
+      this.sunKeyLight.position.copy(_sunVec).multiplyScalar(145);
+
+      const d = 165;
+      this.sunKeyLight.shadow.camera.left = -d;
+      this.sunKeyLight.shadow.camera.right = d;
+      this.sunKeyLight.shadow.camera.top = d;
+      this.sunKeyLight.shadow.camera.bottom = -d;
+      this.sunKeyLight.shadow.camera.near = 10;
+      this.sunKeyLight.shadow.camera.far = 380;
+      this.sunKeyLight.shadow.bias = -0.0005;
+      this.sunKeyLight.shadow.normalBias = 0.02;
+      this.sunKeyLight.shadow.camera.updateProjectionMatrix();
+
+      if (shadowsEnabled) {
+        const baseSize = this.qualityTier === 'high' ? 2048 : 1024;
+        if (
+          this.sunKeyLight.shadow.mapSize.x !== baseSize ||
+          this.sunKeyLight.shadow.mapSize.y !== baseSize
+        ) {
+          this.sunKeyLight.shadow.mapSize.set(baseSize, baseSize);
+          this.sunKeyLight.shadow.map?.dispose();
+          this.sunKeyLight.shadow.map = null;
+        }
+      }
+    }
   }
 
   private applyAtmosphere(sunset: boolean): void {
@@ -610,7 +726,7 @@ export class HarborSceneController implements HarborSceneHandle {
     const theta = THREE.MathUtils.degToRad(azimuth);
     _sunVec.setFromSphericalCoords(1, phi, theta);
     u.uSunDir.value.copy(_sunVec);
-    this.sunKeyLight.position.copy(_sunVec).multiplyScalar(145);
+    this.updateCloseRangeShadowRig(true);
 
     // Distant fog only so Home Harbor foreground/midground stays razor-sharp with rich contrast.
     // Closer fog is applied ONLY on 'low' quality tier.
@@ -759,6 +875,7 @@ export class HarborSceneController implements HarborSceneHandle {
       throwOnViolation: false,
       warnInDev: import.meta.env.DEV,
     });
+    this.occlusionController.restoreAll();
     this.world.syncProjectShips(ships, this.qualityTier === 'low', this.shipDisplayPrefs);
     this.refreshBatchStats();
     this.emitLabels();
@@ -768,10 +885,27 @@ export class HarborSceneController implements HarborSceneHandle {
   public setHubBuildings(chips: HubModuleChipItem[]): void {
     this.hubPlacements = assignHubBuildingSlots(chips);
     this.activeColliders = [
-      ...HARBOR_STATIC_COLLIDERS,
+      ...HARBOR_ALL_OBSTACLES,
       ...buildHubBuildingColliders(this.hubPlacements),
     ];
     this.world.syncHubBuildings(this.hubPlacements, this.qualityTier === 'low');
+
+    // Keep player & colleagues >= 0.8m clear of newly placed hub buildings / scaffolding
+    const safePlayer = resolveAvatarPropClearance(
+      { x: this.playerPos.x, z: this.playerPos.z },
+      this.activeColliders,
+      [],
+      AVATAR_PROP_MIN_CLEARANCE,
+    );
+    this.playerPos.x = safePlayer.x;
+    this.playerPos.z = safePlayer.z;
+    this.playerPos.y = sampleHarborElevation(this.playerPos.x, this.playerPos.z);
+    this.playerRig.group.position.set(this.playerPos.x, this.playerPos.y, this.playerPos.z);
+    this.playerHalo.position.set(this.playerPos.x, this.playerPos.y + 0.05, this.playerPos.z);
+
+    if (this.allPeople.length > 0) {
+      this.rebuildPeopleScene();
+    }
     this.refreshBatchStats();
     this.emitLabels();
     this.renderFrame();
@@ -938,17 +1072,37 @@ export class HarborSceneController implements HarborSceneHandle {
   }
 
   public setCameraPreset(preset: CameraPreset): void {
+    this.focusedPersonSub = null;
     this.cameraPreset = preset;
     this.snapCameraToPreset(preset);
   }
 
-  public returnToHomeHarbor(): void {
+  public returnToHomeHarbor(durationMs = 480): void {
+    this.focusedPersonSub = null;
     this.cameraPreset = 'harbor';
-    this.snapCameraToPreset('harbor');
+    const toTarget = new THREE.Vector3(0, 3.0, 22);
+    const toPos = new THREE.Vector3(0, 58, 162);
+
+    if (durationMs <= 0 || this.reducedMotion) {
+      this.snapCameraToPreset('harbor');
+      return;
+    }
+
+    this.cameraTween = {
+      startMs: performance.now(),
+      durationMs,
+      fromPos: this.camera.position.clone(),
+      toPos,
+      fromTarget: this.controls.target.clone(),
+      toTarget,
+    };
+    this.updateCloseRangeShadowRig();
+    this.emitLabels();
   }
 
   public panCameraToWorld(x: number, z: number): void {
     this.cameraTween = null;
+    this.focusedPersonSub = null;
     const dx = x - this.controls.target.x;
     const dz = z - this.controls.target.z;
     this.controls.target.set(x, 3.0, z);
@@ -959,6 +1113,12 @@ export class HarborSceneController implements HarborSceneHandle {
     this.controls.update();
     this.chunkManager.update(this.controls.target.x, this.controls.target.z, this.elapsedTotal);
     this.ocean.update(this.elapsedTotal, this.controls.target.x, this.controls.target.z);
+    this.occlusionController.update(
+      this.camera.position,
+      this.controls.target,
+      this.world.occludableShipSuperstructures,
+    );
+    this.updateCloseRangeShadowRig();
     this.callbacks.onCameraTargetUpdated?.({
       x: this.controls.target.x,
       z: this.controls.target.z,
@@ -970,13 +1130,19 @@ export class HarborSceneController implements HarborSceneHandle {
   public zoomBy(factor: number): void {
     _scratchOffset.subVectors(this.camera.position, this.controls.target);
     _scratchOffset.multiplyScalar(factor);
-    const len = THREE.MathUtils.clamp(_scratchOffset.length(), 8, 800);
+    const len = THREE.MathUtils.clamp(_scratchOffset.length(), CAMERA_MIN_DISTANCE, 800);
     _scratchOffset.setLength(len);
     this.camera.position.copy(this.controls.target).add(_scratchOffset);
     const clamped = clampCameraCollision(this.camera.position, this.activeColliders);
     this.camera.position.set(clamped.x, clamped.y, clamped.z);
     this.controls.update();
     this.syncAvatarLodsNow();
+    this.occlusionController.update(
+      this.camera.position,
+      this.controls.target,
+      this.world.occludableShipSuperstructures,
+    );
+    this.updateCloseRangeShadowRig();
     this.emitLabels();
     this.renderFrame();
   }
@@ -987,27 +1153,44 @@ export class HarborSceneController implements HarborSceneHandle {
     if (_scratchOffset.lengthSq() < 1e-4) {
       _scratchOffset.set(0, 58, 140);
     }
-    const len = THREE.MathUtils.clamp(distance, 8, 800);
+    const len = THREE.MathUtils.clamp(distance, CAMERA_MIN_DISTANCE, 800);
     _scratchOffset.setLength(len);
     this.camera.position.copy(this.controls.target).add(_scratchOffset);
     const clamped = clampCameraCollision(this.camera.position, this.activeColliders);
     this.camera.position.set(clamped.x, clamped.y, clamped.z);
     this.controls.update();
     this.syncAvatarLodsNow();
+    this.occlusionController.update(
+      this.camera.position,
+      this.controls.target,
+      this.world.occludableShipSuperstructures,
+    );
+    this.updateCloseRangeShadowRig();
     this.emitLabels();
     this.renderFrame();
   }
 
-  public focusPlayerCloseUp(distance = 8.0): void {
+  public focusPlayerCloseUp(distance = CAMERA_PERSON_FOCUS_DEFAULT_DIST): void {
     this.cameraTween = null;
-    const d = THREE.MathUtils.clamp(distance, 8, 60);
-    const px = this.playerPos.x;
-    const py = this.playerPos.y;
-    const pz = this.playerPos.z;
-    this.controls.target.set(px, py + 1.45, pz);
-    this.camera.position.set(px + d * 0.34, py + 1.45 + d * 0.24, pz + d * 0.91);
+    this.focusedPersonSub = null;
+    const d = THREE.MathUtils.clamp(distance, CAMERA_MIN_DISTANCE, 60);
+    const pose = computePersonFocusCameraPose(
+      { x: this.playerPos.x, y: this.playerPos.y, z: this.playerPos.z },
+      this.playerPos.heading,
+      false,
+      this.activeColliders,
+      d,
+    );
+    this.controls.target.set(pose.targetPos.x, pose.targetPos.y, pose.targetPos.z);
+    this.camera.position.set(pose.cameraPos.x, pose.cameraPos.y, pose.cameraPos.z);
     this.controls.update();
     this.syncAvatarLodsNow();
+    this.occlusionController.update(
+      this.camera.position,
+      this.controls.target,
+      this.world.occludableShipSuperstructures,
+    );
+    this.updateCloseRangeShadowRig();
     this.emitLabels();
     this.renderFrame();
   }
@@ -1061,6 +1244,10 @@ export class HarborSceneController implements HarborSceneHandle {
       overflowCount: this.lastOverflowCount,
       onLeaveExcludedCount: this.lastOnLeaveCount,
       simplifiedMaterialActive: this.lastSimplifiedMaterial,
+      focusedPersonSub: this.focusedPersonSub,
+      occludedSuperstructureCount: this.occlusionController.getOccludedCount(),
+      closeRangeShadowActive: this.closeRangeShadowActive,
+      cameraMinDistance: this.controls.minDistance,
     };
   }
 
@@ -1154,33 +1341,67 @@ export class HarborSceneController implements HarborSceneHandle {
     }
   }
 
-  public focusPerson(sub: string): void {
+  public isPersonFocused(): boolean {
+    return this.focusedPersonSub !== null;
+  }
+
+  public focusPerson(sub: string, durationMs = 580): void {
     const found = this.personRuntimes.find((r) => r.person.sub === sub);
     if (!found) return;
-    const x = found.curX;
-    const z = found.curZ;
-    const y = sampleHarborElevation(x, z);
-    this.controls.target.set(x, y + 1.4, z);
-    this.camera.position.set(x + 8, y + 9, z + 12);
-    this.controls.update();
+    this.focusedPersonSub = sub;
 
-    const path = findQuayPath(
-      { x: this.playerPos.x, z: this.playerPos.z },
-      { x: x + 1.8, z: z + 1.8 },
+    const personY = sampleHarborElevation(found.curX, found.curZ);
+    const pose = computePersonFocusCameraPose(
+      { x: found.curX, y: personY, z: found.curZ },
+      found.heading,
+      found.isSeated,
+      this.activeColliders,
+      CAMERA_PERSON_FOCUS_DEFAULT_DIST,
     );
-    if (path.length > 0) {
-      this.walkPath = path;
-      const dest = path[path.length - 1];
-      this.waypointMarker.position.set(dest.x, sampleHarborElevation(dest.x, dest.z) + 0.06, dest.z);
-      this.waypointMarker.visible = true;
+
+    // Turn standing colleague gently toward the camera so face & workwear detail read cleanly
+    if (!found.isSeated) {
+      found.heading = Math.atan2(pose.cameraPos.x - found.curX, pose.cameraPos.z - found.curZ);
+      found.rig.group.rotation.y = found.heading;
     }
+
+    const toTarget = new THREE.Vector3(pose.targetPos.x, pose.targetPos.y, pose.targetPos.z);
+    const toPos = new THREE.Vector3(pose.cameraPos.x, pose.cameraPos.y, pose.cameraPos.z);
+
     this.hoveredLabelId = `person:${sub}`;
+
+    if (durationMs <= 0 || this.reducedMotion) {
+      this.cameraTween = null;
+      this.controls.target.copy(toTarget);
+      this.camera.position.copy(toPos);
+      this.controls.update();
+      this.syncAvatarLodsNow();
+      this.occlusionController.update(
+        this.camera.position,
+        this.controls.target,
+        this.world.occludableShipSuperstructures,
+      );
+      this.updateCloseRangeShadowRig();
+      this.emitLabels();
+      this.renderFrame();
+      return;
+    }
+
+    this.cameraTween = {
+      startMs: performance.now(),
+      durationMs,
+      fromPos: this.camera.position.clone(),
+      toPos,
+      fromTarget: this.controls.target.clone(),
+      toTarget,
+    };
+    this.updateCloseRangeShadowRig();
     this.emitLabels();
-    this.renderFrame();
   }
 
   private snapCameraToPreset(preset: CameraPreset): void {
     this.cameraTween = null;
+    this.focusedPersonSub = null;
     if (preset === 'overview') {
       // Wide panoramic vista framing Home Harbor, 씨스타호, FD-01 & outer bay
       this.controls.target.set(0, 2.5, 28);
@@ -1198,6 +1419,12 @@ export class HarborSceneController implements HarborSceneHandle {
     this.controls.update();
     this.chunkManager.update(this.controls.target.x, this.controls.target.z, this.elapsedTotal);
     this.ocean.update(this.elapsedTotal, this.controls.target.x, this.controls.target.z);
+    this.occlusionController.update(
+      this.camera.position,
+      this.controls.target,
+      this.world.occludableShipSuperstructures,
+    );
+    this.updateCloseRangeShadowRig();
     this.callbacks.onCameraTargetUpdated?.({
       x: this.controls.target.x,
       z: this.controls.target.z,
@@ -1763,9 +1990,24 @@ export class HarborSceneController implements HarborSceneHandle {
 
     this.controls.update();
 
-    // Prevent camera from clipping below water or inside quay structures (Req #17)
+    // Keep orbit target & camera strictly above quay deck and water surface
+    const targetGroundY = sampleHarborElevation(this.controls.target.x, this.controls.target.z);
+    const minTargetY = targetGroundY > 0.1 ? targetGroundY + 0.2 : 0.6;
+    if (this.controls.target.y < minTargetY) {
+      this.controls.target.y = minTargetY;
+    }
+
+    // Prevent camera from clipping below water or inside quay structures (Req #17 & Stage 10)
     const clampedCam = clampCameraCollision(this.camera.position, this.activeColliders);
     this.camera.position.set(clampedCam.x, clampedCam.y, clampedCam.z);
+
+    // Dynamically fade occluding ship superstructures to opacity 0.25 & boost close-range shadows
+    this.occlusionController.update(
+      this.camera.position,
+      this.controls.target,
+      this.world.occludableShipSuperstructures,
+    );
+    this.updateCloseRangeShadowRig();
 
     this.updatePlayerMovement(dt);
 
@@ -1780,10 +2022,13 @@ export class HarborSceneController implements HarborSceneHandle {
         rt.curX - this.playerPos.x,
         rt.curZ - this.playerPos.z,
       );
+      const isFocusedTarget = rt.person.sub === this.focusedPersonSub;
 
       let action: AvatarActionState = 'idle';
       if (rt.isSeated) {
         action = 'sit';
+      } else if (isFocusedTarget) {
+        action = 'idle';
       } else if (rt.person.presenceStatus === 'online' && distToPlayer < 7.5) {
         action = 'wave';
       } else if (!suppressMotion && rt.person.presenceStatus === 'online' && rt.patrolRange > 0.5) {
@@ -1891,6 +2136,7 @@ export class HarborSceneController implements HarborSceneHandle {
     this.renderer.domElement.removeEventListener('webglcontextlost', this.handleContextLost);
     this.renderer.domElement.removeEventListener('webglcontextrestored', this.handleContextRestored);
 
+    this.occlusionController.restoreAll();
     this.disposePeopleBatches();
     for (const rt of this.personRuntimes) {
       rt.rig.dispose();

@@ -48,6 +48,7 @@ export interface ShipyardWorldHandles {
   walkableMeshes: THREE.Object3D[];
   dockedShips: DockedShipRuntime[];
   decorativeVessels: DecorativeVesselRuntime[];
+  occludableShipSuperstructures: THREE.Object3D[];
   hubBuildings: HubBuildingRuntime[];
   bridgeGlowMat: THREE.MeshStandardMaterial;
   instancedPropCounts: {
@@ -276,6 +277,8 @@ export function buildShipyardWorld(
   const walkableMeshes: THREE.Object3D[] = [];
   const dockedShips: DockedShipRuntime[] = [];
   const decorativeVessels: DecorativeVesselRuntime[] = [];
+  const decorativeSuperstructures: THREE.Object3D[] = [];
+  const occludableShipSuperstructures: THREE.Object3D[] = [];
   const hubBuildings: HubBuildingRuntime[] = [];
   const clouds: Array<{ sprite: THREE.Sprite; speed: number; baseX: number }> = [];
   const staticDisposables: Array<{ dispose: () => void }> = [];
@@ -885,6 +888,12 @@ export function buildShipyardWorld(
     anchor.userData.decorativeShipId = spec.id;
 
     const vesselMesh = buildProjectVessel3D(spec.vesselType, textures, bridgeGlowMat, false);
+    const decoSuper = vesselMesh.getObjectByName('ship_superstructure');
+    if (decoSuper) {
+      decoSuper.name = `ship_superstructure:deco:${spec.id}`;
+      decorativeSuperstructures.push(decoSuper);
+      occludableShipSuperstructures.push(decoSuper);
+    }
     anchor.add(vesselMesh);
 
     // 3D scan point-cloud shell (toggled on selection)
@@ -948,6 +957,8 @@ export function buildShipyardWorld(
     }
     dockedShips.length = 0;
     clickableShipProxies.length = 0;
+    occludableShipSuperstructures.length = 0;
+    occludableShipSuperstructures.push(...decorativeSuperstructures);
   };
 
   const applyShipDisplayPrefs = (prefs: ShipDisplayPrefsMap) => {
@@ -996,6 +1007,11 @@ export function buildShipyardWorld(
 
       const silhouette = getVesselSilhouetteByIndex(ship.hullStyleIndex);
       const vesselMesh = buildProjectVessel3D(silhouette, textures, bridgeGlowMat, lowSpec);
+      const shipSuper = vesselMesh.getObjectByName('ship_superstructure');
+      if (shipSuper) {
+        shipSuper.name = `ship_superstructure:ship:${ship.id}`;
+        occludableShipSuperstructures.push(shipSuper);
+      }
       anchor.add(vesselMesh);
 
       const flagColor = new THREE.Color(ship.appearance.flagHex);
@@ -1245,6 +1261,7 @@ export function buildShipyardWorld(
     walkableMeshes,
     dockedShips,
     decorativeVessels,
+    occludableShipSuperstructures,
     hubBuildings,
     bridgeGlowMat,
     instancedPropCounts: {
@@ -1310,6 +1327,8 @@ export function buildShipyardWorld(
         (deco.hitProxy.material as THREE.Material).dispose();
       }
       decorativeVessels.length = 0;
+      decorativeSuperstructures.length = 0;
+      occludableShipSuperstructures.length = 0;
       clickableDecorativeShipProxies.length = 0;
       for (const d of staticDisposables) {
         d.dispose();

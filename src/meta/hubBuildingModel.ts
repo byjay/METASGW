@@ -458,7 +458,8 @@ export function buildHubBuildingColliders(
     const rotated = Math.abs(Math.sin(p.lot.facingYaw)) > 0.7;
     const halfX = (rotated ? p.lot.depth : p.lot.width) * 0.5;
     const halfZ = (rotated ? p.lot.width : p.lot.depth) * 0.5;
-    const pad = p.appearance.hasScaffolding ? 0.65 : 0.25;
+    // Planned scaffolding extends +0.48m around poles and +0.99m at front barrier/cones
+    const pad = p.appearance.hasScaffolding ? 1.05 : 0.25;
     return {
       id: `hub_building_${p.moduleId}`,
       minX: p.lot.centerX - halfX - pad,

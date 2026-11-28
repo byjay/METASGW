@@ -110,6 +110,10 @@ export interface AvatarSceneGraphAudit {
   overflowCount: number;
   onLeaveExcludedCount: number;
   simplifiedMaterialActive: boolean;
+  focusedPersonSub?: string | null;
+  occludedSuperstructureCount?: number;
+  closeRangeShadowActive?: boolean;
+  cameraMinDistance?: number;
 }
 
 export interface HubBuildingSceneAuditEntry {
@@ -142,7 +146,7 @@ export interface HarborSceneHandle {
   setPeople(people: HarborPerson[]): void;
   setHubBuildings(chips: HubModuleChipItem[]): void;
   setCameraPreset(preset: CameraPreset): void;
-  returnToHomeHarbor(): void;
+  returnToHomeHarbor(durationMs?: number): void;
   panCameraToWorld(x: number, z: number): void;
   zoomBy(factor: number): void;
   setZoomDistance(distance: number): void;
@@ -153,7 +157,8 @@ export interface HarborSceneHandle {
   boardShip(projectId: string, durationMs?: number): void;
   disembarkToHarbor(durationMs?: number): void;
   walkToPoint(x: number, z: number): void;
-  focusPerson(sub: string): void;
+  focusPerson(sub: string, durationMs?: number): void;
+  isPersonFocused(): boolean;
   dispose(): void;
 }
 

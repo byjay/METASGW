@@ -82,6 +82,7 @@ export interface RadialActionMenuProps {
   onSnapShipParallel?: (shipId: string) => void;
   onPreviewLinkBlocked: (featureLabel: string) => void;
   onClose: () => void;
+  onEscapeClose?: () => void;
 }
 
 export const RADIAL_DIRECTIONS: readonly RadialDirection[] = ['north', 'east', 'south', 'west'];
@@ -271,6 +272,7 @@ export const RadialActionMenu: React.FC<RadialActionMenuProps> = ({
   onSnapShipParallel,
   onPreviewLinkBlocked,
   onClose,
+  onEscapeClose,
 }) => {
   const [activeTab, setActiveTab] = useState<'overview' | 'key-items'>('overview');
   const [activeDir, setActiveDir] = useState<RadialDirection>('north');
@@ -330,7 +332,11 @@ export const RadialActionMenu: React.FC<RadialActionMenuProps> = ({
     if (e.key === 'Escape') {
       e.preventDefault();
       e.stopPropagation();
-      onClose();
+      if (onEscapeClose) {
+        onEscapeClose();
+      } else {
+        onClose();
+      }
       return;
     }
 

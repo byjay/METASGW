@@ -59,10 +59,15 @@ interface SharedEngineerGeos {
   idBadge: THREE.BoxGeometry;
   radioBody: THREE.BoxGeometry;
   radioAntenna: THREE.CylinderGeometry;
+  chestPocket: THREE.BoxGeometry;
   neck: THREE.CylinderGeometry;
   head: THREE.SphereGeometry;
   hairCap: THREE.SphereGeometry;
+  eyeSclera: THREE.SphereGeometry;
   eye: THREE.SphereGeometry;
+  eyebrow: THREE.BoxGeometry;
+  nose: THREE.ConeGeometry;
+  mouth: THREE.BoxGeometry;
   ear: THREE.SphereGeometry;
   helmetDome: THREE.SphereGeometry;
   helmetRidge: THREE.BoxGeometry;
@@ -75,7 +80,9 @@ interface SharedEngineerGeos {
   elbowJoint: THREE.SphereGeometry;
   forearm: THREE.CapsuleGeometry;
   cuffStripe: THREE.CylinderGeometry;
+  gloveCuff: THREE.CylinderGeometry;
   hand: THREE.BoxGeometry;
+  thumb: THREE.CapsuleGeometry;
   tabletStrap: THREE.CylinderGeometry;
   tabletFrame: THREE.BoxGeometry;
   tabletScreen: THREE.BoxGeometry;
@@ -109,10 +116,15 @@ function getSharedGeos(): SharedEngineerGeos {
     idBadge: new THREE.BoxGeometry(0.068, 0.088, 0.014),
     radioBody: new THREE.BoxGeometry(0.052, 0.115, 0.038),
     radioAntenna: new THREE.CylinderGeometry(0.006, 0.008, 0.11, 6),
+    chestPocket: new THREE.BoxGeometry(0.082, 0.086, 0.022),
     neck: new THREE.CylinderGeometry(0.058, 0.07, 0.095, 10),
-    head: new THREE.SphereGeometry(0.15, 16, 14),
+    head: new THREE.SphereGeometry(0.15, 20, 16),
     hairCap: new THREE.SphereGeometry(0.157, 14, 12, 0, Math.PI * 2, 0, Math.PI * 0.62),
-    eye: new THREE.SphereGeometry(0.018, 8, 8),
+    eyeSclera: new THREE.SphereGeometry(0.021, 8, 8),
+    eye: new THREE.SphereGeometry(0.015, 8, 8),
+    eyebrow: new THREE.BoxGeometry(0.036, 0.009, 0.012),
+    nose: new THREE.ConeGeometry(0.014, 0.034, 7),
+    mouth: new THREE.BoxGeometry(0.044, 0.009, 0.012),
     ear: new THREE.SphereGeometry(0.028, 8, 8),
     helmetDome: new THREE.SphereGeometry(0.182, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.56),
     helmetRidge: new THREE.BoxGeometry(0.048, 0.042, 0.29),
@@ -125,7 +137,9 @@ function getSharedGeos(): SharedEngineerGeos {
     elbowJoint: new THREE.SphereGeometry(0.054, 10, 8),
     forearm: new THREE.CapsuleGeometry(0.045, 0.17, 4, 10),
     cuffStripe: new THREE.CylinderGeometry(0.049, 0.049, 0.028, 10),
+    gloveCuff: new THREE.CylinderGeometry(0.043, 0.046, 0.024, 10),
     hand: new THREE.BoxGeometry(0.058, 0.076, 0.044),
+    thumb: new THREE.CapsuleGeometry(0.012, 0.026, 4, 6),
     tabletStrap: new THREE.CylinderGeometry(0.052, 0.052, 0.045, 10),
     tabletFrame: new THREE.BoxGeometry(0.092, 0.125, 0.026),
     tabletScreen: new THREE.BoxGeometry(0.076, 0.104, 0.012),
@@ -137,6 +151,77 @@ function getSharedGeos(): SharedEngineerGeos {
     bootSole: new THREE.BoxGeometry(0.118, 0.028, 0.218),
   };
   return _sharedGeo;
+}
+
+let _workwearWeaveBump: THREE.CanvasTexture | null | undefined;
+function getWorkwearWeaveBumpTex(): THREE.CanvasTexture | undefined {
+  if (_workwearWeaveBump !== undefined) return _workwearWeaveBump ?? undefined;
+  if (typeof document === 'undefined') {
+    _workwearWeaveBump = null;
+    return undefined;
+  }
+  const canvas = document.createElement('canvas');
+  canvas.width = 64;
+  canvas.height = 64;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    _workwearWeaveBump = null;
+    return undefined;
+  }
+  ctx.fillStyle = '#808080';
+  ctx.fillRect(0, 0, 64, 64);
+  for (let y = 0; y < 64; y += 4) {
+    for (let x = 0; x < 64; x += 4) {
+      const bright = ((x + y) / 4) % 2 === 0;
+      ctx.fillStyle = bright ? '#989898' : '#686868';
+      ctx.fillRect(x, y, 2, 2);
+      ctx.fillStyle = bright ? '#707070' : '#909090';
+      ctx.fillRect(x + 2, y + 2, 2, 2);
+    }
+  }
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(4, 4);
+  tex.needsUpdate = true;
+  _workwearWeaveBump = tex;
+  return tex;
+}
+
+let _reflectivePrismTex: THREE.CanvasTexture | null | undefined;
+function getReflectivePrismTex(): THREE.CanvasTexture | undefined {
+  if (_reflectivePrismTex !== undefined) return _reflectivePrismTex ?? undefined;
+  if (typeof document === 'undefined') {
+    _reflectivePrismTex = null;
+    return undefined;
+  }
+  const canvas = document.createElement('canvas');
+  canvas.width = 64;
+  canvas.height = 64;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    _reflectivePrismTex = null;
+    return undefined;
+  }
+  ctx.fillStyle = '#e2e8f0';
+  ctx.fillRect(0, 0, 64, 64);
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 3;
+  for (let i = -64; i < 128; i += 12) {
+    ctx.beginPath();
+    ctx.moveTo(i, 0);
+    ctx.lineTo(i + 32, 32);
+    ctx.lineTo(i, 64);
+    ctx.stroke();
+  }
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(3, 1);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.needsUpdate = true;
+  _reflectivePrismTex = tex;
+  return tex;
 }
 
 const _sharedMatCache = new Map<string, THREE.Material>();
@@ -179,6 +264,9 @@ export function buildHumanoidEngineerAvatar(options: HumanoidAvatarOptions): Bui
   const hairHex = hairPalette[variant];
 
   const simplified = Boolean(options.simplifiedMaterial);
+  const workwearBumpTex = simplified ? undefined : getWorkwearWeaveBumpTex();
+  const reflectivePrismTex = simplified ? undefined : getReflectivePrismTex();
+
   const makeShadedMat = (
     key: string,
     params: {
@@ -187,6 +275,9 @@ export function buildHumanoidEngineerAvatar(options: HumanoidAvatarOptions): Bui
       metalness?: number;
       emissive?: number;
       emissiveIntensity?: number;
+      map?: THREE.Texture;
+      bumpMap?: THREE.Texture;
+      bumpScale?: number;
     },
   ): THREE.Material => {
     if (simplified) {
@@ -209,52 +300,64 @@ export function buildHumanoidEngineerAvatar(options: HumanoidAvatarOptions): Bui
           metalness: params.metalness ?? 0.05,
           emissive: params.emissive ?? 0x000000,
           emissiveIntensity: params.emissiveIntensity ?? 0,
+          map: params.map,
+          bumpMap: params.bumpMap,
+          bumpScale: params.bumpScale ?? 0.015,
         }),
     );
   };
 
-  // Shared Materials: full PBR on high/medium, lightweight Lambert on low (strictly 3D volumetric always)
+  // Shared Materials: full PBR + micro-weave shading on high/medium, lightweight Lambert on low
   const jacketMat = makeShadedMat(`eng_jacket_${jacketHex}`, {
     color: jacketHex,
-    roughness: 0.7,
-    metalness: 0.05,
+    roughness: 0.64,
+    metalness: 0.06,
+    bumpMap: workwearBumpTex,
+    bumpScale: 0.018,
   });
   const collarMat = makeShadedMat(`eng_collar_${collarHex}`, {
     color: collarHex,
-    roughness: 0.74,
-    metalness: 0.04,
+    roughness: 0.7,
+    metalness: 0.05,
+    bumpMap: workwearBumpTex,
+    bumpScale: 0.014,
   });
   const vestMat = makeShadedMat(`eng_vest_${vestHex}`, {
     color: vestHex,
-    roughness: 0.52,
-    metalness: 0.08,
+    roughness: 0.48,
+    metalness: 0.1,
+    bumpMap: workwearBumpTex,
+    bumpScale: 0.016,
   });
-  const reflectiveMat = makeShadedMat('eng_reflective_stripe', {
-    color: 0xf1f5f9,
-    emissive: 0xcbd5e1,
-    emissiveIntensity: 0.24,
-    roughness: 0.22,
-    metalness: 0.52,
+  const reflectiveMat = makeShadedMat('eng_reflective_stripe_v2', {
+    color: 0xf8fafc,
+    emissive: 0xdbeafe,
+    emissiveIntensity: 0.36,
+    roughness: 0.14,
+    metalness: 0.72,
+    map: reflectivePrismTex,
   });
   const trousersMat = makeShadedMat('eng_trousers', {
     color: 0x1e293b,
-    roughness: 0.78,
+    roughness: 0.76,
     metalness: 0.04,
+    bumpMap: workwearBumpTex,
+    bumpScale: 0.015,
   });
   const jointPadMat = makeShadedMat('eng_joint_pad', {
     color: 0x334155,
-    roughness: 0.6,
-    metalness: 0.12,
+    roughness: 0.56,
+    metalness: 0.14,
   });
   const leatherDarkMat = makeShadedMat('eng_dark_gear', {
     color: 0x111827,
-    roughness: 0.48,
-    metalness: 0.18,
+    roughness: 0.46,
+    metalness: 0.2,
   });
   const bootUpperMat = makeShadedMat('eng_boot_upper', {
     color: 0x18181b,
-    roughness: 0.5,
-    metalness: 0.16,
+    roughness: 0.48,
+    metalness: 0.18,
   });
   const bootSoleMat = makeShadedMat('eng_boot_sole', {
     color: 0x09090b,
@@ -263,28 +366,38 @@ export function buildHumanoidEngineerAvatar(options: HumanoidAvatarOptions): Bui
   });
   const metalBuckleMat = makeShadedMat('eng_metal_buckle', {
     color: 0xdbeafe,
-    roughness: 0.22,
-    metalness: 0.85,
+    roughness: 0.2,
+    metalness: 0.86,
   });
   const skinMat = makeShadedMat(`eng_skin_${skinHex}`, {
     color: skinHex,
-    roughness: 0.6,
+    roughness: 0.52,
+    metalness: 0.02,
+  });
+  const mouthMat = makeShadedMat('eng_mouth_tone', {
+    color: 0xb97a68,
+    roughness: 0.48,
     metalness: 0.02,
   });
   const hairMat = makeShadedMat(`eng_hair_${hairHex}`, {
     color: hairHex,
-    roughness: 0.76,
+    roughness: 0.72,
     metalness: 0.04,
+  });
+  const eyeScleraMat = makeShadedMat('eng_eye_sclera', {
+    color: 0xf8fafc,
+    roughness: 0.14,
+    metalness: 0.02,
   });
   const eyeMat = makeShadedMat('eng_eye', {
     color: 0x0f172a,
-    roughness: 0.16,
-    metalness: 0.05,
+    roughness: 0.12,
+    metalness: 0.06,
   });
   const helmetMat = makeShadedMat(`eng_helmet_${helmetHex}`, {
     color: helmetHex,
-    roughness: 0.22,
-    metalness: 0.2,
+    roughness: 0.2,
+    metalness: 0.22,
   });
   const headlampHousingMat = makeShadedMat('eng_headlamp_housing', {
     color: 0x1e293b,
@@ -474,6 +587,22 @@ export function buildHumanoidEngineerAvatar(options: HumanoidAvatarOptions): Bui
   radioAntenna.position.set(0.142, 0.445, 0.145);
   spine.add(radioAntenna);
 
+  const chestPocketLeft = registerMesh(
+    new THREE.Mesh(g.chestPocket, collarMat),
+    'chest_pocket_left',
+    false,
+  );
+  chestPocketLeft.position.set(-0.115, 0.175, 0.142);
+  spine.add(chestPocketLeft);
+
+  const chestPocketRight = registerMesh(
+    new THREE.Mesh(g.chestPocket, collarMat),
+    'chest_pocket_right',
+    false,
+  );
+  chestPocketRight.position.set(0.115, 0.175, 0.142);
+  spine.add(chestPocketRight);
+
   // 4) Sculpted Head & Industrial Safety Helmet with Visor + Glowing Headlamp
   const headGroup = new THREE.Group();
   headGroup.name = 'head_joint';
@@ -494,13 +623,42 @@ export function buildHumanoidEngineerAvatar(options: HumanoidAvatarOptions): Bui
   hairCapMesh.rotation.x = -0.22;
   headGroup.add(hairCapMesh);
 
+  const leftEyeSclera = registerMesh(new THREE.Mesh(g.eyeSclera, eyeScleraMat), 'eye_sclera_left', false);
+  leftEyeSclera.position.set(-0.048, 0.166, 0.132);
+  leftEyeSclera.scale.set(1.12, 0.86, 0.75);
+  headGroup.add(leftEyeSclera);
+
+  const rightEyeSclera = registerMesh(new THREE.Mesh(g.eyeSclera, eyeScleraMat), 'eye_sclera_right', false);
+  rightEyeSclera.position.set(0.048, 0.166, 0.132);
+  rightEyeSclera.scale.set(1.12, 0.86, 0.75);
+  headGroup.add(rightEyeSclera);
+
   const leftEyeMesh = registerMesh(new THREE.Mesh(g.eye, eyeMat), 'eye_left', false);
-  leftEyeMesh.position.set(-0.048, 0.165, 0.138);
+  leftEyeMesh.position.set(-0.048, 0.166, 0.143);
   headGroup.add(leftEyeMesh);
 
   const rightEyeMesh = registerMesh(new THREE.Mesh(g.eye, eyeMat), 'eye_right', false);
-  rightEyeMesh.position.set(0.048, 0.165, 0.138);
+  rightEyeMesh.position.set(0.048, 0.166, 0.143);
   headGroup.add(rightEyeMesh);
+
+  const leftEyebrow = registerMesh(new THREE.Mesh(g.eyebrow, hairMat), 'eyebrow_left', false);
+  leftEyebrow.position.set(-0.048, 0.194, 0.138);
+  leftEyebrow.rotation.z = 0.08;
+  headGroup.add(leftEyebrow);
+
+  const rightEyebrow = registerMesh(new THREE.Mesh(g.eyebrow, hairMat), 'eyebrow_right', false);
+  rightEyebrow.position.set(0.048, 0.194, 0.138);
+  rightEyebrow.rotation.z = -0.08;
+  headGroup.add(rightEyebrow);
+
+  const noseMesh = registerMesh(new THREE.Mesh(g.nose, skinMat), 'face_nose', false);
+  noseMesh.position.set(0, 0.144, 0.148);
+  noseMesh.rotation.x = Math.PI * 0.42;
+  headGroup.add(noseMesh);
+
+  const mouthMesh = registerMesh(new THREE.Mesh(g.mouth, mouthMat), 'face_mouth', false);
+  mouthMesh.position.set(0, 0.104, 0.14);
+  headGroup.add(mouthMesh);
 
   const leftEarMesh = registerMesh(new THREE.Mesh(g.ear, skinMat), 'ear_left', false);
   leftEarMesh.position.set(-0.138, 0.168, -0.006);
@@ -587,12 +745,25 @@ export function buildHumanoidEngineerAvatar(options: HumanoidAvatarOptions): Bui
     elbow.add(forearm);
 
     const cuff = registerMesh(new THREE.Mesh(g.cuffStripe, reflectiveMat), `${side}_cuff_stripe`, false);
-    cuff.position.set(0, -0.22, 0.012);
+    cuff.position.set(0, -0.215, 0.012);
     elbow.add(cuff);
+
+    const gloveCuff = registerMesh(
+      new THREE.Mesh(g.gloveCuff, jointPadMat),
+      `${side}_glove_cuff`,
+      false,
+    );
+    gloveCuff.position.set(0, -0.242, 0.014);
+    elbow.add(gloveCuff);
 
     const hand = registerMesh(new THREE.Mesh(g.hand, skinMat), `${side}_hand`, false);
     hand.position.set(0, -0.278, 0.016);
     elbow.add(hand);
+
+    const thumb = registerMesh(new THREE.Mesh(g.thumb, skinMat), `${side}_thumb`, false);
+    thumb.position.set(-sign * 0.032, -0.272, 0.028);
+    thumb.rotation.set(0.32, 0, sign * 0.42);
+    elbow.add(thumb);
 
     return { shoulder, elbow };
   };

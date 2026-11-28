@@ -744,9 +744,19 @@ export function App() {
           return;
         }
         if (projectSession.radialTarget) {
+          const wasPerson = projectSession.radialTarget.kind === 'person';
           setProjectSession((prev) =>
             transitionProjectSessionState(prev, { type: 'CLOSE_RADIAL' }),
           );
+          if (wasPerson) {
+            setCameraPreset('harbor');
+            sceneRef.current?.returnToHomeHarbor();
+          }
+          return;
+        }
+        if (sceneRef.current?.isPersonFocused()) {
+          setCameraPreset('harbor');
+          sceneRef.current?.returnToHomeHarbor();
           return;
         }
         handleDisembark();
@@ -1027,6 +1037,7 @@ export function App() {
             },
             onPersonClicked: (sub, screenPos) => {
               if (peopleBySubRef.current.has(sub)) {
+                sceneRef.current?.focusPerson(sub);
                 setProjectSession((prev) =>
                   transitionProjectSessionState(prev, {
                     type: 'OPEN_RADIAL',
@@ -1273,9 +1284,18 @@ export function App() {
   }, []);
 
   const handleCycleCamera = useCallback(() => {
+    if (sceneRef.current?.isPersonFocused()) {
+      setCameraPreset('harbor');
+      sceneRef.current?.returnToHomeHarbor();
+      return;
+    }
     setCameraPreset((prev) => {
       const next = CAMERA_ORDER[(CAMERA_ORDER.indexOf(prev) + 1) % CAMERA_ORDER.length];
-      sceneRef.current?.setCameraPreset(next);
+      if (next === 'harbor') {
+        sceneRef.current?.returnToHomeHarbor();
+      } else {
+        sceneRef.current?.setCameraPreset(next);
+      }
       return next;
     });
   }, []);
@@ -1300,22 +1320,28 @@ export function App() {
     sceneRef.current?.focusPerson(sub);
   }, []);
 
-  const handleSelectPersonFromDrawer = useCallback((person: HarborPerson) => {
-    setPeopleDrawerOpen(false);
-    setProjectSession((prev) =>
-      transitionProjectSessionState(prev, {
-        type: 'OPEN_RADIAL',
-        target: {
-          kind: 'person',
-          targetId: person.sub,
-          anchor: {
-            x: typeof window !== 'undefined' ? Math.round(window.innerWidth * 0.5) : 640,
-            y: typeof window !== 'undefined' ? Math.round(window.innerHeight * 0.45) : 360,
+  const handleSelectPersonFromDrawer = useCallback(
+    (person: HarborPerson) => {
+      setPeopleDrawerOpen(false);
+      if (viewMode === '3d' && person.presenceStatus !== 'leave' && !person.isCurrentUser) {
+        sceneRef.current?.focusPerson(person.sub);
+      }
+      setProjectSession((prev) =>
+        transitionProjectSessionState(prev, {
+          type: 'OPEN_RADIAL',
+          target: {
+            kind: 'person',
+            targetId: person.sub,
+            anchor: {
+              x: typeof window !== 'undefined' ? Math.round(window.innerWidth * 0.5) : 640,
+              y: typeof window !== 'undefined' ? Math.round(window.innerHeight * 0.45) : 360,
+            },
           },
-        },
-      }),
-    );
-  }, []);
+        }),
+      );
+    },
+    [viewMode],
+  );
 
   const handleRetry3D = useCallback(() => {
     setProjectSession((prev) =>
@@ -1358,6 +1384,7 @@ export function App() {
       } else if (label.id.startsWith('person:')) {
         const sub = label.id.slice(7);
         if (peopleBySubRef.current.has(sub)) {
+          sceneRef.current?.focusPerson(sub);
           setProjectSession((prev) =>
             transitionProjectSessionState(prev, {
               type: 'OPEN_RADIAL',
@@ -1787,6 +1814,16 @@ export function App() {
                 transitionProjectSessionState(prev, { type: 'CLOSE_RADIAL' }),
               )
             }
+            onEscapeClose={() => {
+              const wasPerson = radialTarget.kind === 'person';
+              setProjectSession((prev) =>
+                transitionProjectSessionState(prev, { type: 'CLOSE_RADIAL' }),
+              );
+              if (wasPerson) {
+                setCameraPreset('harbor');
+                sceneRef.current?.returnToHomeHarbor();
+              }
+            }}
           />
         )}
 

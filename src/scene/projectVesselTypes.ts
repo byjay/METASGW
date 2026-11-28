@@ -169,60 +169,60 @@ function addCurvedMarineHull(
   } = opts;
 
   // Lower bilge / anti-fouling red waterline hull (slightly tucked inward for realistic bilge curve)
-  g.add(
-    createSculptedHullLayer({
-      halfBeam: halfBeam * 0.95,
-      parallelHalfLen,
-      bowLen: bowLen * 0.94,
-      sternLen: sternLen * 0.92,
-      height: 1.45,
-      yBottom: -0.35,
-      bevel: 0.26,
-      mat: bootMat,
-    }),
-  );
+  const lowerHull = createSculptedHullLayer({
+    halfBeam: halfBeam * 0.95,
+    parallelHalfLen,
+    bowLen: bowLen * 0.94,
+    sternLen: sternLen * 0.92,
+    height: 1.45,
+    yBottom: -0.35,
+    bevel: 0.26,
+    mat: bootMat,
+  });
+  lowerHull.userData.isShipHull = true;
+  g.add(lowerHull);
 
   // Upper flared freeboard hull
-  g.add(
-    createSculptedHullLayer({
-      halfBeam,
-      parallelHalfLen,
-      bowLen,
-      sternLen,
-      height: freeboardH,
-      yBottom: 1.05,
-      bevel: 0.22,
-      mat: hullMat,
-    }),
-  );
+  const upperHull = createSculptedHullLayer({
+    halfBeam,
+    parallelHalfLen,
+    bowLen,
+    sternLen,
+    height: freeboardH,
+    yBottom: 1.05,
+    bevel: 0.22,
+    mat: hullMat,
+  });
+  upperHull.userData.isShipHull = true;
+  g.add(upperHull);
 
   // Main deck plate slightly inset with raised bulwark lip
-  g.add(
-    createSculptedHullLayer({
-      halfBeam: halfBeam * 0.93,
-      parallelHalfLen: parallelHalfLen * 0.98,
-      bowLen: bowLen * 0.92,
-      sternLen: sternLen * 0.94,
-      height: 0.16,
-      yBottom: 1.05 + freeboardH + 0.16,
-      bevel: 0,
-      mat: deckMat,
-    }),
-  );
+  const deckPlate = createSculptedHullLayer({
+    halfBeam: halfBeam * 0.93,
+    parallelHalfLen: parallelHalfLen * 0.98,
+    bowLen: bowLen * 0.92,
+    sternLen: sternLen * 0.94,
+    height: 0.16,
+    yBottom: 1.05 + freeboardH + 0.16,
+    bevel: 0,
+    mat: deckMat,
+  });
+  deckPlate.userData.isShipHull = true;
+  g.add(deckPlate);
 
   // Forecastle raised bow bulwark + anchor windlass detail
-  g.add(
-    createSculptedHullLayer({
-      halfBeam: halfBeam * 0.96,
-      parallelHalfLen: 0.5,
-      bowLen: bowLen * 0.92,
-      sternLen: 1.0,
-      height: 0.85,
-      yBottom: 1.05 + freeboardH + 0.15,
-      bevel: 0.1,
-      mat: hullMat,
-    }),
-  );
+  const forecastle = createSculptedHullLayer({
+    halfBeam: halfBeam * 0.96,
+    parallelHalfLen: 0.5,
+    bowLen: bowLen * 0.92,
+    sternLen: 1.0,
+    height: 0.85,
+    yBottom: 1.05 + freeboardH + 0.15,
+    bevel: 0.1,
+    mat: hullMat,
+  });
+  forecastle.userData.isShipHull = true;
+  g.add(forecastle);
 
   // Thin deck perimeter safety rails along port & starboard midbody
   const railY = 1.05 + freeboardH + 0.72;
@@ -230,6 +230,7 @@ function addCurvedMarineHull(
   for (const side of [-1, 1]) {
     const topRail = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.09, railLen), railMat);
     topRail.position.set(side * (halfBeam * 0.94), railY, 0);
+    topRail.userData.isShipHull = true;
     g.add(topRail);
   }
 
@@ -238,6 +239,7 @@ function addCurvedMarineHull(
     const bulb = new THREE.Mesh(new THREE.SphereGeometry(Math.min(1.5, halfBeam * 0.25), 14, 10), bootMat);
     bulb.scale.set(0.82, 0.72, 2.35);
     bulb.position.set(0, 0.24, -(parallelHalfLen + bowLen + 0.55));
+    bulb.userData.isShipHull = true;
     g.add(bulb);
   }
 }
@@ -262,6 +264,8 @@ function addCommercialSuperstructure(
 ): void {
   const { zCenter, deckY, width, levels, whiteMat, glassMat, funnelMat, lifeboatMat, darkSteelMat } = opts;
   const levelH = 1.95;
+  const superGroup = new THREE.Group();
+  superGroup.userData.isShipSuperstructure = true;
 
   for (let lv = 0; lv < levels; lv += 1) {
     const w = width * (1 - lv * 0.05);
@@ -269,60 +273,62 @@ function addCommercialSuperstructure(
     const y = deckY + lv * levelH + levelH * 0.5;
     const tier = new THREE.Mesh(new THREE.BoxGeometry(w, levelH - 0.08, l), whiteMat);
     tier.position.set(0, y, zCenter + lv * 0.12);
-    g.add(tier);
+    superGroup.add(tier);
 
     // Porthole / cabin window strip on each tier
     const strip = new THREE.Mesh(new THREE.BoxGeometry(w + 0.1, 0.42, l * 0.76), glassMat);
     strip.position.set(0, y + 0.16, zCenter + lv * 0.12 - 0.15);
-    g.add(strip);
+    superGroup.add(strip);
   }
 
   const bridgeY = deckY + levels * levelH + 0.85;
   // Navigation bridge + full-beam cantilevered bridge wings
   const bridgeCore = new THREE.Mesh(new THREE.BoxGeometry(width * 0.88, 1.8, 3.6), whiteMat);
   bridgeCore.position.set(0, bridgeY, zCenter - 0.65);
-  g.add(bridgeCore);
+  superGroup.add(bridgeCore);
 
   const wing = new THREE.Mesh(new THREE.BoxGeometry(width * 1.42, 1.35, 1.85), whiteMat);
   wing.position.set(0, bridgeY + 0.1, zCenter - 1.25);
-  g.add(wing);
+  superGroup.add(wing);
 
   const bridgeGlass = new THREE.Mesh(new THREE.BoxGeometry(width * 1.34, 0.72, 1.95), glassMat);
   bridgeGlass.position.set(0, bridgeY + 0.18, zCenter - 1.3);
-  g.add(bridgeGlass);
+  superGroup.add(bridgeGlass);
 
   // Bridge roof radar mast + dual X/S-band scanners
   const mastBaseY = bridgeY + 0.95;
   const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.28, 4.6, 8), whiteMat);
   mast.position.set(0, mastBaseY + 2.3, zCenter - 1.0);
-  g.add(mast);
+  superGroup.add(mast);
 
   const crossTree = new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.14, 0.18), whiteMat);
   crossTree.position.set(0, mastBaseY + 3.1, zCenter - 1.0);
-  g.add(crossTree);
+  superGroup.add(crossTree);
 
   const radarBar = new THREE.Mesh(new THREE.BoxGeometry(2.8, 0.16, 0.24), darkSteelMat);
   radarBar.position.set(0, mastBaseY + 4.2, zCenter - 1.0);
-  g.add(radarBar);
+  superGroup.add(radarBar);
 
   // Enclosed orange davit lifeboats on port & starboard sides
   for (const side of [-1, 1]) {
     const boat = new THREE.Mesh(new THREE.CapsuleGeometry(0.46, 1.85, 6, 10), lifeboatMat);
     boat.rotation.x = Math.PI / 2;
     boat.position.set(side * (width * 0.54 + 0.4), deckY + 2.6, zCenter + 0.8);
-    g.add(boat);
+    superGroup.add(boat);
   }
 
   // Sculpted tapered exhaust funnel casing with dark soot top
   const funnel = new THREE.Mesh(new THREE.CylinderGeometry(1.15, 1.75, 4.2, 8), funnelMat);
   funnel.scale.set(0.82, 1.0, 1.25);
   funnel.position.set(0, deckY + levels * levelH + 1.5, zCenter + 2.75);
-  g.add(funnel);
+  superGroup.add(funnel);
 
   const funnelCap = new THREE.Mesh(new THREE.CylinderGeometry(1.12, 1.2, 0.65, 8), darkSteelMat);
   funnelCap.scale.set(0.82, 1.0, 1.25);
   funnelCap.position.set(0, deckY + levels * levelH + 3.7, zCenter + 2.75);
-  g.add(funnelCap);
+  superGroup.add(funnelCap);
+
+  g.add(superGroup);
 }
 
 /**
@@ -372,32 +378,32 @@ export function buildProjectVessel3D(
     });
 
     // Signature full-length continuous Royal-Blue Hull Stripe along both sides & bow flare
-    g.add(
-      createSculptedHullLayer({
-        halfBeam: 6.08,
-        parallelHalfLen: 15.2,
-        bowLen: 10.6,
-        sternLen: 5.1,
-        height: 1.05,
-        yBottom: 2.35,
-        bevel: 0.08,
-        mat: royalBlueBand,
-      }),
-    );
+    const royalStripe = createSculptedHullLayer({
+      halfBeam: 6.08,
+      parallelHalfLen: 15.2,
+      bowLen: 10.6,
+      sternLen: 5.1,
+      height: 1.05,
+      yBottom: 2.35,
+      bevel: 0.08,
+      mat: royalBlueBand,
+    });
+    royalStripe.userData.isShipHull = true;
+    g.add(royalStripe);
 
     // Secondary crisp cyan-blue upper sheer accent ribbon
-    g.add(
-      createSculptedHullLayer({
-        halfBeam: 6.05,
-        parallelHalfLen: 15.0,
-        bowLen: 10.2,
-        sternLen: 5.0,
-        height: 0.32,
-        yBottom: 4.25,
-        bevel: 0.04,
-        mat: royalBlueBand,
-      }),
-    );
+    const sheerRibbon = createSculptedHullLayer({
+      halfBeam: 6.05,
+      parallelHalfLen: 15.0,
+      bowLen: 10.2,
+      sternLen: 5.0,
+      height: 0.32,
+      yBottom: 4.25,
+      bevel: 0.04,
+      mat: royalBlueBand,
+    });
+    sheerRibbon.userData.isShipHull = true;
+    g.add(sheerRibbon);
 
     // 4 gleaming pearl-white spherical Moss domes with Royal-Blue base skirts
     const domeGeo = new THREE.SphereGeometry(3.75, 24, 18);
@@ -1032,6 +1038,45 @@ export function buildProjectVessel3D(
     const mast = new THREE.Mesh(new THREE.ConeGeometry(1.4, 8.0, 4), navalGrey);
     mast.position.set(0, 12.6, -3.5);
     g.add(mast);
+  }
+
+  // Separate tall upper superstructure & deckhouses into a dedicated subtree
+  // so occluding ship superstructures can fade cleanly to opacity 0.25 without affecting lower hulls.
+  const superstructureGroup = new THREE.Group();
+  superstructureGroup.name = 'ship_superstructure';
+  superstructureGroup.userData.isShipSuperstructure = true;
+
+  g.updateMatrixWorld(true);
+  const childBox = new THREE.Box3();
+  const childrenSnapshot = [...g.children];
+  for (const child of childrenSnapshot) {
+    if (child.userData?.isShipHull) continue;
+    if (child.userData?.isShipSuperstructure) {
+      superstructureGroup.add(child);
+      continue;
+    }
+    // Check nested superstructure (e.g. innerVessel inside floating_dock)
+    const nestedSuper = child.children.find((sub) => sub.userData?.isShipSuperstructure);
+    if (nestedSuper) {
+      nestedSuper.position.add(child.position);
+      superstructureGroup.add(nestedSuper);
+      continue;
+    }
+    childBox.setFromObject(child);
+    if (!childBox.isEmpty() && (childBox.min.y >= 4.1 || childBox.max.y >= 11.5)) {
+      superstructureGroup.add(child);
+    }
+  }
+
+  if (superstructureGroup.children.length > 0) {
+    g.add(superstructureGroup);
+    mergeSolidSubtreeToVertexColors(superstructureGroup, {
+      lowSpec,
+      roughness: 0.46,
+      metalness: 0.24,
+      castShadow: !lowSpec,
+      receiveShadow: !lowSpec,
+    });
   }
 
   mergeSolidSubtreeToVertexColors(g, {
