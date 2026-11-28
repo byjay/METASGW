@@ -49,6 +49,7 @@ export interface ShipyardWorldHandles {
   dockedShips: DockedShipRuntime[];
   decorativeVessels: DecorativeVesselRuntime[];
   occludableShipSuperstructures: THREE.Object3D[];
+  occludableVerticalProps: THREE.Object3D[];
   hubBuildings: HubBuildingRuntime[];
   bridgeGlowMat: THREE.MeshStandardMaterial;
   instancedPropCounts: {
@@ -156,7 +157,7 @@ function buildPortalPavilion(
   textures: HarborTexturePack,
   curtainMat: THREE.MeshStandardMaterial,
   steelMat: THREE.MeshStandardMaterial,
-): { group: THREE.Group; hitProxy: THREE.Mesh } {
+): { group: THREE.Group; hitProxy: THREE.Mesh; signGroup: THREE.Group } {
   const group = new THREE.Group();
   group.position.set(spec.centerX, QUAY_DECK_TOP_Y, spec.centerZ);
 
@@ -181,21 +182,6 @@ function buildPortalPavilion(
   canopy.position.set(0, 3.2, spec.depth * 0.5 + 0.75);
   group.add(canopy);
 
-  const signTex = textures.createSignboard(spec.label, spec.subtitle, spec.accentHex);
-  const signMat = new THREE.MeshStandardMaterial({
-    map: signTex,
-    emissive: new THREE.Color(0xffffff),
-    emissiveMap: signTex,
-    emissiveIntensity: 0.12,
-    roughness: 0.42,
-  });
-  const signFrame = new THREE.Mesh(new THREE.BoxGeometry(6.0, 1.4, 0.24), charcoalMat);
-  signFrame.position.set(0, 5.45, spec.depth * 0.5 - 0.1);
-  group.add(signFrame);
-  const signFace = new THREE.Mesh(new THREE.PlaneGeometry(5.8, 1.24), signMat);
-  signFace.position.set(0, 5.45, spec.depth * 0.5 + 0.04);
-  group.add(signFace);
-
   const hvac = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.85, 1.4), steelMat);
   hvac.position.set(-3.4, 5.1, -1.8);
   group.add(hvac);
@@ -207,6 +193,26 @@ function buildPortalPavilion(
     receiveShadow: true,
   });
 
+  // Add signboard AFTER solid merge so it can fade independently (opacity 0.15) when occluding sightlines
+  const signTex = textures.createSignboard(spec.label, spec.subtitle, spec.accentHex);
+  const signMat = new THREE.MeshStandardMaterial({
+    map: signTex,
+    emissive: new THREE.Color(0xffffff),
+    emissiveMap: signTex,
+    emissiveIntensity: 0.12,
+    roughness: 0.42,
+  });
+  const signFrameMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.5, metalness: 0.5 });
+  const signGroup = new THREE.Group();
+  signGroup.name = `vertical_prop:portal_sign:${spec.id}`;
+  const signFrame = new THREE.Mesh(new THREE.BoxGeometry(6.0, 1.4, 0.24), signFrameMat);
+  signFrame.position.set(0, 5.45, spec.depth * 0.5 - 0.1);
+  signGroup.add(signFrame);
+  const signFace = new THREE.Mesh(new THREE.PlaneGeometry(5.8, 1.24), signMat);
+  signFace.position.set(0, 5.45, spec.depth * 0.5 + 0.04);
+  signGroup.add(signFace);
+  group.add(signGroup);
+
   const hitProxy = new THREE.Mesh(
     new THREE.BoxGeometry(spec.width + 1.0, 6.8, spec.depth + 2.0),
     new THREE.MeshBasicMaterial({ visible: false }),
@@ -214,7 +220,7 @@ function buildPortalPavilion(
   hitProxy.position.set(spec.centerX, 4.8, spec.centerZ);
   hitProxy.userData.portalId = spec.id;
 
-  return { group, hitProxy };
+  return { group, hitProxy, signGroup };
 }
 
 function buildPierLighthouse(
@@ -279,6 +285,14 @@ export function buildShipyardWorld(
   const decorativeVessels: DecorativeVesselRuntime[] = [];
   const decorativeSuperstructures: THREE.Object3D[] = [];
   const occludableShipSuperstructures: THREE.Object3D[] = [];
+  const staticVerticalProps: THREE.Object3D[] = [];
+  const shipVerticalProps: THREE.Object3D[] = [];
+  const hubVerticalProps: THREE.Object3D[] = [];
+  const occludableVerticalProps: THREE.Object3D[] = [];
+  const refreshOccludableVerticalProps = () => {
+    occludableVerticalProps.length = 0;
+    occludableVerticalProps.push(...staticVerticalProps, ...shipVerticalProps, ...hubVerticalProps);
+  };
   const hubBuildings: HubBuildingRuntime[] = [];
   const clouds: Array<{ sprite: THREE.Sprite; speed: number; baseX: number }> = [];
   const staticDisposables: Array<{ dispose: () => void }> = [];
@@ -565,7 +579,7 @@ export function buildShipyardWorld(
   breakwaterInst.computeBoundingSphere();
   scene.add(breakwaterInst);
 
-  // Planter Trees
+  // Planter Trees (ground curbs instanced; each vertical trunk+crown is an individually occludable group)
   const treeCoords: Array<[number, number]> = [
     [-64, -17.8],
     [-46, -17.8],
@@ -587,9 +601,6 @@ export function buildShipyardWorld(
   const foliageLightMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.78, flatShading: true });
 
   const curbInst = new THREE.InstancedMesh(curbGeo, curbStoneMat, treeCoords.length);
-  const trunkInst = new THREE.InstancedMesh(trunkGeo, treeTrunkMat, treeCoords.length);
-  const crown1Inst = new THREE.InstancedMesh(crown1Geo, foliageDeepMat, treeCoords.length);
-  const crown2Inst = new THREE.InstancedMesh(crown2Geo, foliageLightMat, treeCoords.length);
 
   treeCoords.forEach(([tx, tz], i) => {
     const scaleVar = 0.9 + ((i * 37) % 10) * 0.025;
@@ -599,33 +610,42 @@ export function buildShipyardWorld(
     dummy.updateMatrix();
     curbInst.setMatrixAt(i, dummy.matrix);
 
-    dummy.position.set(tx, QUAY_DECK_TOP_Y + 1.25 * scaleVar, tz);
-    dummy.scale.set(scaleVar, scaleVar, scaleVar);
-    dummy.updateMatrix();
-    trunkInst.setMatrixAt(i, dummy.matrix);
+    const treeGroup = new THREE.Group();
+    treeGroup.name = `vertical_prop:tree_${i}`;
+    treeGroup.position.set(tx, QUAY_DECK_TOP_Y, tz);
 
-    dummy.position.set(tx, QUAY_DECK_TOP_Y + 2.15 * scaleVar, tz);
-    dummy.rotation.set(0, i * 0.8, 0);
-    dummy.updateMatrix();
-    crown1Inst.setMatrixAt(i, dummy.matrix);
-    tmpColor.setHSL(0.39 + (i % 3) * 0.015, 0.5, 0.24 + (i % 2) * 0.04);
-    crown1Inst.setColorAt(i, tmpColor);
+    const trunkMat = treeTrunkMat.clone();
+    const deepMat = foliageDeepMat.clone();
+    deepMat.color.setHSL(0.39 + (i % 3) * 0.015, 0.5, 0.24 + (i % 2) * 0.04);
+    const lightMat = foliageLightMat.clone();
+    lightMat.color.setHSL(0.38 + (i % 3) * 0.015, 0.46, 0.32 + (i % 2) * 0.05);
+    staticDisposables.push(trunkMat, deepMat, lightMat);
 
-    dummy.position.set(tx + 0.06 * Math.sin(i + 1), QUAY_DECK_TOP_Y + 2.92 * scaleVar, tz + 0.06 * Math.cos(i + 1));
-    dummy.rotation.set(0, i * 1.4, 0);
-    dummy.updateMatrix();
-    crown2Inst.setMatrixAt(i, dummy.matrix);
-    tmpColor.setHSL(0.38 + (i % 3) * 0.015, 0.46, 0.32 + (i % 2) * 0.05);
-    crown2Inst.setColorAt(i, tmpColor);
+    const trunk = new THREE.Mesh(trunkGeo, trunkMat);
+    trunk.position.set(0, 1.25 * scaleVar, 0);
+    trunk.scale.setScalar(scaleVar);
+    treeGroup.add(trunk);
+
+    const crown1 = new THREE.Mesh(crown1Geo, deepMat);
+    crown1.position.set(0, 2.15 * scaleVar, 0);
+    crown1.rotation.y = i * 0.8;
+    crown1.scale.setScalar(scaleVar);
+    treeGroup.add(crown1);
+
+    const crown2 = new THREE.Mesh(crown2Geo, lightMat);
+    crown2.position.set(0.06 * Math.sin(i + 1), 2.92 * scaleVar, 0.06 * Math.cos(i + 1));
+    crown2.rotation.y = i * 1.4;
+    crown2.scale.setScalar(scaleVar);
+    treeGroup.add(crown2);
+
+    scene.add(treeGroup);
+    staticVerticalProps.push(treeGroup);
   });
-  for (const inst of [curbInst, trunkInst, crown1Inst, crown2Inst]) {
-    inst.instanceMatrix.needsUpdate = true;
-    if (inst.instanceColor) inst.instanceColor.needsUpdate = true;
-    inst.computeBoundingSphere();
-    scene.add(inst);
-  }
+  curbInst.instanceMatrix.needsUpdate = true;
+  curbInst.computeBoundingSphere();
+  scene.add(curbInst);
 
-  // Streetlights & High-Mast Lighting Towers
+  // Streetlights & High-Mast Lighting Towers (per-lamp groups so ONLY the lamp blocking camera->character fades to 0.15)
   const lampCoords: Array<{ x: number; z: number; ry: number }> = [];
   for (let lx = -60; lx <= 60; lx += 15) {
     lampCoords.push({ x: lx, z: -4.8, ry: 0 });
@@ -646,33 +666,31 @@ export function buildShipyardWorld(
     roughness: 0.28,
   });
 
-  const lampPoleInst = new THREE.InstancedMesh(lampPoleGeo, lampPoleMat, lampCoords.length);
-  const lampArmInst = new THREE.InstancedMesh(lampArmGeo, lampPoleMat, lampCoords.length);
-  const lampHeadInst = new THREE.InstancedMesh(lampHeadGeo, lampGlowMat, lampCoords.length);
-
   lampCoords.forEach((lp, i) => {
-    const dirX = Math.sin(lp.ry);
-    const dirZ = Math.cos(lp.ry);
+    const lampGroup = new THREE.Group();
+    lampGroup.name = `vertical_prop:lamp_${i}`;
+    lampGroup.position.set(lp.x, QUAY_DECK_TOP_Y, lp.z);
+    lampGroup.rotation.y = lp.ry;
 
-    dummy.position.set(lp.x, QUAY_DECK_TOP_Y + 2.7, lp.z);
-    dummy.rotation.set(0, lp.ry, 0);
-    dummy.scale.set(1, 1, 1);
-    dummy.updateMatrix();
-    lampPoleInst.setMatrixAt(i, dummy.matrix);
+    const poleMat = lampPoleMat.clone();
+    const glowMat = lampGlowMat.clone();
+    staticDisposables.push(poleMat, glowMat);
 
-    dummy.position.set(lp.x + dirX * 0.65, QUAY_DECK_TOP_Y + 5.35, lp.z + dirZ * 0.65);
-    dummy.updateMatrix();
-    lampArmInst.setMatrixAt(i, dummy.matrix);
+    const poleMesh = new THREE.Mesh(lampPoleGeo, poleMat);
+    poleMesh.position.set(0, 2.7, 0);
+    lampGroup.add(poleMesh);
 
-    dummy.position.set(lp.x + dirX * 1.25, QUAY_DECK_TOP_Y + 5.25, lp.z + dirZ * 1.25);
-    dummy.updateMatrix();
-    lampHeadInst.setMatrixAt(i, dummy.matrix);
+    const armMesh = new THREE.Mesh(lampArmGeo, poleMat);
+    armMesh.position.set(0, 5.35, 0.65);
+    lampGroup.add(armMesh);
+
+    const headMesh = new THREE.Mesh(lampHeadGeo, glowMat);
+    headMesh.position.set(0, 5.25, 1.25);
+    lampGroup.add(headMesh);
+
+    scene.add(lampGroup);
+    staticVerticalProps.push(lampGroup);
   });
-  for (const inst of [lampPoleInst, lampArmInst, lampHeadInst]) {
-    inst.instanceMatrix.needsUpdate = true;
-    inst.computeBoundingSphere();
-    scene.add(inst);
-  }
 
   // Quay Benches
   const benchXs = [-22, -10, 10, 22];
@@ -764,15 +782,23 @@ export function buildShipyardWorld(
 
   // 3. Four SGW Portal Pavilions (SGTALK / NAS / bmail / SGW Admin)
   for (const spec of PORTAL_BUILDINGS) {
-    const { group, hitProxy } = buildPortalPavilion(spec, textures, curtainMat, steelMat);
+    const { group, hitProxy, signGroup } = buildPortalPavilion(spec, textures, curtainMat, steelMat);
     scene.add(group);
     scene.add(hitProxy);
     clickablePortalProxies.push(hitProxy);
+    staticVerticalProps.push(signGroup);
   }
 
   // 4. Twin Goliath Gantry Cranes ("SEASTAR HEAVY" — DOCK-01 / DOCK-02) + Rear Fabrication Halls
-  scene.add(buildGoliathCrane(-44.0, QUAY_DECK_TOP_Y, -39.5, 0xb4481c, textures.craneBannerOrange, aviationRedMat));
-  scene.add(buildGoliathCrane(44.0, QUAY_DECK_TOP_Y, -39.5, 0x144e78, textures.craneBannerBlue, aviationRedMat));
+  const westCraneBeacon = aviationRedMat.clone();
+  const eastCraneBeacon = aviationRedMat.clone();
+  staticDisposables.push(westCraneBeacon, eastCraneBeacon);
+  const westCrane = buildGoliathCrane(-44.0, QUAY_DECK_TOP_Y, -39.5, 0xb4481c, textures.craneBannerOrange, westCraneBeacon);
+  westCrane.name = 'vertical_prop:crane_west';
+  const eastCrane = buildGoliathCrane(44.0, QUAY_DECK_TOP_Y, -39.5, 0x144e78, textures.craneBannerBlue, eastCraneBeacon);
+  eastCrane.name = 'vertical_prop:crane_east';
+  scene.add(westCrane, eastCrane);
+  staticVerticalProps.push(westCrane, eastCrane);
 
   // Rear industrial shipyard fabrication hangars (dark slate corrugated steel + pitched navy roofs + bay doors)
   const hallMat = new THREE.MeshStandardMaterial({
@@ -850,8 +876,16 @@ export function buildShipyardWorld(
   staticDisposables.push(hallMat, hallRoofMat, hallDoorMat, hallTrimMat, ridgeNearMat, ridgeFarMat);
 
   // Twin Pier-Head Lighthouses (West Red / East Green maritime harbor entrance markers)
-  scene.add(buildPierLighthouse(-84.5, QUAY_DECK_TOP_Y, 34.5, 0xb91c1c, lampGlowMat));
-  scene.add(buildPierLighthouse(84.5, QUAY_DECK_TOP_Y, 34.5, 0x15803d, lampGlowMat));
+  const westLhGlow = lampGlowMat.clone();
+  const eastLhGlow = lampGlowMat.clone();
+  staticDisposables.push(westLhGlow, eastLhGlow);
+  const westLh = buildPierLighthouse(-84.5, QUAY_DECK_TOP_Y, 34.5, 0xb91c1c, westLhGlow);
+  westLh.name = 'vertical_prop:lighthouse_west';
+  const eastLh = buildPierLighthouse(84.5, QUAY_DECK_TOP_Y, 34.5, 0x15803d, eastLhGlow);
+  eastLh.name = 'vertical_prop:lighthouse_east';
+  scene.add(westLh, eastLh);
+  staticVerticalProps.push(westLh, eastLh);
+  refreshOccludableVerticalProps();
 
   // 5. High-Altitude Soft Clouds
   const cloudMat = new THREE.SpriteMaterial({
@@ -959,6 +993,8 @@ export function buildShipyardWorld(
     clickableShipProxies.length = 0;
     occludableShipSuperstructures.length = 0;
     occludableShipSuperstructures.push(...decorativeSuperstructures);
+    shipVerticalProps.length = 0;
+    refreshOccludableVerticalProps();
   };
 
   const applyShipDisplayPrefs = (prefs: ShipDisplayPrefsMap) => {
@@ -1019,6 +1055,7 @@ export function buildShipyardWorld(
 
       // Signal flag mast distinguishing active business project vessels
       const flagGroup = new THREE.Group();
+      flagGroup.name = `vertical_prop:flagpole:${ship.id}`;
       flagGroup.position.set(0, 12.2, 13.5);
       const poleMat = new THREE.MeshStandardMaterial({ color: 0xe2e8f0, roughness: 0.35, metalness: 0.7 });
       const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.16, 7.2, 8), poleMat);
@@ -1059,6 +1096,7 @@ export function buildShipyardWorld(
       }
       flagGroup.add(flagMesh);
       anchor.add(flagGroup);
+      shipVerticalProps.push(flagGroup);
 
       // Business project hull status trim band (highlights business ships cleanly vs scenery)
       const trimMat = new THREE.MeshStandardMaterial({
@@ -1180,6 +1218,7 @@ export function buildShipyardWorld(
     if (boardingMarkerBatch) {
       shipsRoot.add(boardingMarkerBatch);
     }
+    refreshOccludableVerticalProps();
   };
 
   // =========================================================================
@@ -1200,6 +1239,8 @@ export function buildShipyardWorld(
     }
     hubBuildings.length = 0;
     clickableHubBuildingProxies.length = 0;
+    hubVerticalProps.length = 0;
+    refreshOccludableVerticalProps();
   };
 
   const syncHubBuildings = (placements: HubBuildingPlacement[], lowSpec: boolean) => {
@@ -1210,7 +1251,9 @@ export function buildShipyardWorld(
       hubBuildingsRoot.add(built.hitProxy);
       hubBuildings.push(built);
       clickableHubBuildingProxies.push(built.hitProxy);
+      hubVerticalProps.push(...built.occludableVerticalProps);
     });
+    refreshOccludableVerticalProps();
   };
 
   const setLowSpecMode = (lowSpec: boolean) => {
@@ -1262,6 +1305,7 @@ export function buildShipyardWorld(
     dockedShips,
     decorativeVessels,
     occludableShipSuperstructures,
+    occludableVerticalProps,
     hubBuildings,
     bridgeGlowMat,
     instancedPropCounts: {
@@ -1329,6 +1373,10 @@ export function buildShipyardWorld(
       decorativeVessels.length = 0;
       decorativeSuperstructures.length = 0;
       occludableShipSuperstructures.length = 0;
+      staticVerticalProps.length = 0;
+      shipVerticalProps.length = 0;
+      hubVerticalProps.length = 0;
+      occludableVerticalProps.length = 0;
       clickableDecorativeShipProxies.length = 0;
       for (const d of staticDisposables) {
         d.dispose();

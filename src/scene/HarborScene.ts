@@ -23,10 +23,13 @@ import {
   computePersonFocusCameraPose,
   computePolarAngleBoundsForDistance,
   HARBOR_ALL_OBSTACLES,
+  PLAYER_DEFAULT_SPAWN,
+  PLAYER_POLE_MIN_CLEARANCE,
   resolveAvatarPhysicsMovement,
   resolveAvatarPropClearance,
   resolveAvatarSpawnOverlaps,
   sampleHarborElevation,
+  WORKER_CHEST_HEIGHT_OFFSET,
 } from '../core/physicsCollision';
 import {
   evaluateAutoQualityDowngrade,
@@ -72,7 +75,10 @@ import {
 } from './meshBatching';
 import { createMaritimeOcean, type OceanWaterSystem } from './oceanShader';
 import { buildShipyardWorld, type ShipyardWorldHandles } from './shipyardWorld';
-import { SuperstructureOcclusionController } from './superstructureOcclusion';
+import {
+  OCCLUDED_VERTICAL_PROP_OPACITY,
+  SuperstructureOcclusionController,
+} from './superstructureOcclusion';
 import { createHarborTextures, type HarborTexturePack } from './textures';
 
 export type {
@@ -113,6 +119,7 @@ const _scratchForward = new THREE.Vector3();
 const _scratchRight = new THREE.Vector3();
 const _scratchCamUp = new THREE.Vector3(0, 1, 0);
 const _scratchOffset = new THREE.Vector3();
+const _scratchOcclusionTarget = new THREE.Vector3();
 const _scratchInstDummy = new THREE.Object3D();
 
 /**
@@ -290,9 +297,16 @@ export class HarborSceneController implements HarborSceneHandle {
   private world: ShipyardWorldHandles;
   private chunkManager: InfiniteWorldChunkManager;
   private occlusionController = new SuperstructureOcclusionController();
+  private verticalPropOcclusionController = new SuperstructureOcclusionController();
 
   private playerRig: BuiltHumanoidRig;
-  private playerPos = { x: 0, y: 1.61, z: -7.5, heading: 0, speed: 0 };
+  private playerPos = {
+    x: PLAYER_DEFAULT_SPAWN.x,
+    y: 1.61,
+    z: PLAYER_DEFAULT_SPAWN.z,
+    heading: 0,
+    speed: 0,
+  };
   private walkPath: Vec2[] = [];
   private waypointMarker: THREE.Mesh;
   private playerHalo: THREE.Mesh;
@@ -432,7 +446,7 @@ export class HarborSceneController implements HarborSceneHandle {
       { x: this.playerPos.x, z: this.playerPos.z },
       this.activeColliders,
       [],
-      AVATAR_PROP_MIN_CLEARANCE,
+      PLAYER_POLE_MIN_CLEARANCE,
     );
     this.playerPos.x = safePlayerSpawn.x;
     this.playerPos.z = safePlayerSpawn.z;
@@ -879,6 +893,7 @@ export class HarborSceneController implements HarborSceneHandle {
       warnInDev: import.meta.env.DEV,
     });
     this.occlusionController.restoreAll();
+    this.verticalPropOcclusionController.restoreAll();
     this.world.syncProjectShips(ships, this.qualityTier === 'low', this.shipDisplayPrefs);
     this.refreshBatchStats();
     this.emitLabels();
@@ -886,6 +901,7 @@ export class HarborSceneController implements HarborSceneHandle {
   }
 
   public setHubBuildings(chips: HubModuleChipItem[]): void {
+    this.verticalPropOcclusionController.restoreAll();
     this.hubPlacements = assignHubBuildingSlots(chips);
     this.activeColliders = [
       ...HARBOR_ALL_OBSTACLES,
@@ -893,12 +909,12 @@ export class HarborSceneController implements HarborSceneHandle {
     ];
     this.world.syncHubBuildings(this.hubPlacements, this.qualityTier === 'low');
 
-    // Keep player & colleagues >= 0.8m clear of newly placed hub buildings / scaffolding
+    // Keep player & colleagues clear of newly placed hub buildings / scaffolding (>= 1.5m for player)
     const safePlayer = resolveAvatarPropClearance(
       { x: this.playerPos.x, z: this.playerPos.z },
       this.activeColliders,
       [],
-      AVATAR_PROP_MIN_CLEARANCE,
+      Math.max(AVATAR_PROP_MIN_CLEARANCE, PLAYER_POLE_MIN_CLEARANCE),
     );
     this.playerPos.x = safePlayer.x;
     this.playerPos.z = safePlayer.z;
@@ -1116,11 +1132,7 @@ export class HarborSceneController implements HarborSceneHandle {
     this.controls.update();
     this.chunkManager.update(this.controls.target.x, this.controls.target.z, this.elapsedTotal);
     this.ocean.update(this.elapsedTotal, this.controls.target.x, this.controls.target.z);
-    this.occlusionController.update(
-      this.camera.position,
-      this.controls.target,
-      this.world.occludableShipSuperstructures,
-    );
+    this.updateSceneOcclusion();
     this.updateCloseRangeShadowRig();
     this.callbacks.onCameraTargetUpdated?.({
       x: this.controls.target.x,
@@ -1131,10 +1143,51 @@ export class HarborSceneController implements HarborSceneHandle {
   }
 
   /**
-   * Stage 11 Close-Zoom Framing Guard:
+   * Updates both Stage 10 ship superstructure occlusion (opacity 0.25) and Stage 12 vertical prop
+   * sightline occlusion (lamp posts, flagpoles, pillars, scaffolding, signboards -> opacity 0.15)
+   * between the camera and the active character/target, restoring automatically once clear.
+   */
+  private updateSceneOcclusion(): void {
+    this.occlusionController.update(
+      this.camera.position,
+      this.controls.target,
+      this.world.occludableShipSuperstructures,
+    );
+
+    if (this.focusedPersonSub !== null) {
+      const focused = this.personRuntimes.find((r) => r.person.sub === this.focusedPersonSub);
+      if (focused) {
+        const y = sampleHarborElevation(focused.curX, focused.curZ);
+        _scratchOcclusionTarget.set(
+          focused.curX,
+          y + (focused.isSeated ? 1.25 : WORKER_CHEST_HEIGHT_OFFSET),
+          focused.curZ,
+        );
+      } else {
+        _scratchOcclusionTarget.copy(this.controls.target);
+      }
+    } else {
+      _scratchOcclusionTarget.copy(this.controls.target);
+    }
+
+    this.verticalPropOcclusionController.update(
+      this.camera.position,
+      _scratchOcclusionTarget,
+      this.world.occludableVerticalProps,
+      OCCLUDED_VERTICAL_PROP_OPACITY,
+      {
+        corridorRadius: 0.75,
+        verticalProbeOffsets: [0, 1.15, -1.05],
+      },
+    );
+  }
+
+  /**
+   * Stage 11–12 Close-Zoom Framing Guard:
    * During free mouse-wheel / orbit zoom (when not in `focusPerson` mode), keeps the target anchored
-   * to quay worker chest height and restricts polar angle + distance floor so the full worker body
-   * and surrounding quay stay inside the viewport with water coverage <= 40% and zero ground/water clip.
+   * to quay worker chest height (anchoring Harbor View zoom directly onto `playerPos` in the open plaza)
+   * and restricts polar angle + distance floor so the full worker body and surrounding quay stay inside
+   * the viewport with water coverage <= 40% and zero ground/water clip.
    * Preserves Stage 10's `focusPerson` (3–6m front pose) completely untouched.
    */
   private applyCloseZoomFraming(): void {
@@ -1153,26 +1206,11 @@ export class HarborSceneController implements HarborSceneHandle {
     this.controls.minPolarAngle = bounds.minPolarAngle;
     this.controls.maxPolarAngle = bounds.maxPolarAngle;
 
-    // Pick the nearest quay worker (defaulting to player avatar on North Quay) as close-zoom anchor
-    let anchorX = this.playerPos.x;
-    let anchorZ = this.playerPos.z;
-    let bestDistSq =
-      (anchorX - this.controls.target.x) ** 2 + (anchorZ - this.controls.target.z) ** 2;
-    for (const rt of this.personRuntimes) {
-      if (rt.isSeated) continue;
-      const dSq =
-        (rt.curX - this.controls.target.x) ** 2 + (rt.curZ - this.controls.target.z) ** 2;
-      if (dSq < bestDistSq) {
-        bestDistSq = dSq;
-        anchorX = rt.curX;
-        anchorZ = rt.curZ;
-      }
-    }
-
+    // Anchor over-water close zoom directly onto the player character in the open central plaza
     const framed = clampCloseZoomCameraFraming(
       this.camera.position,
       this.controls.target,
-      { x: anchorX, z: anchorZ },
+      { x: this.playerPos.x, z: this.playerPos.z },
       this.activeColliders,
     );
     this.controls.target.set(framed.targetPos.x, framed.targetPos.y, framed.targetPos.z);
@@ -1194,11 +1232,7 @@ export class HarborSceneController implements HarborSceneHandle {
     this.controls.update();
     this.applyCloseZoomFraming();
     this.syncAvatarLodsNow();
-    this.occlusionController.update(
-      this.camera.position,
-      this.controls.target,
-      this.world.occludableShipSuperstructures,
-    );
+    this.updateSceneOcclusion();
     this.updateCloseRangeShadowRig();
     this.emitLabels();
     this.renderFrame();
@@ -1219,11 +1253,7 @@ export class HarborSceneController implements HarborSceneHandle {
     this.controls.update();
     this.applyCloseZoomFraming();
     this.syncAvatarLodsNow();
-    this.occlusionController.update(
-      this.camera.position,
-      this.controls.target,
-      this.world.occludableShipSuperstructures,
-    );
+    this.updateSceneOcclusion();
     this.updateCloseRangeShadowRig();
     this.emitLabels();
     this.renderFrame();
@@ -1245,11 +1275,7 @@ export class HarborSceneController implements HarborSceneHandle {
     this.camera.position.set(pose.cameraPos.x, pose.cameraPos.y, pose.cameraPos.z);
     this.controls.update();
     this.syncAvatarLodsNow();
-    this.occlusionController.update(
-      this.camera.position,
-      this.controls.target,
-      this.world.occludableShipSuperstructures,
-    );
+    this.updateSceneOcclusion();
     this.updateCloseRangeShadowRig();
     this.emitLabels();
     this.renderFrame();
@@ -1439,11 +1465,7 @@ export class HarborSceneController implements HarborSceneHandle {
       this.camera.position.copy(toPos);
       this.controls.update();
       this.syncAvatarLodsNow();
-      this.occlusionController.update(
-        this.camera.position,
-        this.controls.target,
-        this.world.occludableShipSuperstructures,
-      );
+      this.updateSceneOcclusion();
       this.updateCloseRangeShadowRig();
       this.emitLabels();
       this.renderFrame();
@@ -1482,11 +1504,7 @@ export class HarborSceneController implements HarborSceneHandle {
     this.controls.update();
     this.chunkManager.update(this.controls.target.x, this.controls.target.z, this.elapsedTotal);
     this.ocean.update(this.elapsedTotal, this.controls.target.x, this.controls.target.z);
-    this.occlusionController.update(
-      this.camera.position,
-      this.controls.target,
-      this.world.occludableShipSuperstructures,
-    );
+    this.updateSceneOcclusion();
     this.updateCloseRangeShadowRig();
     this.callbacks.onCameraTargetUpdated?.({
       x: this.controls.target.x,
@@ -2068,12 +2086,8 @@ export class HarborSceneController implements HarborSceneHandle {
       this.camera.position.set(clampedCam.x, clampedCam.y, clampedCam.z);
     }
 
-    // Dynamically fade occluding ship superstructures to opacity 0.25 & boost close-range shadows
-    this.occlusionController.update(
-      this.camera.position,
-      this.controls.target,
-      this.world.occludableShipSuperstructures,
-    );
+    // Dynamically fade occluding ship superstructures (0.25) & vertical props (0.15) and boost close-range shadows
+    this.updateSceneOcclusion();
     this.updateCloseRangeShadowRig();
 
     this.updatePlayerMovement(dt);
@@ -2204,6 +2218,7 @@ export class HarborSceneController implements HarborSceneHandle {
     this.renderer.domElement.removeEventListener('webglcontextrestored', this.handleContextRestored);
 
     this.occlusionController.restoreAll();
+    this.verticalPropOcclusionController.restoreAll();
     this.disposePeopleBatches();
     for (const rt of this.personRuntimes) {
       rt.rig.dispose();

@@ -21,6 +21,7 @@ export interface HubBuildingRuntime {
   hitProxy: THREE.Mesh;
   beaconMat: THREE.MeshStandardMaterial;
   signTextures: THREE.CanvasTexture[];
+  occludableVerticalProps: THREE.Object3D[];
   phase: number;
   dispose: () => void;
 }
@@ -361,21 +362,27 @@ export function buildHubModuleBuilding3D(
     group.add(corniceBar);
   }
 
+  const occludableVerticalProps: THREE.Object3D[] = [];
+
   // 5. Status Rooftop Beacon (animated pulse on active/warn/unavailable)
+  const beaconGroup = new THREE.Group();
+  beaconGroup.name = `vertical_prop:hub_beacon:${placement.moduleId}`;
   const beaconMat = new THREE.MeshStandardMaterial({
     color: appearance.beaconColorHex,
     emissive: appearance.beaconColorHex,
     emissiveIntensity: appearance.lightsOn ? 1.4 : 0.65,
     roughness: 0.22,
   });
-  const beaconPost = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 0.9, 6), trimDarkMat);
+  const beaconPost = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 0.9, 6), trimDarkMat.clone());
   beaconPost.position.set(-w * 0.36, roofBaseY + 0.72, d * 0.32);
-  group.add(beaconPost);
+  beaconGroup.add(beaconPost);
 
   const beaconOrb = new THREE.Mesh(new THREE.SphereGeometry(0.24, 10, 8), beaconMat);
   beaconOrb.name = 'hub-building-beacon';
   beaconOrb.position.set(-w * 0.36, roofBaseY + 1.24, d * 0.32);
-  group.add(beaconOrb);
+  beaconGroup.add(beaconOrb);
+  group.add(beaconGroup);
+  occludableVerticalProps.push(beaconGroup);
 
   // 6. Prominent Rooftop Signboard ("준비 중" hazard board for planned vs illuminated board for active)
   const signTex = textures.createHubBuildingSignboard(
@@ -397,14 +404,18 @@ export function buildHubModuleBuilding3D(
   const signW = Math.min(w - 0.8, 6.8);
   const signH = 1.95;
   const signY = roofBaseY + 1.28;
-  const signFrame = new THREE.Mesh(new THREE.BoxGeometry(signW + 0.24, signH + 0.2, 0.28), trimDarkMat);
+  const signGroup = new THREE.Group();
+  signGroup.name = `vertical_prop:hub_sign:${placement.moduleId}`;
+  const signFrame = new THREE.Mesh(new THREE.BoxGeometry(signW + 0.24, signH + 0.2, 0.28), trimDarkMat.clone());
   signFrame.position.set(0, signY, d * 0.5 - 0.1);
-  group.add(signFrame);
+  signGroup.add(signFrame);
 
   const signFace = new THREE.Mesh(new THREE.PlaneGeometry(signW, signH), signMat);
   signFace.name = 'hub-building-signboard';
   signFace.position.set(0, signY, d * 0.5 + 0.06);
-  group.add(signFace);
+  signGroup.add(signFace);
+  group.add(signGroup);
+  occludableVerticalProps.push(signGroup);
 
   // 7. 3D Construction Scaffolding Rig (STRICTLY when status === 'planned')
   if (appearance.hasScaffolding) {
@@ -416,6 +427,7 @@ export function buildHubModuleBuilding3D(
     });
     const scaffolding = buildConstructionScaffolding(w, bodyH + 0.4, d, hazardBarMat, lowSpec);
     group.add(scaffolding);
+    occludableVerticalProps.push(scaffolding);
   }
 
   // 8. Invisible Click Hit Proxy (slightly oversized for effortless click/tap targeting)
@@ -443,6 +455,7 @@ export function buildHubModuleBuilding3D(
     hitProxy,
     beaconMat,
     signTextures,
+    occludableVerticalProps,
     phase: phaseIndex * 1.15,
     dispose,
   };

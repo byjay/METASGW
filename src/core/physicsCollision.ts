@@ -18,6 +18,10 @@ import { PORTAL_BUILDINGS, type ObstacleBox2D, type Vec2 } from './navMeshEngine
 
 export const AVATAR_COLLISION_RADIUS = 0.55;
 export const AVATAR_PROP_MIN_CLEARANCE = 0.8;
+/** Stage 12: Minimum horizontal clearance from vertical poles/lamps for default player spawn. */
+export const PLAYER_POLE_MIN_CLEARANCE = 1.5;
+/** Stage 12: Open-plaza default player spawn position, >= 4.9m clear of central lamp (0, -4.8) & benches. */
+export const PLAYER_DEFAULT_SPAWN: Readonly<Vec2> = { x: 4.2, z: -8.6 };
 export const AVATAR_MIN_SEPARATION = 1.15;
 export const QUAY_MAIN_DECK_Y = 1.61;
 export const QUAY_REAR_APRON_Y = 1.57;
@@ -25,16 +29,16 @@ export const OBSERVATION_DECK_Y = 2.41;
 
 /** Minimum 3D camera orbit distance (meters). At FOV 50°, a 2.78m quay worker spans ~93% height at 3.2m and ~50% at 6.0m. */
 export const CAMERA_MIN_DISTANCE = 3.2;
-/** Stage 11: Max mouse-wheel / free-orbit zoom floor (meters). At 5.2m (FOV 50°), a 2.78m worker spans ~56% viewport height with full head-to-boot framing and quay surroundings. */
-export const CAMERA_WHEEL_MIN_DISTANCE = 5.2;
+/** Stage 11–12: Max mouse-wheel / free-orbit zoom floor (meters). At 5.6m (FOV 50°), a 2.78m worker spans ~53% viewport height with full head-to-boot clearance between top HUD and bottom dock. */
+export const CAMERA_WHEEL_MIN_DISTANCE = 5.6;
 export const CAMERA_CLOSE_ZOOM_BLEND_START = 26.0;
 export const CAMERA_CLOSE_ZOOM_BLEND_END = 10.5;
 export const CAMERA_FAR_MIN_POLAR_ANGLE = 0.14;
 export const CAMERA_FAR_MAX_POLAR_ANGLE = Math.PI * 0.485;
-/** Close-zoom polar angle bounds from +Y (radians): [1.24..1.44] ≈ [71.0°..82.5°] (downward pitch 7.5°..19.0°), keeping full worker body inside viewport and water ratio <= 40%. */
-export const CAMERA_CLOSE_MIN_POLAR_ANGLE = 1.24;
+/** Close-zoom polar angle bounds from +Y (radians): [1.26..1.44] ≈ [72.2°..82.5°] (downward pitch 7.5°..17.8°), keeping full worker body comfortably inside HUD-safe viewport and water ratio <= 40%. */
+export const CAMERA_CLOSE_MIN_POLAR_ANGLE = 1.26;
 export const CAMERA_CLOSE_MAX_POLAR_ANGLE = 1.44;
-export const WORKER_CHEST_HEIGHT_OFFSET = 1.45;
+export const WORKER_CHEST_HEIGHT_OFFSET = 1.48;
 export const QUAY_CLOSE_ZOOM_MAX_TARGET_Z = -7.5;
 export const CAMERA_PERSON_FOCUS_MIN_DIST = 3.0;
 export const CAMERA_PERSON_FOCUS_MAX_DIST = 6.0;

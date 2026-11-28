@@ -212,8 +212,8 @@ export function App() {
 
   const [labels, setLabels] = useState<ProjectedLabel[]>([]);
   const [playerPose, setPlayerPose] = useState<{ x: number; z: number; heading: number }>({
-    x: 0,
-    z: -10.5,
+    x: 4.2,
+    z: -8.6,
     heading: 0,
   });
   const [cameraWorldTarget, setCameraWorldTarget] = useState<{ x: number; z: number }>({
