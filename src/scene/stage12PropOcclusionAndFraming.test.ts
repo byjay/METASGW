@@ -52,6 +52,7 @@ function createStubTextures(): HarborTexturePack {
     waterNormals: asCanvasTex,
     cloudPuff: asCanvasTex,
     contactShadow: asCanvasTex,
+    seastarSkyBanner: asCanvasTex,
     usedOffscreenCanvas: false,
     createSignboard: () => asCanvasTex,
     createHubBuildingSignboard: () => asCanvasTex,
@@ -373,5 +374,79 @@ describe('Stage 12 — Vertical Prop Sightline Occlusion (0.15), Open-Plaza Play
     rig.dispose();
     world.dispose();
     textures.dispose();
+  });
+
+  it('4. strictly locks LookAt target to worker chest height and clamps pitch against extreme low/high alignment on main deck and raised terrace', () => {
+    const rig = buildHumanoidEngineerAvatar({
+      isPartner: false,
+      shirtHex: '#0284c7',
+      skipContactShadow: true,
+      isCurrentUser: true,
+    });
+
+    const locations = [
+      { label: 'main-quay', x: PLAYER_DEFAULT_SPAWN.x, z: PLAYER_DEFAULT_SPAWN.z },
+      { label: 'observation-terrace', x: 0, z: -16.2 },
+    ];
+    const extremeScenarios = [
+      // Hostile low target (at boots) + ground-skimming upward-tilted camera
+      { targetOffsetY: 0.0, camDeltaY: -1.4 },
+      // Hostile high target (above helmet) + steep bird's-eye overhead camera
+      { targetOffsetY: 3.8, camDeltaY: 4.9 },
+      // Neutral horizontal eye-level input
+      { targetOffsetY: 1.46, camDeltaY: 0.8 },
+    ];
+
+    for (const loc of locations) {
+      const deckY = sampleHarborElevation(loc.x, loc.z);
+      const expectedChestY = deckY + WORKER_CHEST_HEIGHT_OFFSET;
+      rig.group.position.set(loc.x, deckY, loc.z);
+      rig.group.updateMatrixWorld(true);
+      const workerBox = new THREE.Box3().setFromObject(rig.group);
+
+      for (const sc of extremeScenarios) {
+        for (let i = 0; i < 8; i += 1) {
+          const az = (i / 8) * Math.PI * 2;
+          const framed = clampCloseZoomCameraFraming(
+            {
+              x: loc.x + 4.0 * Math.sin(az),
+              y: deckY + sc.targetOffsetY + sc.camDeltaY,
+              z: loc.z + 4.0 * Math.cos(az),
+            },
+            { x: loc.x, y: deckY + sc.targetOffsetY, z: loc.z },
+            { x: loc.x, z: loc.z },
+            HARBOR_ALL_OBSTACLES,
+          );
+
+          // 1) LookAt target Y is locked strictly to exact worker chest height
+          assert.ok(
+            Math.abs(framed.targetPos.y - expectedChestY) < 1e-4,
+            `${loc.label}: LookAt Y (${framed.targetPos.y.toFixed(3)}) must equal chest height (${expectedChestY.toFixed(3)})`,
+          );
+
+          // 2) Camera elevation stays in ergonomic worker shoulder-to-helmet band (never too low or too high)
+          assert.ok(
+            framed.cameraPos.y >= deckY + 1.9 && framed.cameraPos.y <= deckY + 3.15,
+            `${loc.label}: Camera Y (${framed.cameraPos.y.toFixed(2)}) outside ergonomic worker band [${(deckY + 1.9).toFixed(2)}, ${(deckY + 3.15).toFixed(2)}]`,
+          );
+
+          // 3) Full worker body stays symmetrically centered in HUD-safe viewport on both 1440x900 & 375x812
+          for (const aspect of [1440 / 900, 375 / 812]) {
+            const cam = new THREE.PerspectiveCamera(50, aspect, 0.25, 3600);
+            cam.position.set(framed.cameraPos.x, framed.cameraPos.y, framed.cameraPos.z);
+            cam.lookAt(framed.targetPos.x, framed.targetPos.y, framed.targetPos.z);
+            cam.updateMatrixWorld(true);
+
+            const ndc = projectBoxToNdc(workerBox, cam);
+            assert.ok(
+              ndc.maxY <= 0.65 && ndc.minY >= -0.68,
+              `${loc.label}: Full body drifted out of centered safe band [minY=${ndc.minY.toFixed(3)}, maxY=${ndc.maxY.toFixed(3)}]`,
+            );
+          }
+        }
+      }
+    }
+
+    rig.dispose();
   });
 });

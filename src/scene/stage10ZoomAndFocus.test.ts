@@ -59,6 +59,7 @@ function createStubTextures(): HarborTexturePack {
     waterNormals: asCanvasTex,
     cloudPuff: asCanvasTex,
     contactShadow: asCanvasTex,
+    seastarSkyBanner: asCanvasTex,
     usedOffscreenCanvas: false,
     createSignboard: () => asCanvasTex,
     createHubBuildingSignboard: () => asCanvasTex,

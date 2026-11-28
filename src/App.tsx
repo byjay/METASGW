@@ -12,8 +12,10 @@ import {
   AuthGateOverlay,
   PersonActionModal,
 } from './components/HarborOverlays';
+import type { AdminHarborTab } from './components/AdminHarborModal';
 import { HudTopBar } from './components/HudTopBar';
 import type { RadialTarget } from './components/RadialActionMenu';
+import type { PreviewBridgeTarget } from './components/SgwBridgePreviewModal';
 import type { PortalBuildingSpec } from './core/navMeshEngine';
 import {
   isSafeNavigationUrl,
@@ -23,6 +25,9 @@ import {
   SGW_PORTAL_LINKS,
 } from './deepLink';
 
+const AdminHarborModal = lazy(() =>
+  import('./components/AdminHarborModal').then((m) => ({ default: m.AdminHarborModal })),
+);
 const BottomControlDock = lazy(() =>
   import('./components/BottomControlDock').then((m) => ({ default: m.BottomControlDock })),
 );
@@ -40,6 +45,9 @@ const RadialActionMenu = lazy(() =>
 );
 const ReportModal = lazy(() =>
   import('./ui/ReportModal').then((m) => ({ default: m.ReportModal })),
+);
+const SgwBridgePreviewModal = lazy(() =>
+  import('./components/SgwBridgePreviewModal').then((m) => ({ default: m.SgwBridgePreviewModal })),
 );
 import {
   detectDeviceProfile,
@@ -83,6 +91,7 @@ import type {
   QualityTier,
   RenderMetrics,
 } from './scene/harborSceneTypes';
+import type { VesselSilhouetteId } from './scene/projectVesselTypes';
 import { HOME_HARBOR_DECORATIVE_VESSELS } from './scene/sceneryCatalog';
 import {
   fetchAuthMe,
@@ -99,13 +108,26 @@ import {
   type SgwUser,
 } from './sgwAdapter';
 import {
+  createAssetRecordFromShip,
+  createProjectFromShipAsset,
+  resolveProjectShipSilhouette,
+  saveAllHarborShipsAsAssets,
+} from './shipAssetCatalog';
+import {
   applyShipCustomName,
   applyShipCustomYaw,
+  applyShipVesselAsset,
   checkShipRotationCollision,
   computeQuayParallelSnapYawDeg,
+  loadAddedProjectShips,
+  loadSavedShipAssets,
   loadShipDisplayPrefs,
+  saveAddedProjectShips,
+  saveSavedShipAssets,
   saveShipDisplayPrefs,
   stepShipYawDegrees,
+  type AddedProjectShipRecord,
+  type SavedShipAssetRecord,
   type ShipDisplayPrefsMap,
   type ShipFootprintCollider,
 } from './shipDisplayPrefs';
@@ -186,11 +208,21 @@ export function App() {
   const [darkTheme, setDarkTheme] = useState<boolean>(false);
   const [cameraPreset, setCameraPreset] = useState<CameraPreset>('harbor');
 
-  // Local UI display preferences for ship names & rotations (non-PII, isolated in shipDisplayPrefs.ts)
+  // Local UI display preferences, reusable ship assets & asset-spawned projects (non-PII, isolated in shipDisplayPrefs.ts)
   const [shipDisplayPrefs, setShipDisplayPrefs] = useState<ShipDisplayPrefsMap>(() =>
     loadShipDisplayPrefs(),
   );
+  const [savedShipAssets, setSavedShipAssets] = useState<SavedShipAssetRecord[]>(() =>
+    loadSavedShipAssets(),
+  );
+  const [addedProjectShips, setAddedProjectShips] = useState<AddedProjectShipRecord[]>(() =>
+    loadAddedProjectShips(),
+  );
   const [rotationWarning, setRotationWarning] = useState<string | null>(null);
+  const [adminModalOpen, setAdminModalOpen] = useState<boolean>(false);
+  const [adminModalTab, setAdminModalTab] = useState<AdminHarborTab>('ships');
+  const [adminInitialShipId, setAdminInitialShipId] = useState<string | null>(null);
+  const [previewBridgeTarget, setPreviewBridgeTarget] = useState<PreviewBridgeTarget | null>(null);
 
   const [authStatus, setAuthStatus] = useState<AuthGateStatus>('loading');
   const [authErrorCode, setAuthErrorCode] = useState<AppErrorCode | null>(null);
@@ -280,10 +312,38 @@ export function App() {
 
   const showPreviewBlockedToast = useCallback(
     (featureLabel: string) => {
+      if (isPreviewMode) {
+        setPreviewBridgeTarget({
+          featureLabel,
+          kind: featureLabel.includes('SEDMS')
+            ? 'sedms'
+            : featureLabel.includes('관리자')
+              ? 'admin'
+              : featureLabel.includes('NAS')
+                ? 'nas'
+                : featureLabel.includes('메일') || featureLabel.includes('bmail')
+                  ? 'bmail'
+                  : featureLabel.includes('채팅') || featureLabel.includes('SGTALK') || featureLabel.includes('메시지')
+                    ? 'talk'
+                    : 'general',
+          projectId: null,
+        });
+        return;
+      }
       showToast(`${PREVIEW_SGW_ONLY_TOAST} — ${featureLabel}`);
     },
-    [showToast],
+    [isPreviewMode, showToast],
   );
+
+  const openPreviewBridge = useCallback((target: PreviewBridgeTarget) => {
+    setPreviewBridgeTarget(target);
+  }, []);
+
+  const openAdminMenu = useCallback((tab: AdminHarborTab = 'ships', shipId: string | null = null) => {
+    setAdminModalTab(tab);
+    setAdminInitialShipId(shipId);
+    setAdminModalOpen(true);
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -326,7 +386,22 @@ export function App() {
     [employees, presenceEntries, currentUser],
   );
 
-  const mappedShips = useMemo(() => mapProjectsToHarborShips(projects), [projects]);
+  const mergedProjects = useMemo<SedmsProject[]>(() => {
+    const existingIds = new Set(projects.map((p) => p.id));
+    const extras: SedmsProject[] = addedProjectShips
+      .filter((p) => !existingIds.has(p.id))
+      .map((p) => ({
+        id: p.id,
+        code: p.code,
+        name: p.name,
+        role: p.role,
+        status: p.status,
+        updated_at: p.updated_at,
+      }));
+    return [...projects, ...extras];
+  }, [projects, addedProjectShips]);
+
+  const mappedShips = useMemo(() => mapProjectsToHarborShips(mergedProjects), [mergedProjects]);
 
   const quaySelection = useMemo(
     () => selectVisibleQuayColleagues(mappedPeople, qualityTier),
@@ -478,6 +553,123 @@ export function App() {
       tryApplyShipRotation(shipId, snappedDeg);
     },
     [decorativeById, getShipCurrentYawDeg, tryApplyShipRotation],
+  );
+
+  const handleChangeShipAsset = useCallback(
+    (shipId: string, vesselType: VesselSilhouetteId) => {
+      const next = applyShipVesselAsset(shipDisplayPrefsRef.current, shipId, vesselType);
+      setShipDisplayPrefs(next);
+      saveShipDisplayPrefs(next);
+      showToast('선박 3D 모델 에셋을 변경했습니다.');
+    },
+    [showToast],
+  );
+
+  const handleSaveShipAsAsset = useCallback(
+    (shipId: string) => {
+      const biz = shipsByIdRef.current.get(shipId);
+      const deco = HOME_HARBOR_DECORATIVE_VESSELS.find((d) => d.id === shipId);
+      if (!biz && !deco) return;
+      const prefs = shipDisplayPrefsRef.current;
+      const record = biz
+        ? createAssetRecordFromShip({
+            sourceShipId: biz.id,
+            sourceKind: 'project',
+            name: `${prefs[biz.id]?.customName || biz.name} 에셋`,
+            vesselType: resolveProjectShipSilhouette(
+              biz.id,
+              biz.hullStyleIndex,
+              prefs,
+              addedProjectShips,
+            ),
+            yawDeg: prefs[biz.id]?.yawDeg ?? 90,
+            note: `${biz.code} · 프로젝트 선박 저장`,
+          })
+        : createAssetRecordFromShip({
+            sourceShipId: deco!.id,
+            sourceKind: 'decorative',
+            name: prefs[deco!.id]?.customName || deco!.defaultName,
+            vesselType: deco!.vesselType,
+            yawDeg: prefs[deco!.id]?.yawDeg ?? deco!.defaultYawDeg,
+            note: `${deco!.subtitle} · 항구 선박 저장`,
+          });
+
+      setSavedShipAssets((prev) => {
+        const filtered = prev.filter((item) => item.assetId !== record.assetId);
+        const next = [...filtered, record];
+        saveSavedShipAssets(next);
+        return next;
+      });
+      showToast(`'${record.name}' 선박 에셋을 라이브러리에 저장했습니다.`);
+    },
+    [addedProjectShips, showToast],
+  );
+
+  const handleSaveAllShipsAsAssets = useCallback(() => {
+    const prefs = shipDisplayPrefsRef.current;
+    const allProjectShips = Array.from(shipsByIdRef.current.values());
+    const result = saveAllHarborShipsAsAssets(
+      savedShipAssets,
+      allProjectShips,
+      HOME_HARBOR_DECORATIVE_VESSELS,
+      prefs,
+      addedProjectShips,
+    );
+    setSavedShipAssets(result.assets);
+    saveSavedShipAssets(result.assets);
+    showToast(
+      `항구의 모든 배(${allProjectShips.length + HOME_HARBOR_DECORATIVE_VESSELS.length}척)를 에셋으로 저장했습니다. (신규 ${result.newlySavedCount} · 누적 ${result.totalSavedCount})`,
+    );
+  }, [savedShipAssets, addedProjectShips, showToast]);
+
+  const handleAddProjectFromAsset = useCallback(
+    (input: {
+      asset: SavedShipAssetRecord;
+      projectId: string;
+      projectCode: string;
+      projectName: string;
+      role: string;
+      status: 'active' | 'review' | 'hold' | 'completed';
+    }): { ok: boolean; reason?: string } => {
+      const existingIds = new Set<string>(Array.from(shipsByIdRef.current.keys()));
+      const created = createProjectFromShipAsset({
+        ...input,
+        existingProjectIds: existingIds,
+      });
+      if (!created.ok) {
+        return { ok: false, reason: created.reason };
+      }
+
+      const nextAdded = [...addedProjectShips, created.record];
+      setAddedProjectShips(nextAdded);
+      saveAddedProjectShips(nextAdded);
+
+      // Persist selected 3D vessel archetype & default yaw for the newly added project ship
+      let nextPrefs = applyShipVesselAsset(
+        shipDisplayPrefsRef.current,
+        created.record.id,
+        created.record.vesselType,
+      );
+      nextPrefs = applyShipCustomYaw(nextPrefs, created.record.id, input.asset.defaultYawDeg);
+      setShipDisplayPrefs(nextPrefs);
+      saveShipDisplayPrefs(nextPrefs);
+
+      showToast(
+        `'${created.record.name}' (${created.record.code}) 프로젝트 선박을 항구에 추가했습니다.`,
+      );
+      return { ok: true };
+    },
+    [addedProjectShips, showToast],
+  );
+
+  const handleRemoveAddedProject = useCallback(
+    (projectId: string) => {
+      const nextAdded = addedProjectShips.filter((p) => p.id !== projectId);
+      setAddedProjectShips(nextAdded);
+      saveAddedProjectShips(nextAdded);
+      showToast('추가한 프로젝트 선박을 항구에서 제거했습니다.');
+    },
+    [addedProjectShips, showToast],
   );
 
   // Atomic project boarding / switching flow (clears previous project cache in 1 transition)
@@ -739,6 +931,14 @@ export function App() {
           target.tagName === 'SELECT');
 
       if (e.key === 'Escape') {
+        if (previewBridgeTarget) {
+          setPreviewBridgeTarget(null);
+          return;
+        }
+        if (adminModalOpen) {
+          setAdminModalOpen(false);
+          return;
+        }
         if (reportModalProjectId) {
           setReportModalProjectId(null);
           return;
@@ -791,6 +991,8 @@ export function App() {
     projectSession.selectedPersonSub,
     projectSession.radialTarget,
     reportModalProjectId,
+    adminModalOpen,
+    previewBridgeTarget,
     startBoardingShip,
     handleDisembark,
   ]);
@@ -970,16 +1172,29 @@ export function App() {
 
   const handlePortalNavigate = useCallback(
     (portalId: PortalBuildingSpec['id']) => {
+      if (portalId === 'admin') {
+        openAdminMenu('ships');
+        return;
+      }
       if (isPreviewMode) {
-        showPreviewBlockedToast(PORTAL_LABEL[portalId]);
+        const targetUrl =
+          portalId === 'talk'
+            ? SGW_PORTAL_LINKS.talkHome
+            : portalId === 'nas'
+              ? SGW_PORTAL_LINKS.nas
+              : SGW_PORTAL_LINKS.bmail;
+        openPreviewBridge({
+          featureLabel: PORTAL_LABEL[portalId],
+          targetUrl,
+          kind: portalId,
+        });
         return;
       }
       if (portalId === 'talk') navigateSafely(SGW_PORTAL_LINKS.talkHome);
       else if (portalId === 'nas') navigateSafely(SGW_PORTAL_LINKS.nas);
       else if (portalId === 'bmail') navigateSafely(SGW_PORTAL_LINKS.bmail);
-      else if (portalId === 'admin') navigateSafely(SGW_PORTAL_LINKS.admin);
     },
-    [isPreviewMode, showPreviewBlockedToast],
+    [isPreviewMode, openAdminMenu, openPreviewBridge],
   );
 
   // Keep 3D canvas mounted while in 3D mode OR while waiting for `webglcontextrestored`.
@@ -1248,6 +1463,10 @@ export function App() {
           );
         }
       },
+      openAdminMenu: (tab: AdminHarborTab = 'ships', shipId: string | null = null) =>
+        openAdminMenu(tab, shipId),
+      closeAdminMenu: () => setAdminModalOpen(false),
+      saveAllShipsAsAssets: () => handleSaveAllShipsAsAssets(),
       setMockHubStateForQA: (
         nextRegistry: MetaRegistryResponse,
         nextSummary: MetaHubSummaryResponse | null,
@@ -1266,6 +1485,8 @@ export function App() {
     handleRenameShip,
     handleRotateShipStep,
     handleSnapShipParallel,
+    openAdminMenu,
+    handleSaveAllShipsAsAssets,
   ]);
 
   const handleSelectQualityTier = useCallback((nextTier: QualityTier) => {
@@ -1509,6 +1730,7 @@ export function App() {
             ? () => setReportModalProjectId(hubTargetProjectId)
             : undefined
         }
+        onOpenAdminMenu={(tab) => openAdminMenu(tab ?? 'ships')}
       />
 
       {shouldKeep3DMounted && (
@@ -1789,20 +2011,24 @@ export function App() {
         />
       )}
 
-      {/* Single Unified Entity Action Popup (Ship / Decorative Ship / Person — Requirements #6, #15, #18, #19) */}
+      {/* Single Unified Entity Action Popup (Ship / Decorative Ship / Person — default users enter projects; editing in Admin Menu) */}
       <Suspense fallback={null}>
         {radialTarget && (
           <RadialActionMenu
             target={radialTarget}
             runtimeEnv={runtimeEnv}
             hubRegistry={hubRegistry}
+            hubChips={hubChips}
             customShipName={activeRadialCustomName}
             currentYawDeg={activeRadialYawDeg}
             rotationWarning={rotationWarning}
+            canEditShip={false}
             onBoardShip={startBoardingShip}
             onFocusPerson3D={viewMode === '3d' ? handleFocusPerson3D : undefined}
             onHighlightShip={(shipId) => sceneRef.current?.setSelectedShipId(shipId)}
             onOpenReport={(shipId) => setReportModalProjectId(shipId)}
+            onOpenAdminForShip={(shipId) => openAdminMenu('ships', shipId)}
+            onOpenPreviewBridge={openPreviewBridge}
             onToast={showToast}
             onRenameShip={handleRenameShip}
             onRotateShipStep={handleRotateShipStep}
@@ -1835,8 +2061,10 @@ export function App() {
             phase={boardingState.phase}
             runtimeEnv={runtimeEnv}
             hubRegistry={hubRegistry}
+            hubChips={hubChips}
             onHighlightShip={(shipId) => sceneRef.current?.setSelectedShipId(shipId)}
             onOpenReport={(shipId) => setReportModalProjectId(shipId)}
+            onOpenPreviewBridge={openPreviewBridge}
             onToast={showToast}
             onPreviewLinkBlocked={showPreviewBlockedToast}
             onDisembark={handleDisembark}
@@ -1858,6 +2086,53 @@ export function App() {
             onClose={() => setReportModalProjectId(null)}
             onPreviewLinkBlocked={showPreviewBlockedToast}
             onToast={showToast}
+          />
+        )}
+
+        {adminModalOpen && (
+          <AdminHarborModal
+            open={adminModalOpen}
+            initialTab={adminModalTab}
+            initialShipId={adminInitialShipId}
+            runtimeEnv={runtimeEnv}
+            ships={mappedShips}
+            shipDisplayPrefs={shipDisplayPrefs}
+            savedShipAssets={savedShipAssets}
+            addedProjectShips={addedProjectShips}
+            rotationWarning={rotationWarning}
+            onRenameShip={handleRenameShip}
+            onRotateShipStep={handleRotateShipStep}
+            onRotateShipAbsolute={handleRotateShipAbsolute}
+            onSnapShipParallel={handleSnapShipParallel}
+            onChangeShipAsset={handleChangeShipAsset}
+            onSaveShipAsAsset={handleSaveShipAsAsset}
+            onSaveAllShipsAsAssets={handleSaveAllShipsAsAssets}
+            onAddProjectFromAsset={handleAddProjectFromAsset}
+            onRemoveAddedProject={handleRemoveAddedProject}
+            onBoardShip={startBoardingShip}
+            onOpenExternalAdmin={() => {
+              setAdminModalOpen(false);
+              openPreviewBridge({
+                featureLabel: 'SGW 외부 관리자 포털',
+                targetUrl: SGW_PORTAL_LINKS.admin,
+                kind: 'admin',
+              });
+            }}
+            onClose={() => setAdminModalOpen(false)}
+          />
+        )}
+
+        {previewBridgeTarget && (
+          <SgwBridgePreviewModal
+            target={previewBridgeTarget}
+            runtimeEnv={runtimeEnv}
+            hubRegistry={hubRegistry}
+            onBoardShip={startBoardingShip}
+            onOpenReport={(shipId) => setReportModalProjectId(shipId)}
+            onOpenAdminTab={(tab) => openAdminMenu(tab)}
+            onHighlightShip={(shipId) => sceneRef.current?.setSelectedShipId(shipId)}
+            onToast={showToast}
+            onClose={() => setPreviewBridgeTarget(null)}
           />
         )}
       </Suspense>

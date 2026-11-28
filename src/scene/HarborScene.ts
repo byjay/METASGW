@@ -1193,10 +1193,19 @@ export class HarborSceneController implements HarborSceneHandle {
   private applyCloseZoomFraming(): void {
     if (this.focusedPersonSub !== null) {
       this.controls.minDistance = CAMERA_MIN_DISTANCE;
-      this.controls.minPolarAngle = 0.14;
-      this.controls.maxPolarAngle = Math.PI * 0.485;
+      const focusedDist = this.camera.position.distanceTo(this.controls.target);
+      const focusedBounds = computePolarAngleBoundsForDistance(focusedDist);
+      this.controls.minPolarAngle = focusedBounds.minPolarAngle;
+      this.controls.maxPolarAngle = focusedBounds.maxPolarAngle;
+
+      const focused = this.personRuntimes.find((r) => r.person.sub === this.focusedPersonSub);
+      if (focused) {
+        const personY = sampleHarborElevation(focused.curX, focused.curZ);
+        this.controls.target.y = personY + (focused.isSeated ? 1.25 : WORKER_CHEST_HEIGHT_OFFSET);
+      }
       const clampedCam = clampCameraCollision(this.camera.position, this.activeColliders);
       this.camera.position.set(clampedCam.x, clampedCam.y, clampedCam.z);
+      this.camera.lookAt(this.controls.target);
       return;
     }
 
@@ -1436,8 +1445,9 @@ export class HarborSceneController implements HarborSceneHandle {
     if (!found) return;
     this.focusedPersonSub = sub;
     this.controls.minDistance = CAMERA_MIN_DISTANCE;
-    this.controls.minPolarAngle = 0.14;
-    this.controls.maxPolarAngle = Math.PI * 0.485;
+    const focusBounds = computePolarAngleBoundsForDistance(CAMERA_PERSON_FOCUS_DEFAULT_DIST);
+    this.controls.minPolarAngle = focusBounds.minPolarAngle;
+    this.controls.maxPolarAngle = focusBounds.maxPolarAngle;
 
     const personY = sampleHarborElevation(found.curX, found.curZ);
     const pose = computePersonFocusCameraPose(
@@ -1492,7 +1502,11 @@ export class HarborSceneController implements HarborSceneHandle {
       this.controls.target.set(0, 2.5, 28);
       this.camera.position.set(0, 88, 206);
     } else if (preset === 'quay') {
-      this.controls.target.set(this.playerPos.x, this.playerPos.y + 1.8, this.playerPos.z);
+      this.controls.target.set(
+        this.playerPos.x,
+        this.playerPos.y + WORKER_CHEST_HEIGHT_OFFSET,
+        this.playerPos.z,
+      );
       this.camera.position.set(this.playerPos.x + 11, this.playerPos.y + 10.5, this.playerPos.z + 18);
     } else {
       // Default establishing shot framing North Quay, visible walking avatars,
@@ -2171,7 +2185,7 @@ export class HarborSceneController implements HarborSceneHandle {
       if (this.npcShadowBatch) this.npcShadowBatch.instanceMatrix.needsUpdate = true;
     }
 
-    this.world.update(dt, this.elapsedTotal, suppressMotion);
+    this.world.update(dt, this.elapsedTotal, suppressMotion, this.reducedMotion);
 
     this.renderFrame();
     this.frameCountWindow += 1;

@@ -20,6 +20,7 @@ import {
   RotateCcw,
   RotateCw,
   Scan,
+  Shield,
   Ship,
   Sparkles,
   User,
@@ -41,9 +42,11 @@ import {
   type MetaModuleId,
   type MetaRegistryResponse,
 } from '../meta/hubTypes';
+import { buildProjectEntryOptions } from '../projectEntryOptions';
 import type { RuntimeEnv } from '../runtimeEnv';
 import type { ClickedDecorativeShip } from '../scene/harborSceneTypes';
 import { MAX_SHIP_NAME_LENGTH } from '../shipDisplayPrefs';
+import type { PreviewBridgeTarget } from './SgwBridgePreviewModal';
 import { ShipKeyItemsTab } from './ShipKeyItemsTab';
 
 export type RadialDirection = 'north' | 'east' | 'south' | 'west';
@@ -67,14 +70,19 @@ export interface RadialActionMenuProps {
   target: RadialTarget | null;
   runtimeEnv: RuntimeEnv;
   hubRegistry?: MetaRegistryResponse | null;
+  hubChips?: HubModuleChipItem[];
   viewportSize?: { width: number; height: number };
   customShipName?: string;
   currentYawDeg?: number;
   rotationWarning?: string | null;
+  /** Default false: ship editing lives in Admin Menu; default users enter project systems directly. */
+  canEditShip?: boolean;
   onBoardShip?: (shipId: string) => void;
   onFocusPerson3D?: (sub: string) => void;
   onHighlightShip?: (shipId: string) => void;
   onOpenReport?: (shipId: string) => void;
+  onOpenAdminForShip?: (shipId: string) => void;
+  onOpenPreviewBridge?: (target: PreviewBridgeTarget) => void;
   onToast?: (message: string) => void;
   onRenameShip?: (shipId: string, rawName: string) => { ok: boolean; reason?: string };
   onRotateShipStep?: (shipId: string, deltaSteps: number) => void;
@@ -257,14 +265,18 @@ export const RadialActionMenu: React.FC<RadialActionMenuProps> = ({
   target,
   runtimeEnv,
   hubRegistry = null,
+  hubChips = [],
   viewportSize,
   customShipName,
   currentYawDeg = 90,
   rotationWarning = null,
+  canEditShip = false,
   onBoardShip,
   onFocusPerson3D,
   onHighlightShip,
   onOpenReport,
+  onOpenAdminForShip,
+  onOpenPreviewBridge,
   onToast,
   onRenameShip,
   onRotateShipStep,
@@ -276,6 +288,7 @@ export const RadialActionMenu: React.FC<RadialActionMenuProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<'overview' | 'key-items'>('overview');
   const [activeDir, setActiveDir] = useState<RadialDirection>('north');
+  const [selectedEntryId, setSelectedEntryId] = useState<string>('sedms');
   const [renameOpen, setRenameOpen] = useState(false);
   const [rotateOpen, setRotateOpen] = useState(false);
   const [nameDraft, setNameDraft] = useState('');
@@ -283,6 +296,10 @@ export const RadialActionMenu: React.FC<RadialActionMenuProps> = ({
   const itemRefs = useRef<Partial<Record<RadialDirection, HTMLAnchorElement | null>>>({});
 
   const items = useMemo(() => (target ? buildRadialMenuActions(target) : []), [target]);
+  const projectEntryOptions = useMemo(
+    () => (target?.kind === 'ship' ? buildProjectEntryOptions(target.ship, hubChips) : []),
+    [target, hubChips],
+  );
   const isPreview = runtimeEnv === 'preview';
 
   const targetKey =
@@ -300,6 +317,7 @@ export const RadialActionMenu: React.FC<RadialActionMenuProps> = ({
     if (!target) return;
     setActiveTab('overview');
     setActiveDir('north');
+    setSelectedEntryId('sedms');
     setRenameOpen(false);
     setRotateOpen(false);
     setNameError(null);
@@ -345,14 +363,14 @@ export const RadialActionMenu: React.FC<RadialActionMenuProps> = ({
     const showingKeyItemsTab = target.kind === 'ship' && activeTab === 'key-items';
     if (showingKeyItemsTab) return;
 
-    // Q / E keyboard rotation in 15° steps when a ship popup is open (Req #19)
-    if (isShipLike && onRotateShipStep && (e.key === 'q' || e.key === 'Q')) {
+    // Q / E keyboard rotation in 15° steps ONLY when admin ship editing is explicitly enabled
+    if (canEditShip && isShipLike && onRotateShipStep && (e.key === 'q' || e.key === 'Q')) {
       e.preventDefault();
       setRotateOpen(true);
       onRotateShipStep(shipId, -1);
       return;
     }
-    if (isShipLike && onRotateShipStep && (e.key === 'e' || e.key === 'E')) {
+    if (canEditShip && isShipLike && onRotateShipStep && (e.key === 'e' || e.key === 'E')) {
       e.preventDefault();
       setRotateOpen(true);
       onRotateShipStep(shipId, 1);
@@ -665,7 +683,16 @@ export const RadialActionMenu: React.FC<RadialActionMenuProps> = ({
                       onClick={(e) => {
                         if (isPreview) {
                           e.preventDefault();
-                          onPreviewLinkBlocked(chip.name);
+                          if (onOpenPreviewBridge) {
+                            onOpenPreviewBridge({
+                              featureLabel: chip.name,
+                              targetUrl: chip.entryUrl,
+                              moduleId: chip.moduleId,
+                              kind: 'hub',
+                            });
+                          } else {
+                            onPreviewLinkBlocked(chip.name);
+                          }
                           onClose();
                         }
                       }}
@@ -723,7 +750,24 @@ export const RadialActionMenu: React.FC<RadialActionMenuProps> = ({
                   onClick={(e) => {
                     if (isPreview) {
                       e.preventDefault();
-                      onPreviewLinkBlocked(item.previewFeatureLabel);
+                      if (onOpenPreviewBridge) {
+                        onOpenPreviewBridge({
+                          featureLabel: item.previewFeatureLabel,
+                          targetUrl: item.href,
+                          projectId: target.kind === 'ship' ? target.ship.id : null,
+                          projectName: target.kind === 'ship' ? displayTitle : null,
+                          kind:
+                            item.direction === 'south'
+                              ? 'sedms'
+                              : item.direction === 'north'
+                                ? 'talk'
+                                : item.direction === 'east'
+                                  ? 'nas'
+                                  : 'bmail',
+                        });
+                      } else {
+                        onPreviewLinkBlocked(item.previewFeatureLabel);
+                      }
                       onClose();
                     }
                   }}
@@ -744,7 +788,94 @@ export const RadialActionMenu: React.FC<RadialActionMenuProps> = ({
           </div>
         )}
 
-        {/* Primary Action Row: 승선 (Business Ship) / 3D 위치 (Person) / 이름 바꾸기 / 방향 바꾸기 */}
+        {/* Default User Project Entry System Selector (SEDMS, SEcMS, s360, SECAD, PDF, Talk, NAS, bmail) */}
+        {target.kind === 'ship' && projectEntryOptions.length > 0 && (() => {
+          const activeOption =
+            projectEntryOptions.find((opt) => opt.id === selectedEntryId && !opt.disabled) ??
+            projectEntryOptions.find((opt) => !opt.disabled) ??
+            projectEntryOptions[0];
+          return (
+            <div
+              data-testid="project-entry-options-section"
+              className="rounded-xl border border-slate-700/90 bg-slate-900/90 p-2.5 space-y-2"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] font-bold text-sky-200">
+                  프로젝트 진입 시스템 선택
+                </span>
+                <span className="text-[10px] text-slate-400">옵션 선택 후 진입</span>
+              </div>
+
+              <div
+                role="radiogroup"
+                aria-label="프로젝트 진입 시스템 옵션"
+                className="grid grid-cols-2 gap-1.5"
+              >
+                {projectEntryOptions.map((opt) => {
+                  const isSelected = activeOption?.id === opt.id;
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      role="radio"
+                      aria-checked={isSelected}
+                      aria-label={`${opt.label} 진입 옵션 선택 (${opt.statusLabel})`}
+                      disabled={opt.disabled}
+                      data-testid={`project-entry-option-${opt.id}`}
+                      onClick={() => setSelectedEntryId(opt.id)}
+                      className={`rounded-lg border px-2 py-1.5 text-left text-[11px] transition focus-visible:outline-2 focus-visible:outline-sky-300 ${
+                        opt.disabled
+                          ? 'cursor-not-allowed border-dashed border-slate-700 bg-slate-950/60 text-slate-400 opacity-75'
+                          : isSelected
+                            ? 'border-sky-400 bg-sky-900/80 text-white font-bold'
+                            : 'border-slate-700 bg-slate-950 text-slate-200 hover:border-sky-500/70 hover:bg-slate-800'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-1">
+                        <span className="truncate font-semibold">{opt.label}</span>
+                        <span className="shrink-0 text-[9px] text-slate-300">
+                          {opt.statusLabel}
+                        </span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {activeOption && activeOption.href && !activeOption.disabled && (
+                <a
+                  href={activeOption.href}
+                  data-testid="project-entry-launch-btn"
+                  aria-label={`${activeOption.label} 시스템으로 바로 진입`}
+                  onClick={(e) => {
+                    if (isPreview) {
+                      e.preventDefault();
+                      if (onOpenPreviewBridge) {
+                        onOpenPreviewBridge({
+                          featureLabel: activeOption.previewFeatureLabel,
+                          targetUrl: activeOption.href,
+                          projectId: target.ship.id,
+                          projectName: displayTitle,
+                          moduleId: activeOption.moduleId ?? null,
+                          kind: activeOption.kind,
+                        });
+                      } else {
+                        onPreviewLinkBlocked(activeOption.previewFeatureLabel);
+                      }
+                      onClose();
+                    }
+                  }}
+                  className="inline-flex w-full min-h-[38px] items-center justify-center gap-1.5 rounded-xl bg-emerald-700 px-3 py-1.5 text-xs font-bold text-white hover:bg-emerald-600 focus-visible:outline-2 focus-visible:outline-sky-300"
+                >
+                  <span>{activeOption.label} 진입</span>
+                  <ExternalLink className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                </a>
+              )}
+            </div>
+          );
+        })()}
+
+        {/* Primary Action Row: 승선 (Business Ship) / 3D 위치 (Person) / 관리자 메뉴 연동 */}
         <div className="flex flex-wrap items-center gap-1.5">
           {target.kind === 'ship' && onBoardShip && (
             <button
@@ -772,7 +903,15 @@ export const RadialActionMenu: React.FC<RadialActionMenuProps> = ({
                 onClick={(e) => {
                   if (isPreview) {
                     e.preventDefault();
-                    onPreviewLinkBlocked(`메시지(${target.person.name})`);
+                    if (onOpenPreviewBridge) {
+                      onOpenPreviewBridge({
+                        featureLabel: `1:1 메시지(${target.person.name})`,
+                        targetUrl: safeDmHref,
+                        kind: 'talk',
+                      });
+                    } else {
+                      onPreviewLinkBlocked(`메시지(${target.person.name})`);
+                    }
                     onClose();
                   }
                 }}
@@ -802,7 +941,23 @@ export const RadialActionMenu: React.FC<RadialActionMenuProps> = ({
               </button>
             )}
 
-          {isShipLike && onRenameShip && (
+          {isShipLike && !canEditShip && onOpenAdminForShip && (
+            <button
+              type="button"
+              data-testid="radial-open-admin-ship-btn"
+              aria-label="관리자 메뉴에서 선박 정보 및 에셋 변경"
+              onClick={() => {
+                onClose();
+                onOpenAdminForShip(shipId);
+              }}
+              className="inline-flex flex-1 min-h-[38px] items-center justify-center gap-1 whitespace-nowrap rounded-xl border border-slate-700 bg-slate-900 px-2.5 py-1.5 text-[11px] sm:text-xs font-semibold text-slate-200 hover:border-amber-400/60 hover:bg-slate-800 hover:text-white focus-visible:outline-2 focus-visible:outline-sky-300"
+            >
+              <Shield className="h-3.5 w-3.5 shrink-0 text-amber-300" aria-hidden="true" />
+              <span>선박 정보·에셋 관리</span>
+            </button>
+          )}
+
+          {canEditShip && isShipLike && onRenameShip && (
             <button
               type="button"
               data-testid="ship-rename-toggle"
@@ -823,7 +978,7 @@ export const RadialActionMenu: React.FC<RadialActionMenuProps> = ({
             </button>
           )}
 
-          {isShipLike && onRotateShipStep && (
+          {canEditShip && isShipLike && onRotateShipStep && (
             <button
               type="button"
               data-testid="ship-rotate-toggle"
@@ -845,8 +1000,8 @@ export const RadialActionMenu: React.FC<RadialActionMenuProps> = ({
           )}
         </div>
 
-        {/* Inline Ship Rename Panel (Requirement #15) */}
-        {isShipLike && renameOpen && onRenameShip && (
+        {/* Inline Ship Rename Panel (only when canEditShip is enabled) */}
+        {canEditShip && isShipLike && renameOpen && onRenameShip && (
           <form
             onSubmit={submitRename}
             className="rounded-xl border border-slate-700 bg-slate-900/95 p-2.5 space-y-2"
@@ -898,8 +1053,8 @@ export const RadialActionMenu: React.FC<RadialActionMenuProps> = ({
           </form>
         )}
 
-        {/* Inline Ship Rotation Panel (Requirement #19 — 15° Q/E + slider + quay snap + collision rollback) */}
-        {isShipLike && rotateOpen && onRotateShipStep && (
+        {/* Inline Ship Rotation Panel (only when canEditShip is enabled) */}
+        {canEditShip && isShipLike && rotateOpen && onRotateShipStep && (
           <div
             className="rounded-xl border border-slate-700 bg-slate-900/95 p-2.5 space-y-2"
             data-testid="ship-rotate-panel"

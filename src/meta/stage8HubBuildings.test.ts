@@ -44,6 +44,7 @@ function createHeadlessTexturePack(): HarborTexturePack {
     cloudPuff: make(),
     craneBannerOrange: make(),
     craneBannerBlue: make(),
+    seastarSkyBanner: make(),
     usedOffscreenCanvas: false,
     createSignboard: () => make(),
     createHubBuildingSignboard: () => make(),

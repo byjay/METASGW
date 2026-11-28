@@ -16,6 +16,7 @@ export interface HarborTexturePack {
   hullSteelPlates: THREE.CanvasTexture;
   waterNormals: THREE.CanvasTexture;
   cloudPuff: THREE.CanvasTexture;
+  seastarSkyBanner: THREE.CanvasTexture;
   usedOffscreenCanvas: boolean;
   createSignboard: (title: string, subtitle: string, accentHex: string) => THREE.CanvasTexture;
   createHubBuildingSignboard: (
@@ -633,6 +634,265 @@ export function createHarborTextures(maxAnisotropy: number): HarborTexturePack {
     return tex;
   };
 
+  // 14. Monumental SEASTAR — SHIP DESIGN SOLUTIONS Corporate Banner (2048x860, exact 2.38:1 visual match)
+  const sbW = 2048;
+  const sbH = 860;
+  const sbSurface = makeProceduralCanvas(sbW, sbH);
+  usedOffscreenCanvas = usedOffscreenCanvas || sbSurface.isOffscreen;
+  const sbCtx = sbSurface.ctx;
+
+  // Deep maritime navy gradient backdrop
+  const bgGrad = sbCtx.createLinearGradient(0, 0, sbW, sbH);
+  bgGrad.addColorStop(0, '#022645');
+  bgGrad.addColorStop(0.5, '#043259');
+  bgGrad.addColorStop(1, '#02223d');
+  sbCtx.fillStyle = bgGrad;
+  sbCtx.fillRect(0, 0, sbW, sbH);
+
+  // Subtle luminous ocean-blueprint radial glow behind right-side CAD wireframe bow
+  const wireGlow = sbCtx.createRadialGradient(1610, 420, 40, 1580, 430, 560);
+  wireGlow.addColorStop(0, 'rgba(56, 189, 248, 0.24)');
+  wireGlow.addColorStop(0.55, 'rgba(14, 116, 178, 0.10)');
+  wireGlow.addColorStop(1, 'rgba(2, 34, 61, 0)');
+  sbCtx.fillStyle = wireGlow;
+  sbCtx.fillRect(880, 0, 1168, sbH);
+
+  // === RIGHT HALF: Naval Architecture 3D CAD Wireframe Ship Bow & Bulbous Bow ===
+  sbCtx.save();
+  // Fine horizontal & vertical CAD drafting construction grid lines
+  sbCtx.strokeStyle = 'rgba(147, 223, 255, 0.28)';
+  sbCtx.lineWidth = 1.4;
+  for (const gy of [235, 325, 420, 520, 625, 710]) {
+    sbCtx.beginPath();
+    sbCtx.moveTo(920 + (gy > 500 ? 110 : 0), gy);
+    sbCtx.lineTo(2015, gy);
+    sbCtx.stroke();
+  }
+  for (const gx of [1085, 1190, 1300, 1410, 1530, 1650, 1775, 1895, 1945]) {
+    sbCtx.beginPath();
+    sbCtx.moveTo(gx, 118);
+    sbCtx.lineTo(gx, 760);
+    sbCtx.stroke();
+  }
+
+  // Sweeping hull longitudinal sheer / strake lines (left aft -> flared bow stem)
+  const hullStrakes = 14;
+  for (let i = 0; i <= hullStrakes; i += 1) {
+    const t = i / hullStrakes;
+    const startX = 955 + t * 50;
+    const startY = 270 + t * 440;
+    const ctrl1X = 1320 + t * 65;
+    const ctrl1Y = 240 + t * 425 - Math.sin(t * Math.PI) * 35;
+    // Bow stem curve sweeps sharply right at top and curves inward toward bulbous forefoot
+    const stemX =
+      t < 0.72
+        ? 1985 - Math.pow(t / 0.72, 1.35) * 230
+        : 1755 + Math.sin(((t - 0.72) / 0.28) * Math.PI) * 165;
+    const stemY = 145 + t * 590;
+
+    sbCtx.strokeStyle =
+      i === 0 || i === 1 || i === hullStrakes
+        ? 'rgba(255, 255, 255, 0.92)'
+        : i % 3 === 0
+          ? 'rgba(224, 247, 255, 0.72)'
+          : 'rgba(103, 232, 249, 0.42)';
+    sbCtx.lineWidth = i === 0 || i === 1 ? 3.2 : i % 3 === 0 ? 1.8 : 1.1;
+    sbCtx.beginPath();
+    sbCtx.moveTo(startX, startY);
+    sbCtx.bezierCurveTo(ctrl1X, ctrl1Y, stemX - 180, stemY - 35, stemX, stemY);
+    sbCtx.stroke();
+  }
+
+  // Curved transverse hull station ribs (giving the sculpted 3D CAD hull flare)
+  const stationCount = 16;
+  for (let s = 0; s <= stationCount; s += 1) {
+    const u = s / stationCount;
+    const topX = 1040 + u * 945;
+    const topY = 268 - Math.pow(u, 1.65) * 125;
+    const midX = topX - (1 - u) * 30 - Math.sin(u * Math.PI) * 65;
+    const midY = 475 - u * 40;
+    const botX = 1020 + u * 735;
+    const botY = 710 + (u > 0.75 ? (u - 0.75) * 95 : 0);
+
+    sbCtx.strokeStyle =
+      s >= stationCount - 2
+        ? 'rgba(255, 255, 255, 0.92)'
+        : s % 2 === 0
+          ? 'rgba(186, 230, 253, 0.62)'
+          : 'rgba(56, 189, 248, 0.34)';
+    sbCtx.lineWidth = s >= stationCount - 1 ? 3.0 : 1.4;
+    sbCtx.beginPath();
+    sbCtx.moveTo(topX, topY);
+    sbCtx.bezierCurveTo(midX + 50, midY - 40, midX - 25, midY + 95, botX, botY);
+    sbCtx.stroke();
+  }
+
+  // Prominent bright white flared bow stem & bulbous bow silhouette highlight
+  sbCtx.strokeStyle = '#ffffff';
+  sbCtx.lineWidth = 4.6;
+  sbCtx.lineCap = 'round';
+  sbCtx.lineJoin = 'round';
+  sbCtx.beginPath();
+  // Upper deck sheer into sharp bow tip
+  sbCtx.moveTo(1180, 245);
+  sbCtx.bezierCurveTo(1540, 225, 1800, 170, 1988, 138);
+  // Steep curved stem plunging down to forefoot
+  sbCtx.bezierCurveTo(1965, 300, 1850, 495, 1775, 622);
+  // Iconic protruding bulbous bow nose
+  sbCtx.bezierCurveTo(1750, 668, 1825, 682, 1882, 706);
+  sbCtx.bezierCurveTo(1922, 724, 1905, 762, 1820, 756);
+  // Keel sweeping aft
+  sbCtx.bezierCurveTo(1720, 750, 1460, 736, 1080, 725);
+  sbCtx.stroke();
+
+  // Superstructure bridge deck wireframe echo at upper-mid bow
+  sbCtx.strokeStyle = 'rgba(224, 247, 255, 0.78)';
+  sbCtx.lineWidth = 2.2;
+  sbCtx.beginPath();
+  sbCtx.moveTo(1235, 238);
+  sbCtx.quadraticCurveTo(1485, 190, 1790, 162);
+  sbCtx.lineTo(1975, 142);
+  sbCtx.stroke();
+  sbCtx.restore();
+
+  // === LEFT HALF: SEASTAR Bow Emblem + Wordmark + Subtitle ===
+  sbCtx.save();
+
+  // 1) Stylized white aerodynamic ship bow chevron above SEASTAR
+  sbCtx.fillStyle = '#ffffff';
+  sbCtx.beginPath();
+  sbCtx.moveTo(228, 466);
+  sbCtx.quadraticCurveTo(510, 344, 834, 308);
+  sbCtx.lineTo(722, 444);
+  sbCtx.quadraticCurveTo(525, 404, 326, 434);
+  sbCtx.quadraticCurveTo(510, 390, 706, 412);
+  sbCtx.lineTo(786, 328);
+  sbCtx.quadraticCurveTo(500, 362, 228, 466);
+  sbCtx.closePath();
+  sbCtx.fill();
+
+  // Vivid crimson-red accent stripe inside the bow swoosh
+  sbCtx.fillStyle = '#e11d1d';
+  sbCtx.beginPath();
+  sbCtx.moveTo(410, 418);
+  sbCtx.quadraticCurveTo(568, 362, 758, 342);
+  sbCtx.lineTo(738, 362);
+  sbCtx.quadraticCurveTo(562, 378, 410, 418);
+  sbCtx.closePath();
+  sbCtx.fill();
+
+  // Secondary lower crisp white wave arc
+  sbCtx.fillStyle = '#ffffff';
+  sbCtx.beginPath();
+  sbCtx.moveTo(306, 456);
+  sbCtx.quadraticCurveTo(535, 412, 742, 466);
+  sbCtx.quadraticCurveTo(538, 432, 306, 456);
+  sbCtx.closePath();
+  sbCtx.fill();
+
+  // 2) Bold Geometric "SEASTAR" Wordmark (SEA in deep navy w/ white outline + Trident E; STAR in vivid red w/ white outline)
+  const drawOutlinedLetter = (
+    ch: string,
+    x: number,
+    y: number,
+    fill: string,
+    scaleX = 1.08,
+  ) => {
+    sbCtx.save();
+    sbCtx.translate(x, y);
+    sbCtx.scale(scaleX, 1);
+    sbCtx.font = '900 132px "Segoe UI", "Arial Black", system-ui, sans-serif';
+    sbCtx.textAlign = 'center';
+    sbCtx.textBaseline = 'middle';
+    sbCtx.lineJoin = 'round';
+    sbCtx.lineWidth = 10;
+    sbCtx.strokeStyle = '#ffffff';
+    sbCtx.strokeText(ch, 0, 0);
+    sbCtx.fillStyle = fill;
+    sbCtx.fillText(ch, 0, 0);
+    sbCtx.restore();
+  };
+
+  // Custom Poseidon 3-prong Trident 'E' (exact iconic silhouette from uploaded logo)
+  const drawTridentE = (cx: number, cy: number) => {
+    sbCtx.save();
+    sbCtx.translate(cx, cy);
+    sbCtx.beginPath();
+    // Left diamond tang + vertical spine + 3 rightward barbed trident prongs
+    sbCtx.moveTo(-64, 0);
+    sbCtx.lineTo(-42, -16);
+    sbCtx.lineTo(-42, -46);
+    sbCtx.lineTo(24, -46);
+    sbCtx.lineTo(18, -56);
+    sbCtx.lineTo(62, -37);
+    sbCtx.lineTo(18, -18);
+    sbCtx.lineTo(24, -27);
+    sbCtx.lineTo(-18, -27);
+    sbCtx.lineTo(-18, -10);
+    sbCtx.lineTo(28, -10);
+    sbCtx.lineTo(22, -19);
+    sbCtx.lineTo(66, 0);
+    sbCtx.lineTo(22, 19);
+    sbCtx.lineTo(28, 10);
+    sbCtx.lineTo(-18, 10);
+    sbCtx.lineTo(-18, 27);
+    sbCtx.lineTo(24, 27);
+    sbCtx.lineTo(18, 18);
+    sbCtx.lineTo(62, 37);
+    sbCtx.lineTo(18, 56);
+    sbCtx.lineTo(24, 46);
+    sbCtx.lineTo(-42, 46);
+    sbCtx.lineTo(-42, 16);
+    sbCtx.closePath();
+
+    sbCtx.lineJoin = 'round';
+    sbCtx.lineWidth = 8.5;
+    sbCtx.strokeStyle = '#ffffff';
+    sbCtx.stroke();
+    sbCtx.fillStyle = '#082557';
+    sbCtx.fill();
+    sbCtx.restore();
+  };
+
+  const wordY = 548;
+  drawOutlinedLetter('S', 168, wordY, '#082557');
+  drawTridentE(288, wordY - 4);
+  drawOutlinedLetter('A', 418, wordY, '#082557');
+  drawOutlinedLetter('S', 544, wordY, '#e11d1d');
+  drawOutlinedLetter('T', 664, wordY, '#e11d1d');
+  drawOutlinedLetter('A', 778, wordY, '#e11d1d');
+  drawOutlinedLetter('R', 898, wordY, '#e11d1d');
+
+  // 3) Subtitle: ———  SHIP DESIGN SOLUTIONS  ———
+  const subY = 638;
+  sbCtx.strokeStyle = '#ffffff';
+  sbCtx.lineWidth = 4;
+  sbCtx.beginPath();
+  sbCtx.moveTo(114, subY);
+  sbCtx.lineTo(202, subY);
+  sbCtx.moveTo(850, subY);
+  sbCtx.lineTo(938, subY);
+  sbCtx.stroke();
+
+  sbCtx.fillStyle = '#ffffff';
+  sbCtx.font = '700 34px "Segoe UI", system-ui, sans-serif';
+  sbCtx.textAlign = 'center';
+  sbCtx.textBaseline = 'middle';
+  sbCtx.fillText('S H I P   D E S I G N   S O L U T I O N S', 526, subY);
+
+  // Subtle metallic cyan framing hairline inside banner edge
+  sbCtx.strokeStyle = 'rgba(125, 211, 252, 0.45)';
+  sbCtx.lineWidth = 6;
+  sbCtx.strokeRect(10, 10, sbW - 20, sbH - 20);
+  sbCtx.restore();
+
+  const seastarSkyBanner = toCanvasTexture(sbSurface.canvas);
+  seastarSkyBanner.colorSpace = THREE.SRGBColorSpace;
+  seastarSkyBanner.anisotropy = anisotropy;
+  seastarSkyBanner.minFilter = THREE.LinearMipmapLinearFilter;
+  seastarSkyBanner.magFilter = THREE.LinearFilter;
+  seastarSkyBanner.needsUpdate = true;
+
   return {
     concreteAlbedo,
     concreteBump,
@@ -649,6 +909,7 @@ export function createHarborTextures(maxAnisotropy: number): HarborTexturePack {
     hullSteelPlates,
     waterNormals,
     cloudPuff,
+    seastarSkyBanner,
     usedOffscreenCanvas,
     createSignboard,
     createHubBuildingSignboard,
@@ -668,6 +929,7 @@ export function createHarborTextures(maxAnisotropy: number): HarborTexturePack {
       hullSteelPlates.dispose();
       waterNormals.dispose();
       cloudPuff.dispose();
+      seastarSkyBanner.dispose();
       dynamicTextures.forEach((t) => t.dispose());
     },
   };

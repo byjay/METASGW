@@ -36,6 +36,7 @@ function createHeadlessTextureStub(): HarborTexturePack {
     hullSteelPlates: make(),
     waterNormals: make(),
     cloudPuff: make(),
+    seastarSkyBanner: make(),
     usedOffscreenCanvas: false,
     createSignboard: () => make(),
     createHubBuildingSignboard: () => make(),

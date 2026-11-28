@@ -14,15 +14,40 @@
  */
 
 export const SHIP_DISPLAY_PREFS_STORAGE_KEY = 'metasgw.shipDisplayPrefs.v1';
+export const SHIP_ASSETS_STORAGE_KEY = 'metasgw.shipAssets.v1';
+export const ADDED_PROJECTS_STORAGE_KEY = 'metasgw.addedProjects.v1';
 export const MAX_SHIP_NAME_LENGTH = 30;
 export const ROTATION_STEP_DEG = 15;
 
 export interface ShipDisplayPrefEntry {
   customName?: string;
   yawDeg?: number;
+  vesselAssetId?: string;
 }
 
 export type ShipDisplayPrefsMap = Record<string, ShipDisplayPrefEntry>;
+
+export interface SavedShipAssetRecord {
+  assetId: string;
+  name: string;
+  vesselType: string;
+  defaultYawDeg: number;
+  sourceShipId?: string;
+  sourceKind: 'builtin' | 'project' | 'decorative' | 'custom';
+  note?: string;
+  savedAt: string;
+}
+
+export interface AddedProjectShipRecord {
+  id: string;
+  code: string;
+  name: string;
+  role: string;
+  status: string;
+  updated_at: string;
+  vesselType: string;
+  assetId: string;
+}
 
 export interface ShipFootprintCollider {
   id: string;
@@ -287,7 +312,14 @@ export function loadShipDisplayPrefs(storageOverride?: StorageLike | null): Ship
       if (typeof rec.yawDeg === 'number' && Number.isFinite(rec.yawDeg)) {
         cleanEntry.yawDeg = normalizeDegrees(rec.yawDeg);
       }
-      if (cleanEntry.customName !== undefined || cleanEntry.yawDeg !== undefined) {
+      if (typeof rec.vesselAssetId === 'string' && /^[a-z0-9_]{2,40}$/.test(rec.vesselAssetId.trim())) {
+        cleanEntry.vesselAssetId = rec.vesselAssetId.trim();
+      }
+      if (
+        cleanEntry.customName !== undefined ||
+        cleanEntry.yawDeg !== undefined ||
+        cleanEntry.vesselAssetId !== undefined
+      ) {
         out[id] = cleanEntry;
       }
     }
@@ -328,7 +360,11 @@ export function applyShipCustomName(
     existing.customName = check.value;
   }
 
-  if (existing.customName === undefined && existing.yawDeg === undefined) {
+  if (
+    existing.customName === undefined &&
+    existing.yawDeg === undefined &&
+    existing.vesselAssetId === undefined
+  ) {
     delete next[shipId];
   } else {
     next[shipId] = existing;
@@ -351,11 +387,153 @@ export function applyShipCustomYaw(
     existing.yawDeg = normalizeDegrees(yawDeg);
   }
 
-  if (existing.customName === undefined && existing.yawDeg === undefined) {
+  if (
+    existing.customName === undefined &&
+    existing.yawDeg === undefined &&
+    existing.vesselAssetId === undefined
+  ) {
     delete next[shipId];
   } else {
     next[shipId] = existing;
   }
 
   return next;
+}
+
+export function applyShipVesselAsset(
+  prefs: ShipDisplayPrefsMap,
+  shipId: string,
+  vesselAssetId: string | null,
+): ShipDisplayPrefsMap {
+  const next: ShipDisplayPrefsMap = { ...prefs };
+  const existing = next[shipId] ? { ...next[shipId] } : {};
+
+  if (!vesselAssetId || !/^[a-z0-9_]{2,40}$/.test(vesselAssetId.trim())) {
+    delete existing.vesselAssetId;
+  } else {
+    existing.vesselAssetId = vesselAssetId.trim();
+  }
+
+  if (
+    existing.customName === undefined &&
+    existing.yawDeg === undefined &&
+    existing.vesselAssetId === undefined
+  ) {
+    delete next[shipId];
+  } else {
+    next[shipId] = existing;
+  }
+
+  return next;
+}
+
+export function loadSavedShipAssets(storageOverride?: StorageLike | null): SavedShipAssetRecord[] {
+  const store = getSafeStorage(storageOverride);
+  if (!store) return [];
+  try {
+    const raw = store.getItem(SHIP_ASSETS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    const out: SavedShipAssetRecord[] = [];
+    const seen = new Set<string>();
+    for (const item of parsed) {
+      if (!item || typeof item !== 'object') continue;
+      const r = item as Record<string, unknown>;
+      const assetId = typeof r.assetId === 'string' ? r.assetId.trim() : '';
+      const name = typeof r.name === 'string' ? r.name.trim() : '';
+      const vesselType = typeof r.vesselType === 'string' ? r.vesselType.trim() : '';
+      if (!assetId || !name || !vesselType || seen.has(assetId)) continue;
+      seen.add(assetId);
+      const sourceKind =
+        r.sourceKind === 'builtin' ||
+        r.sourceKind === 'project' ||
+        r.sourceKind === 'decorative' ||
+        r.sourceKind === 'custom'
+          ? r.sourceKind
+          : 'custom';
+      out.push({
+        assetId,
+        name: name.slice(0, MAX_SHIP_NAME_LENGTH + 8),
+        vesselType,
+        defaultYawDeg:
+          typeof r.defaultYawDeg === 'number' && Number.isFinite(r.defaultYawDeg)
+            ? normalizeDegrees(r.defaultYawDeg)
+            : 90,
+        sourceShipId: typeof r.sourceShipId === 'string' ? r.sourceShipId.trim() : undefined,
+        sourceKind,
+        note: typeof r.note === 'string' ? r.note.trim().slice(0, 120) : undefined,
+        savedAt: typeof r.savedAt === 'string' ? r.savedAt.trim().slice(0, 32) : '2026-11-28',
+      });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+export function saveSavedShipAssets(
+  assets: readonly SavedShipAssetRecord[],
+  storageOverride?: StorageLike | null,
+): boolean {
+  const store = getSafeStorage(storageOverride);
+  if (!store) return false;
+  try {
+    store.setItem(SHIP_ASSETS_STORAGE_KEY, JSON.stringify(assets));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function loadAddedProjectShips(storageOverride?: StorageLike | null): AddedProjectShipRecord[] {
+  const store = getSafeStorage(storageOverride);
+  if (!store) return [];
+  try {
+    const raw = store.getItem(ADDED_PROJECTS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    const out: AddedProjectShipRecord[] = [];
+    const seen = new Set<string>();
+    for (const item of parsed) {
+      if (!item || typeof item !== 'object') continue;
+      const r = item as Record<string, unknown>;
+      const id = typeof r.id === 'string' ? r.id.trim() : '';
+      const name = typeof r.name === 'string' ? r.name.trim() : '';
+      const vesselType = typeof r.vesselType === 'string' ? r.vesselType.trim() : '';
+      if (!id || !name || !vesselType || seen.has(id)) continue;
+      seen.add(id);
+      out.push({
+        id,
+        code: typeof r.code === 'string' && r.code.trim() ? r.code.trim().slice(0, 24) : id,
+        name: name.slice(0, MAX_SHIP_NAME_LENGTH),
+        role: typeof r.role === 'string' && r.role.trim() ? r.role.trim().slice(0, 24) : 'manager',
+        status: typeof r.status === 'string' && r.status.trim() ? r.status.trim().slice(0, 24) : 'active',
+        updated_at:
+          typeof r.updated_at === 'string' && r.updated_at.trim()
+            ? r.updated_at.trim().slice(0, 24)
+            : '2026-11-28',
+        vesselType,
+        assetId: typeof r.assetId === 'string' ? r.assetId.trim() : `asset-builtin-${vesselType}`,
+      });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+export function saveAddedProjectShips(
+  records: readonly AddedProjectShipRecord[],
+  storageOverride?: StorageLike | null,
+): boolean {
+  const store = getSafeStorage(storageOverride);
+  if (!store) return false;
+  try {
+    store.setItem(ADDED_PROJECTS_STORAGE_KEY, JSON.stringify(records));
+    return true;
+  } catch {
+    return false;
+  }
 }

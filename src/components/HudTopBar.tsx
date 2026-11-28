@@ -10,6 +10,7 @@ import {
   Mail,
   MessageSquare,
   Radar,
+  Radio,
   RefreshCw,
   Shield,
   Sun,
@@ -61,6 +62,7 @@ export interface HudTopBarProps {
   hubRefreshing?: boolean;
   onRefreshHub?: () => void;
   onOpenReport?: () => void;
+  onOpenAdminMenu?: (tab?: 'ships' | 'assets' | 'verify') => void;
 }
 
 export const HUD_HEIGHT_CSS_VAR = '--metasgw-hud-height';
@@ -110,6 +112,7 @@ export const HudTopBar: React.FC<HudTopBarProps> = ({
   hubRefreshing = false,
   onRefreshHub,
   onOpenReport,
+  onOpenAdminMenu,
 }) => {
   const isPreview = runtimeEnv === 'preview';
   const effectiveTier: QualityTier = qualityTier ?? (lowSpecMode ? 'low' : 'high');
@@ -173,7 +176,7 @@ export const HudTopBar: React.FC<HudTopBarProps> = ({
     >
       <div className="mx-auto flex items-center justify-between gap-1.5 px-2 py-1.5 sm:px-3">
         {/* Left: Brand + KPI + Desktop Badges */}
-        <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
+        <div className="flex items-center gap-1.5 sm:gap-2 min-w-0 overflow-hidden">
           <div className="flex items-center gap-1.5 shrink-0">
             <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-sky-700 text-white shadow-sm">
               <Compass className="h-4 w-4" aria-hidden="true" />
@@ -183,7 +186,7 @@ export const HudTopBar: React.FC<HudTopBarProps> = ({
                 메타SGW
               </span>
               <p
-                className="text-[10px] text-slate-300 whitespace-nowrap"
+                className="text-[9.5px] sm:text-[10px] text-slate-300 whitespace-nowrap"
                 data-testid="hud-kpi-counts"
               >
                 내 프로젝트 {projectCount} · 접속 동료 {onlineCount}
@@ -195,7 +198,7 @@ export const HudTopBar: React.FC<HudTopBarProps> = ({
             <span
               data-testid="preview-demo-badge"
               role="status"
-              className="hidden sm:inline-flex items-center gap-1.5 rounded-md border border-amber-400/60 bg-amber-950/85 px-2 py-0.5 text-[11px] font-bold text-amber-100 whitespace-nowrap"
+              className="hidden sm:inline-flex items-center gap-1.5 rounded-md border border-amber-400/60 bg-amber-950/85 px-2 py-0.5 text-[11px] font-bold text-amber-100 whitespace-nowrap shrink-0"
             >
               {PREVIEW_DEMO_BANNER_TEXT}
             </span>
@@ -206,7 +209,7 @@ export const HudTopBar: React.FC<HudTopBarProps> = ({
               data-testid="connection-lost-badge"
               role="alert"
               title={syncErrorDesc.message}
-              className="hidden sm:inline-flex items-center gap-1.5 rounded-md border border-rose-400/70 bg-rose-950/90 px-2 py-0.5 text-[11px] font-bold text-rose-100 whitespace-nowrap"
+              className="hidden sm:inline-flex items-center gap-1.5 rounded-md border border-rose-400/70 bg-rose-950/90 px-2 py-0.5 text-[11px] font-bold text-rose-100 whitespace-nowrap shrink-0"
             >
               <WifiOff className="h-3 w-3 text-rose-300 shrink-0" aria-hidden="true" />
               <span>{disconnectedText}</span>
@@ -227,7 +230,7 @@ export const HudTopBar: React.FC<HudTopBarProps> = ({
           {showDebugMetrics && renderMetrics && viewMode === '3d' && (
             <span
               data-testid="hud-debug-metrics"
-              className="hidden lg:inline-flex items-center gap-1 rounded-md border border-slate-700 bg-slate-900 px-2 py-0.5 font-mono text-[10px] font-semibold text-slate-200 whitespace-nowrap tabular-nums"
+              className="hidden 2xl:inline-flex items-center gap-1 rounded-md border border-slate-700 bg-slate-900 px-2 py-0.5 font-mono text-[10px] font-semibold text-slate-200 whitespace-nowrap tabular-nums shrink-0"
               title={`Quality: ${renderMetrics.qualityTier} / Canvas: ${renderMetrics.canvasWidth}x${renderMetrics.canvasHeight} / Chunks: ${renderMetrics.activeChunks} / DC: ${renderMetrics.drawCalls} (Peak ${renderMetrics.peakDrawCalls}) / Frame: ${renderMetrics.frameTimeMs}ms`}
             >
               <Activity className="h-3 w-3 text-sky-400 shrink-0" aria-hidden="true" />
@@ -237,7 +240,7 @@ export const HudTopBar: React.FC<HudTopBarProps> = ({
             </span>
           )}
 
-          <div className="hidden xl:flex items-center gap-1.5 rounded-lg border border-slate-700/80 bg-slate-900 px-2 py-1 text-[11px] whitespace-nowrap">
+          <div className="hidden xl:flex items-center gap-1.5 rounded-lg border border-slate-700/80 bg-slate-900 px-2 py-1 text-[11px] whitespace-nowrap shrink-0">
             <span className="font-semibold text-white">{user.name}</span>
             <span className="text-slate-300">{user.dept}</span>
             <span
@@ -288,14 +291,26 @@ export const HudTopBar: React.FC<HudTopBarProps> = ({
             bmail
           </a>
           {!user.isPartner && (
-            <a
-              href={safeHref(SGW_PORTAL_LINKS.admin)}
-              onClick={handleLinkClick('SGW 관리자')}
-              className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-slate-200 hover:bg-slate-800 hover:text-white focus-visible:outline-2 focus-visible:outline-sky-400 whitespace-nowrap"
-            >
-              <Shield className="h-3.5 w-3.5 text-amber-400" aria-hidden="true" />
-              관리자
-            </a>
+            onOpenAdminMenu ? (
+              <button
+                type="button"
+                onClick={() => onOpenAdminMenu('ships')}
+                aria-label="항구 관리자 메뉴 열기"
+                className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-slate-200 hover:bg-slate-800 hover:text-white focus-visible:outline-2 focus-visible:outline-sky-400 whitespace-nowrap"
+              >
+                <Shield className="h-3.5 w-3.5 text-amber-400" aria-hidden="true" />
+                관리자
+              </button>
+            ) : (
+              <a
+                href={safeHref(SGW_PORTAL_LINKS.admin)}
+                onClick={handleLinkClick('SGW 관리자')}
+                className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-slate-200 hover:bg-slate-800 hover:text-white focus-visible:outline-2 focus-visible:outline-sky-400 whitespace-nowrap"
+              >
+                <Shield className="h-3.5 w-3.5 text-amber-400" aria-hidden="true" />
+                관리자
+              </a>
+            )
           )}
         </nav>
 
@@ -433,6 +448,31 @@ export const HudTopBar: React.FC<HudTopBarProps> = ({
               </>
             )}
           </button>
+
+          {onOpenAdminMenu && (
+            <>
+              <button
+                type="button"
+                data-testid="hud-sgw-verify-btn"
+                onClick={() => onOpenAdminMenu('verify')}
+                aria-label="SGW API 연동 및 상호 교신 검증 열기"
+                className="hidden lg:inline-flex min-h-[32px] items-center gap-1 rounded-lg border border-emerald-500/50 bg-emerald-950/75 px-2 py-1 text-xs font-semibold text-emerald-100 hover:bg-emerald-900 focus-visible:outline-2 focus-visible:outline-sky-400 whitespace-nowrap"
+              >
+                <Radio className="h-3.5 w-3.5 text-emerald-300 shrink-0" aria-hidden="true" />
+                <span>SGW 검증</span>
+              </button>
+              <button
+                type="button"
+                data-testid="hud-admin-menu-btn"
+                onClick={() => onOpenAdminMenu('ships')}
+                aria-label="항구 관리자 메뉴 열기 (선박 정보·에셋·SGW 연동 검증)"
+                className="inline-flex min-h-[32px] items-center gap-1 rounded-lg border border-amber-400/55 bg-amber-950/75 px-2 py-1 text-xs font-semibold text-amber-100 hover:bg-amber-900/80 focus-visible:outline-2 focus-visible:outline-sky-400 whitespace-nowrap"
+              >
+                <Shield className="h-3.5 w-3.5 text-amber-300 shrink-0" aria-hidden="true" />
+                <span className="hidden sm:inline">관리자</span>
+              </button>
+            </>
+          )}
 
           <button
             type="button"

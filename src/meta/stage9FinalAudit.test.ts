@@ -69,6 +69,7 @@ function makeStubTextures(): HarborTexturePack {
     hullSteelPlates: solid(),
     waterNormals: solid(),
     cloudPuff: solid(),
+    seastarSkyBanner: solid(),
     usedOffscreenCanvas: false,
     createSignboard: () => solid(),
     createHubBuildingSignboard: () => solid(),

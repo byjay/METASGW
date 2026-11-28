@@ -4,18 +4,23 @@ import { OBSERVATION_DECK_Y, QUAY_MAIN_DECK_Y } from '../core/physicsCollision';
 import type { HarborShip } from '../mapping';
 import type { HubBuildingPlacement } from '../meta/hubBuildingModel';
 import type { ShipDisplayPrefsMap } from '../shipDisplayPrefs';
+import { resolveProjectShipSilhouette } from '../shipAssetCatalog';
 import { buildHubModuleBuilding3D, type HubBuildingRuntime } from './hubBuildings3D';
 import { createInstancedRingBatch, mergeSolidSubtreeToVertexColors } from './meshBatching';
 import {
   buildProjectVessel3D,
   buildVesselScanPointCloud,
   disposeObjectTree,
-  getVesselSilhouetteByIndex,
+  type VesselSilhouetteId,
 } from './projectVesselTypes';
 import {
   HOME_HARBOR_DECORATIVE_VESSELS,
   type DecorativeVesselSpec,
 } from './sceneryCatalog';
+import {
+  buildSeastarSkyMonument,
+  type SeastarSkyMonumentRuntime,
+} from './seastarSkyMonument';
 import type { HarborTexturePack } from './textures';
 
 /** Top surface elevation of the concrete quay apron. */
@@ -25,6 +30,7 @@ export const Z_FIGHTING_SAFE_OFFSET = 0.025;
 
 export interface DockedShipRuntime {
   ship: HarborShip;
+  silhouette: VesselSilhouetteId;
   anchor: THREE.Group;
   hitProxy: THREE.Mesh;
   scanCloud: THREE.Points;
@@ -51,6 +57,7 @@ export interface ShipyardWorldHandles {
   occludableShipSuperstructures: THREE.Object3D[];
   occludableVerticalProps: THREE.Object3D[];
   hubBuildings: HubBuildingRuntime[];
+  seastarMonument: SeastarSkyMonumentRuntime;
   bridgeGlowMat: THREE.MeshStandardMaterial;
   instancedPropCounts: {
     bollards: number;
@@ -65,7 +72,7 @@ export interface ShipyardWorldHandles {
   applyShipDisplayPrefs: (prefs: ShipDisplayPrefsMap) => void;
   setSelectedShipId: (shipId: string | null) => void;
   setLowSpecMode: (lowSpec: boolean) => void;
-  update: (dt: number, elapsed: number, lowSpec: boolean) => void;
+  update: (dt: number, elapsed: number, lowSpec: boolean, reducedMotion?: boolean) => void;
   dispose: () => void;
 }
 
@@ -904,6 +911,10 @@ export function buildShipyardWorld(
   }
   staticDisposables.push(cloudMat);
 
+  // 5b. Monumental Rotating Aerial SEASTAR Sky Display (Floating High Above Harbor)
+  const seastarMonument = buildSeastarSkyMonument(textures.seastarSkyBanner);
+  scene.add(seastarMonument.group);
+
   // =========================================================================
   // 6. DEDICATED DECORATIVE SCENERY LAYER (Hero "씨스타호", "FD-01", 10+ Ships)
   //    STRICTLY SEPARATED FROM BUSINESS SEDMS SHIPS (`shipsRoot`)!
@@ -968,6 +979,8 @@ export function buildShipyardWorld(
   let boardingMarkerBatch: THREE.InstancedMesh | null = null;
   let lastAppliedPrefs: ShipDisplayPrefsMap = {};
   let currentSelectedShipId: string | null = null;
+  let lastSyncedShips: HarborShip[] = [];
+  let lastSyncLowSpec = false;
 
   const clearDockedShips = () => {
     if (shipStatusRingBatch) {
@@ -999,6 +1012,15 @@ export function buildShipyardWorld(
 
   const applyShipDisplayPrefs = (prefs: ShipDisplayPrefsMap) => {
     lastAppliedPrefs = prefs;
+    // If any docked project ship swapped its 3D vessel asset, rebuild project vessels cleanly
+    const needsAssetRebuild = dockedShips.some((item) => {
+      const desired = resolveProjectShipSilhouette(item.ship.id, item.ship.hullStyleIndex, prefs);
+      return desired !== item.silhouette;
+    });
+    if (needsAssetRebuild && lastSyncedShips.length > 0) {
+      syncProjectShips(lastSyncedShips, lastSyncLowSpec, prefs);
+      return;
+    }
     for (const item of dockedShips) {
       const customYaw = prefs[item.ship.id]?.yawDeg;
       const yawDeg = customYaw !== undefined ? customYaw : item.defaultYawDeg;
@@ -1026,6 +1048,8 @@ export function buildShipyardWorld(
   };
 
   const syncProjectShips = (ships: HarborShip[], lowSpec: boolean, prefs?: ShipDisplayPrefsMap) => {
+    lastSyncedShips = ships;
+    lastSyncLowSpec = lowSpec;
     if (prefs) lastAppliedPrefs = prefs;
     clearDockedShips();
     const statusRingSpecs: Array<{ x: number; y: number; z: number; colorHex: number }> = [];
@@ -1041,7 +1065,11 @@ export function buildShipyardWorld(
       anchor.rotation.y = yawRad;
       anchor.scale.setScalar(0.84);
 
-      const silhouette = getVesselSilhouetteByIndex(ship.hullStyleIndex);
+      const silhouette = resolveProjectShipSilhouette(
+        ship.id,
+        ship.hullStyleIndex,
+        lastAppliedPrefs,
+      );
       const vesselMesh = buildProjectVessel3D(silhouette, textures, bridgeGlowMat, lowSpec);
       const shipSuper = vesselMesh.getObjectByName('ship_superstructure');
       if (shipSuper) {
@@ -1190,6 +1218,7 @@ export function buildShipyardWorld(
 
       dockedShips.push({
         ship,
+        silhouette,
         anchor,
         hitProxy,
         scanCloud,
@@ -1307,6 +1336,7 @@ export function buildShipyardWorld(
     occludableShipSuperstructures,
     occludableVerticalProps,
     hubBuildings,
+    seastarMonument,
     bridgeGlowMat,
     instancedPropCounts: {
       bollards: bollardPositions.length,
@@ -1321,7 +1351,8 @@ export function buildShipyardWorld(
     applyShipDisplayPrefs,
     setSelectedShipId,
     setLowSpecMode,
-    update: (dt: number, elapsed: number, lowSpec: boolean) => {
+    update: (dt: number, elapsed: number, lowSpec: boolean, reducedMotion = false) => {
+      seastarMonument.update(dt, elapsed, reducedMotion);
       if (lowSpec) return;
 
       for (const c of clouds) {
@@ -1361,6 +1392,8 @@ export function buildShipyardWorld(
       }
     },
     dispose: () => {
+      scene.remove(seastarMonument.group);
+      seastarMonument.dispose();
       clearHubBuildings();
       clearDockedShips();
       for (const deco of decorativeVessels) {

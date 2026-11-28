@@ -35,10 +35,10 @@ export const CAMERA_CLOSE_ZOOM_BLEND_START = 26.0;
 export const CAMERA_CLOSE_ZOOM_BLEND_END = 10.5;
 export const CAMERA_FAR_MIN_POLAR_ANGLE = 0.14;
 export const CAMERA_FAR_MAX_POLAR_ANGLE = Math.PI * 0.485;
-/** Close-zoom polar angle bounds from +Y (radians): [1.26..1.44] ≈ [72.2°..82.5°] (downward pitch 7.5°..17.8°), keeping full worker body comfortably inside HUD-safe viewport and water ratio <= 40%. */
-export const CAMERA_CLOSE_MIN_POLAR_ANGLE = 1.26;
-export const CAMERA_CLOSE_MAX_POLAR_ANGLE = 1.44;
-export const WORKER_CHEST_HEIGHT_OFFSET = 1.48;
+/** Close-zoom polar angle bounds from +Y (radians): [1.30..1.46] ≈ [74.5°..83.7°] (downward pitch 6.3°..15.5°), keeping camera aligned from worker shoulder to helmet level so full body stays centered in HUD-safe viewport and water ratio <= 40%. */
+export const CAMERA_CLOSE_MIN_POLAR_ANGLE = 1.30;
+export const CAMERA_CLOSE_MAX_POLAR_ANGLE = 1.46;
+export const WORKER_CHEST_HEIGHT_OFFSET = 1.38;
 export const QUAY_CLOSE_ZOOM_MAX_TARGET_Z = -7.5;
 export const CAMERA_PERSON_FOCUS_MIN_DIST = 3.0;
 export const CAMERA_PERSON_FOCUS_MAX_DIST = 6.0;
@@ -517,7 +517,7 @@ export function computePersonFocusCameraPose(
     CAMERA_PERSON_FOCUS_MIN_DIST + 0.3,
     Math.min(CAMERA_PERSON_FOCUS_MAX_DIST - 0.3, preferredDistance),
   );
-  const targetY = personPos.y + (isSeated ? 1.25 : 1.55);
+  const targetY = personPos.y + (isSeated ? 1.25 : WORKER_CHEST_HEIGHT_OFFSET);
   const targetPos = { x: personPos.x, y: targetY, z: personPos.z };
 
   // Slight front-3/4 angle so key directional light sculpts face, hands & reflective vest cleanly
@@ -703,17 +703,22 @@ export function clampCloseZoomCameraFraming(
     tz = tz + (safeAnchorZ - tz) * closeBlend;
   }
 
-  // Anchor target height to worker chest height on quay deck so head and boots stay cleanly in frame
+  // Lock LookAt target elevation strictly to worker chest height at close zoom so head & boots stay balanced in frame
   if (isOnWalkableLand(tx, tz, 0)) {
     const desiredChestY = sampleHarborElevation(tx, tz) + WORKER_CHEST_HEIGHT_OFFSET;
-    ty = ty + (desiredChestY - ty) * closeBlend;
+    ty = closeBlend >= 1 ? desiredChestY : ty + (desiredChestY - ty) * closeBlend;
   }
 
   const dist = Math.max(CAMERA_WHEEL_MIN_DISTANCE, rawDist || CAMERA_WHEEL_MIN_DISTANCE);
-  const safeRawDist = rawDist > 1e-5 ? rawDist : 1;
-  const rawPolar = Math.acos(Math.max(-1, Math.min(1, dy0 / safeRawDist)));
-  const polarAngle = Math.max(minPolarAngle, Math.min(maxPolarAngle, rawPolar));
+  // Measure raw polar against the locked chest target so extreme low/high target drift never skews pitch
+  const relY = cameraPos.y - ty;
   const horizMag = Math.hypot(dx0, dz0);
+  const relDist = Math.hypot(horizMag, relY);
+  const rawPolar =
+    relDist > 1e-5
+      ? Math.acos(Math.max(-1, Math.min(1, relY / relDist)))
+      : (minPolarAngle + maxPolarAngle) * 0.5;
+  const polarAngle = Math.max(minPolarAngle, Math.min(maxPolarAngle, rawPolar));
   const azimuth = horizMag > 1e-5 ? Math.atan2(dx0, dz0) : 0;
 
   const sinP = Math.sin(polarAngle);

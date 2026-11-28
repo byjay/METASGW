@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Anchor,
   Building2,
@@ -12,14 +12,16 @@ import {
   X,
 } from 'lucide-react';
 import {
-  buildSedmsProjectUrl,
   buildTalkRoomUrl,
   isSafeNavigationUrl,
   SGW_PORTAL_LINKS,
 } from '../deepLink';
 import type { HarborShip } from '../mapping';
+import type { HubModuleChipItem } from '../meta/hubChipModel';
 import type { MetaRegistryResponse } from '../meta/hubTypes';
+import { buildProjectEntryOptions } from '../projectEntryOptions';
 import type { RuntimeEnv } from '../runtimeEnv';
+import type { PreviewBridgeTarget } from './SgwBridgePreviewModal';
 import { ShipKeyItemsTab } from './ShipKeyItemsTab';
 
 export interface OnboardPanelProps {
@@ -28,8 +30,10 @@ export interface OnboardPanelProps {
   phase: 'harbor' | 'boarding' | 'onboard';
   runtimeEnv: RuntimeEnv;
   hubRegistry?: MetaRegistryResponse | null;
+  hubChips?: HubModuleChipItem[];
   onHighlightShip?: (shipId: string) => void;
   onOpenReport?: (shipId: string) => void;
+  onOpenPreviewBridge?: (target: PreviewBridgeTarget) => void;
   onToast?: (message: string) => void;
   onPreviewLinkBlocked: (featureLabel: string) => void;
   onDisembark: () => void;
@@ -49,30 +53,32 @@ export const OnboardPanel: React.FC<OnboardPanelProps> = ({
   phase,
   runtimeEnv,
   hubRegistry = null,
+  hubChips = [],
   onHighlightShip,
   onOpenReport,
+  onOpenPreviewBridge,
   onToast,
   onPreviewLinkBlocked,
   onDisembark,
 }) => {
   const [activeTab, setActiveTab] = useState<'overview' | 'key-items'>('overview');
+  const [selectedEntryId, setSelectedEntryId] = useState<string>('sedms');
 
   useEffect(() => {
     setActiveTab('overview');
+    setSelectedEntryId('sedms');
   }, [ship?.id]);
+
+  const entryOptions = useMemo(
+    () => (ship ? buildProjectEntryOptions(ship, hubChips) : []),
+    [ship, hubChips],
+  );
 
   if (!ship || phase === 'harbor') return null;
 
   const isPreview = runtimeEnv === 'preview';
   const displayTitle = customDisplayName || ship.name;
 
-  let sedmsHref = '/api/sedms-sso?return=%2Fprojects';
-  try {
-    sedmsHref = buildSedmsProjectUrl(ship.id);
-  } catch {
-    sedmsHref = '/api/sedms-sso?return=%2Fprojects';
-  }
-  const safeSedmsHref = isSafeNavigationUrl(sedmsHref) ? sedmsHref : '/';
   const rawChatHref = buildTalkRoomUrl(ship.id);
   const safeChatHref = isSafeNavigationUrl(rawChatHref) ? rawChatHref : SGW_PORTAL_LINKS.talkHome;
   const safeNasHref = isSafeNavigationUrl(SGW_PORTAL_LINKS.nas) ? SGW_PORTAL_LINKS.nas : '/';
@@ -246,24 +252,96 @@ export const OnboardPanel: React.FC<OnboardPanelProps> = ({
 
             <p className="text-xs leading-relaxed text-slate-300">
               {isPreview
-                ? '미리보기 데모 선상 패널입니다. 실제 SEDMS 프로젝트·팀 채팅·NAS 폴더 이동은 SGW 운영 환경에서만 동작합니다.'
-                : '도면·배포·결재는 SEDMS에서, 프로젝트 소통과 공유 문서는 SGTALK 팀 채팅 및 SGW NAS에서 이어서 처리합니다.'}
+                ? '원하는 프로젝트 연동 시스템(SEDMS·SEcMS·팀 채팅·NAS·메일 등)을 선택해 진입할 수 있습니다. 미리보기에서는 인앱 미리보기와 SGW 경로 안내가 함께 열립니다.'
+                : '원하는 프로젝트 연동 시스템(SEDMS·SEcMS·팀 채팅·NAS·메일 등)을 선택해 동일 오리진 SGW 세션으로 바로 진입합니다.'}
             </p>
 
-            {/* Primary CTA: SEDMS 에서 열기 */}
-            <a
-              href={safeSedmsHref}
-              onClick={(e) => {
-                if (isPreview) {
-                  e.preventDefault();
-                  onPreviewLinkBlocked(`SEDMS 프로젝트(${ship.code}) 열기`);
-                }
-              }}
-              className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-sky-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-sky-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400"
-            >
-              SEDMS 에서 열기
-              <ExternalLink className="h-4 w-4" aria-hidden="true" />
-            </a>
+            {/* Selectable Project Entry System Options */}
+            {entryOptions.length > 0 && (() => {
+              const activeOpt =
+                entryOptions.find((opt) => opt.id === selectedEntryId && !opt.disabled) ??
+                entryOptions.find((opt) => !opt.disabled) ??
+                entryOptions[0];
+              return (
+                <div
+                  data-testid="onboard-entry-options"
+                  className="rounded-xl border border-slate-800 bg-slate-950/85 p-3 space-y-2.5"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-bold text-sky-200">
+                      진입 시스템 선택 (옵션)
+                    </span>
+                    <span className="text-[11px] text-slate-400">
+                      {activeOpt?.label ?? 'SEDMS'}
+                    </span>
+                  </div>
+                  <div
+                    role="radiogroup"
+                    aria-label="선상 패널 프로젝트 진입 시스템 선택"
+                    className="grid grid-cols-2 gap-1.5"
+                  >
+                    {entryOptions.map((opt) => {
+                      const isSel = activeOpt?.id === opt.id;
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          role="radio"
+                          aria-checked={isSel}
+                          aria-label={`${opt.label} 진입 선택 (${opt.statusLabel})`}
+                          disabled={opt.disabled}
+                          onClick={() => setSelectedEntryId(opt.id)}
+                          className={`rounded-lg border px-2.5 py-1.5 text-left text-xs transition focus-visible:outline-2 focus-visible:outline-sky-400 ${
+                            opt.disabled
+                              ? 'cursor-not-allowed border-dashed border-slate-700 bg-slate-900/60 text-slate-400 opacity-75'
+                              : isSel
+                                ? 'border-sky-400 bg-sky-900/80 font-bold text-white'
+                                : 'border-slate-700 bg-slate-900 text-slate-200 hover:border-sky-500/70 hover:bg-slate-800'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-1">
+                            <span className="truncate font-semibold">{opt.label}</span>
+                            <span className="shrink-0 text-[10px] text-slate-300">
+                              {opt.statusLabel}
+                            </span>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {activeOpt && activeOpt.href && !activeOpt.disabled && (
+                    <a
+                      href={activeOpt.href}
+                      onClick={(e) => {
+                        if (isPreview) {
+                          e.preventDefault();
+                          if (onOpenPreviewBridge) {
+                            onOpenPreviewBridge({
+                              featureLabel: activeOpt.previewFeatureLabel,
+                              targetUrl: activeOpt.href,
+                              projectId: ship.id,
+                              projectName: displayTitle,
+                              moduleId: activeOpt.moduleId ?? null,
+                              kind: activeOpt.kind,
+                            });
+                          } else {
+                            onPreviewLinkBlocked(activeOpt.previewFeatureLabel);
+                          }
+                        }
+                      }}
+                      className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-sky-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-sky-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400"
+                    >
+                      <span>
+                        {activeOpt.id === 'sedms'
+                          ? 'SEDMS 에서 열기'
+                          : `${activeOpt.label}에서 열기`}
+                      </span>
+                      <ExternalLink className="h-4 w-4" aria-hidden="true" />
+                    </a>
+                  )}
+                </div>
+              );
+            })()}
 
             {/* Secondary Actions: 팀 채팅 / NAS 폴더 / 하선 */}
             <div className="grid grid-cols-3 gap-2">
@@ -272,7 +350,17 @@ export const OnboardPanel: React.FC<OnboardPanelProps> = ({
                 onClick={(e) => {
                   if (isPreview) {
                     e.preventDefault();
-                    onPreviewLinkBlocked(`팀 채팅(${ship.code})`);
+                    if (onOpenPreviewBridge) {
+                      onOpenPreviewBridge({
+                        featureLabel: `팀 채팅(${ship.code})`,
+                        targetUrl: safeChatHref,
+                        projectId: ship.id,
+                        projectName: displayTitle,
+                        kind: 'talk',
+                      });
+                    } else {
+                      onPreviewLinkBlocked(`팀 채팅(${ship.code})`);
+                    }
                   }
                 }}
                 className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-700 bg-slate-800 px-2.5 py-2 text-xs font-semibold text-slate-100 hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-sky-400"
@@ -286,7 +374,17 @@ export const OnboardPanel: React.FC<OnboardPanelProps> = ({
                 onClick={(e) => {
                   if (isPreview) {
                     e.preventDefault();
-                    onPreviewLinkBlocked(`NAS 폴더(${ship.code})`);
+                    if (onOpenPreviewBridge) {
+                      onOpenPreviewBridge({
+                        featureLabel: `NAS 폴더(${ship.code})`,
+                        targetUrl: safeNasHref,
+                        projectId: ship.id,
+                        projectName: displayTitle,
+                        kind: 'nas',
+                      });
+                    } else {
+                      onPreviewLinkBlocked(`NAS 폴더(${ship.code})`);
+                    }
                   }
                 }}
                 className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-700 bg-slate-800 px-2.5 py-2 text-xs font-semibold text-slate-100 hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-sky-400"
